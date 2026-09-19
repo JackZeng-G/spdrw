@@ -1,0 +1,18 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "spdrw",
+  "outputfilename": "SPDReaderWriter",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "",
+  "author": {
+    "name": "spdrw-dev"
+  },
+  "info": {
+    "productName": "SPD Reader Writer (Go)",
+    "productVersion": "0.1.0",
+    "copyright": "LGPL-2.1 / MIT 混合, 详见 LICENSE",
+    "comments": "SPD 读写工具 (Go + Wails + PawnIO)"
+  }
+}

@@ -234,6 +234,34 @@ func (a *App) WriteFromFile(path string, force bool) error {
 	return nil
 }
 
+// SaveDumpData 把前端传入的 dump 写到文件。
+func (a *App) SaveDumpData(path string, data []byte) error {
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		return fmt.Errorf("写入 %s: %w", path, err)
+	}
+	a.mu.Lock()
+	a.logf("已保存 %s (%d 字节)", path, len(data))
+	a.mu.Unlock()
+	return nil
+}
+
+// DecodeFile 离线解析 dump 文件(不依赖设备)。
+func (a *App) DecodeFile(path string) (*DecodeResult, error) {
+	dump, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("读取 %s: %w", path, err)
+	}
+	a.mu.Lock()
+	a.logf("解析 %s", path)
+	a.mu.Unlock()
+	return DecodeDump(dump)
+}
+
+// ReadFileBytes 读取文件的原始字节(前端展示用)。
+func (a *App) ReadFileBytes(path string) ([]byte, error) {
+	return os.ReadFile(path)
+}
+
 // VerifyFile 比对文件与设备内容。
 func (a *App) VerifyFile(path string) error {
 	a.mu.Lock()

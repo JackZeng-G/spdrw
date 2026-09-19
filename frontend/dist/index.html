@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SPD Reader Writer (Go)</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header id="topbar">
+    <div class="brand">SPD 读写 <span class="sub">Go + PawnIO</span></div>
+    <div class="bar-controls">
+      <label>控制器
+        <select id="ctl-select"><option value="-1">— 未枚举 —</option></select>
+        <button id="btn-refresh-ctl" title="重新枚举控制器">⟳</button>
+      </label>
+      <button id="btn-scan">扫描 SPD</button>
+      <label>设备
+        <select id="dimm-select"><option value="-1">— 未扫描 —</option></select>
+      </label>
+      <button id="btn-dump" disabled>读取</button>
+    </div>
+    <div id="env-status" class="env-unknown">检测环境…</div>
+  </header>
+
+  <div id="warn-bar" class="hidden"></div>
+
+  <main id="layout">
+    <section id="hex-panel">
+      <div class="panel-title">SPD 内容 <span id="hex-meta" class="muted"></span></div>
+      <div id="hexgrid" class="hexgrid"><div class="placeholder">先连接控制器并扫描设备</div></div>
+    </section>
+
+    <aside id="info-panel">
+      <div class="panel-title">SPD 信息</div>
+      <div id="info-body" class="info-body"><div class="placeholder">读取后显示</div></div>
+
+      <div class="panel-title ops-title">操作</div>
+      <div class="ops">
+        <button id="btn-save" disabled>保存 dump…</button>
+        <button id="btn-load-decode" disabled>打开文件解析…</button>
+        <button id="btn-verify" disabled>校验文件…</button>
+        <button id="btn-write" disabled class="danger">写入文件…</button>
+        <input type="file" id="file-input" class="hidden">
+      </div>
+
+      <div class="panel-title ops-title">写保护</div>
+      <div class="ops wp">
+        <div id="wp-blocks" class="wp-blocks muted">—</div>
+        <button id="btn-wp-status" disabled>查询保护状态</button>
+        <button id="btn-wp-set" disabled class="danger">RSWP 加保护…</button>
+        <button id="btn-wp-clear" disabled>RSWP 清除</button>
+        <div class="muted small">
+          PSWP(永久写保护)需要高压硬件编程器,本工具不支持;<br>
+          状态查询仅显示芯片是否已永久保护。
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <footer id="log-panel">
+    <div class="panel-title">日志</div>
+    <div id="log" class="log"></div>
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>

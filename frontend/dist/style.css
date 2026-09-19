@@ -1,0 +1,130 @@
+:root {
+  --bg: #181a20;
+  --bg2: #1f222b;
+  --bg3: #262a35;
+  --fg: #d7dae2;
+  --muted: #8a90a0;
+  --accent: #4f9cf9;
+  --danger: #e5484d;
+  --ok: #46a758;
+  --warn: #f5a623;
+  --border: #2e3340;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; }
+body {
+  font: 13px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.hidden { display: none !important; }
+.muted { color: var(--muted); }
+.small { font-size: 11px; }
+button {
+  background: var(--bg3);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 5px 12px;
+  cursor: pointer;
+  font-size: 12px;
+}
+button:hover:not(:disabled) { border-color: var(--accent); }
+button:disabled { opacity: 0.45; cursor: default; }
+button.danger { color: #ff8f92; border-color: #5a3234; }
+select {
+  background: var(--bg3);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 12px;
+}
+.panel-title {
+  padding: 8px 12px;
+  font-weight: 600;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+  font-size: 12px;
+}
+.placeholder { color: var(--muted); padding: 16px; }
+
+/* 顶栏 */
+#topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 12px;
+  background: var(--bg2);
+  border-bottom: 1px solid var(--border);
+}
+.brand { font-weight: 700; font-size: 15px; }
+.brand .sub { font-weight: 400; font-size: 11px; color: var(--muted); margin-left: 6px; }
+.bar-controls { display: flex; align-items: center; gap: 10px; flex: 1; }
+.bar-controls label { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; }
+#env-status { font-size: 11px; padding: 3px 8px; border-radius: 10px; }
+#env-status.ok { color: var(--ok); }
+#env-status.bad { color: var(--danger); }
+#env-status.warn { color: var(--warn); }
+
+#warn-bar {
+  padding: 6px 12px;
+  background: #3a2f16;
+  color: #ffd479;
+  border-bottom: 1px solid #5a4a22;
+  font-size: 12px;
+}
+
+/* 主布局 */
+#layout { display: flex; flex: 1; min-height: 0; }
+#hex-panel { flex: 1.4; display: flex; flex-direction: column; min-width: 0; }
+#info-panel { flex: 1; display: flex; flex-direction: column; border-left: 1px solid var(--border); min-width: 320px; overflow-y: auto; }
+
+.hexgrid {
+  flex: 1;
+  overflow: auto;
+  padding: 10px;
+  font: 12px/1.7 Consolas, "Courier New", monospace;
+  white-space: pre;
+  user-select: text;
+}
+.hexgrid .row:hover { background: #ffffff08; }
+.hexgrid .offset { color: var(--muted); margin-right: 12px; }
+.hexgrid .ascii { color: var(--muted); margin-left: 12px; }
+.hexgrid b { font-weight: 400; }
+
+/* 十六进制按高 nibble 着色 */
+.c0 { color: #8a90a0; } .c1 { color: #7fb3ff; } .c2 { color: #7fd0a0; }
+.c3 { color: #b3a3e8; } .c4 { color: #e8b06a; } .c5 { color: #e87f8f; }
+.c6 { color: #6ad4c4; } .c7 { color: #d4d46a; } .c8 { color: #a0a8b8; }
+.c9 { color: #6a9fe8; } .ca { color: #8fe87f; } .cb { color: #e86ad4; }
+.cc { color: #e8d46a; } .cd { color: #ff9e6a; } .ce { color: #6ae8e8; }
+.cf { color: #c4c4ff; }
+
+.info-body { padding: 10px 12px; overflow-y: auto; }
+.kv { display: grid; grid-template-columns: 110px 1fr; gap: 2px 10px; margin-bottom: 10px; }
+.kv .k { color: var(--muted); }
+.kv .v { word-break: break-all; user-select: text; }
+.kv .v.good { color: var(--ok); }
+.kv .v.bad { color: var(--danger); }
+.section { font-weight: 600; margin: 8px 0 4px; color: var(--accent); font-size: 12px; }
+table.timing { border-collapse: collapse; width: 100%; margin-bottom: 8px; }
+table.timing td, table.timing th { border: 1px solid var(--border); padding: 2px 8px; font-size: 12px; }
+table.timing th { background: var(--bg3); color: var(--muted); text-align: left; }
+
+.ops { padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; }
+.ops button { text-align: left; }
+.wp-blocks { display: flex; gap: 6px; flex-wrap: wrap; }
+.wp-blocks .blk {
+  border: 1px solid var(--border); border-radius: 4px; padding: 2px 8px; font-size: 11px;
+}
+.wp-blocks .blk.on { color: var(--danger); border-color: #5a3234; }
+.wp-blocks .blk.off { color: var(--ok); }
+
+/* 日志 */
+#log-panel { height: 130px; display: flex; flex-direction: column; border-top: 1px solid var(--border); }
+.log { flex: 1; overflow-y: auto; padding: 6px 12px; font: 11px/1.6 Consolas, monospace; user-select: text; }
+.log .t { color: var(--muted); margin-right: 8px; }
