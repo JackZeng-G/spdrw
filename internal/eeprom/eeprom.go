@@ -379,6 +379,9 @@ func (d *Device) OfflineMode() (bool, error) {
 	return b&0x04 != 0, nil
 }
 
+// Close 断开设备(当前无独占资源,保留接口对称性)。
+func (d *Device) Close() {}
+
 // isNACK 判断错误是否为设备无响应(NACK)。Fake 与 PawnIO 后端的文案保持一致。
 func isNACK(err error) bool {
 	if err == nil {

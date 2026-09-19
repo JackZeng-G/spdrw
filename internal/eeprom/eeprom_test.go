@@ -23,6 +23,7 @@ func newDDR4(t *testing.T) (*Device, *smbus.FakeTransport) {
 func newDDR5(t *testing.T) (*Device, *smbus.FakeTransport) {
 	t.Helper()
 	ft := smbus.NewFake()
+	ft.SetDDR5(true)
 	ft.Fill(0x51) // DDR5 SPD magic
 	d, err := New(ft, 0x50)
 	if err != nil {
