@@ -176,8 +176,8 @@ func (d *Device) ReadAll() ([]byte, error) {
 	return d.Read(0, d.size)
 }
 
-// WriteByte 向指定逻辑偏移写一个字节。
-func (d *Device) WriteByte(off uint16, val byte) error {
+// WriteByteAt 向指定逻辑偏移写一个字节。(避开 vet 对 io.WriteByte 惯例的检查)
+func (d *Device) WriteByteAt(off uint16, val byte) error {
 	_, phys, err := d.physOffset(off)
 	if err != nil {
 		return err
@@ -208,7 +208,7 @@ func (d *Device) Write(dump []byte, force bool, progress func(written int)) erro
 	for i := 0; i < len(dump); i++ {
 		if force || cur[i] != dump[i] {
 			off := uint16(i)
-			if err := d.WriteByte(off, dump[i]); err != nil {
+			if err := d.WriteByteAt(off, dump[i]); err != nil {
 				return fmt.Errorf("写入 0x%02X: %w", off, err)
 			}
 			back, err := d.Read(off, 1)
@@ -254,10 +254,10 @@ func (d *Device) WriteTest(off uint16) bool {
 		return false
 	}
 	orig := b[0]
-	if err := d.WriteByte(off, orig^0xFF); err != nil {
+	if err := d.WriteByteAt(off, orig^0xFF); err != nil {
 		return false
 	}
-	if err := d.WriteByte(off, orig); err != nil {
+	if err := d.WriteByteAt(off, orig); err != nil {
 		return false
 	}
 	return true

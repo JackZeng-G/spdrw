@@ -34,8 +34,8 @@ type WriteOp struct {
 func NewFake() *FakeTransport {
 	return &FakeTransport{
 		ProtectedFrom: -1,
-		Ctrl:   Controller{Kind: KindI801, Index: 0, IOBase: 0xEFA0, Name: "Fake"},
-		EEProm: make([]byte, 1024),
+		Ctrl:          Controller{Kind: KindI801, Index: 0, IOBase: 0xEFA0, Name: "Fake"},
+		EEProm:        make([]byte, 1024),
 	}
 }
 

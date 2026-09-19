@@ -11,12 +11,12 @@ import (
 
 // 模块公开的 ioctl 函数名(PawnIO.Modules DEFINE_IOCTL)。
 const (
-	fnSmbusXfer        = "ioctl_smbus_xfer"
-	fnIdentity         = "ioctl_identity"
-	fnWriteProtection  = "ioctl_write_protection"
-	fnPiix4PortSel     = "ioctl_piix4_port_sel"
-	fnSmbusIndex       = "ioctl_smbus_index"
-	fnSetSleepMode     = "ioctl_set_sleep_mode"
+	fnSmbusXfer       = "ioctl_smbus_xfer"
+	fnIdentity        = "ioctl_identity"
+	fnWriteProtection = "ioctl_write_protection"
+	fnPiix4PortSel    = "ioctl_piix4_port_sel"
+	fnSmbusIndex      = "ioctl_smbus_index"
+	fnSetSleepMode    = "ioctl_set_sleep_mode"
 )
 
 // SleepMode AlwaysSleep: 模块在长等待时真正休眠,降低 CPU 占用(OpenRGB 同款默认)。
@@ -133,7 +133,6 @@ func decodeName(v uint64) string {
 }
 
 func (p *pawnioTransport) Identity() (Controller, error) { return p.ctrl, nil }
-
 
 func (p *pawnioTransport) xfer(addr byte, write bool, cmd byte, proto byte, data []byte, wantOut bool) ([]uint64, error) {
 	in := MarshalXfer(addr, write, cmd, proto, data)

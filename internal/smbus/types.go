@@ -18,13 +18,13 @@ const (
 
 // Controller 描述一个可用的 SMBus 总线。
 type Controller struct {
-	Kind     ControllerKind
-	Index    int    // AMD 端口号(0/1) 或 SKX IMC 序号(0/1); i801 恒为 0
-	IOBase   uint32 // 控制器 IO 基址(标识用)
-	PCIIDs   uint64 // vendor|dev<<16|subsysvend<<32|subsysdev<<48
-	Name     string // 人类可读名称
-	NoSpdWp  bool   // true = BIOS 未开启 SPD 写禁止(可写); 由 i801 ioctl_write_protection 提供
-	WpKnown  bool   // i801 才能得知写禁止位
+	Kind    ControllerKind
+	Index   int    // AMD 端口号(0/1) 或 SKX IMC 序号(0/1); i801 恒为 0
+	IOBase  uint32 // 控制器 IO 基址(标识用)
+	PCIIDs  uint64 // vendor|dev<<16|subsysvend<<32|subsysdev<<48
+	Name    string // 人类可读名称
+	NoSpdWp bool   // true = BIOS 未开启 SPD 写禁止(可写); 由 i801 ioctl_write_protection 提供
+	WpKnown bool   // i801 才能得知写禁止位
 }
 
 func (c Controller) String() string {

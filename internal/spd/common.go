@@ -15,22 +15,22 @@ var idcodesFS embed.FS
 type RamType byte
 
 const (
-	Unknown      RamType = 0x00
-	SDRAM        RamType = 0x04
-	DDR          RamType = 0x07
-	DDR2         RamType = 0x08
-	DDR2FBDIMM   RamType = 0x09
-	DDR2FBDIMMP  RamType = 0x0A
-	DDR3         RamType = 0x0B
-	DDR4         RamType = 0x0C
-	LPDDR3       RamType = 0x0F
-	DDR4E        RamType = 0x0E
-	LPDDR4       RamType = 0x10
-	LPDDR4X      RamType = 0x11
-	DDR5         RamType = 0x12
-	LPDDR5       RamType = 0x13
-	DDR5NVDIMMP  RamType = 0x14
-	LPDDR5X      RamType = 0x15
+	Unknown     RamType = 0x00
+	SDRAM       RamType = 0x04
+	DDR         RamType = 0x07
+	DDR2        RamType = 0x08
+	DDR2FBDIMM  RamType = 0x09
+	DDR2FBDIMMP RamType = 0x0A
+	DDR3        RamType = 0x0B
+	DDR4        RamType = 0x0C
+	LPDDR3      RamType = 0x0F
+	DDR4E       RamType = 0x0E
+	LPDDR4      RamType = 0x10
+	LPDDR4X     RamType = 0x11
+	DDR5        RamType = 0x12
+	LPDDR5      RamType = 0x13
+	DDR5NVDIMMP RamType = 0x14
+	LPDDR5X     RamType = 0x15
 )
 
 var ramTypeNames = map[RamType]string{

@@ -14,7 +14,7 @@ func TestMarshalXfer(t *testing.T) {
 		cmd   byte
 		proto byte
 		data  []byte
-		want [][2]uint64 // {索引, 期望值} 对
+		want  [][2]uint64 // {索引, 期望值} 对
 	}{
 		{"quick-read", 0x50, false, 0, ProtoQuick, nil, [][2]uint64{{0, 0x50}, {1, uint64(FlagRead)}}},
 		{"quick-write-spa0", 0x36, true, 0, ProtoQuick, nil, [][2]uint64{{0, 0x36}, {1, uint64(FlagWrite)}}},
