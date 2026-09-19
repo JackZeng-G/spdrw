@@ -15,9 +15,9 @@ type FakeTransport struct {
 	WriteLog []WriteOp
 	// Present 决定哪些地址在 Quick 探测时 ACK; 为 nil 时全部 ACK。
 	Present map[byte]bool
-	// ReadOnly 模拟块级写保护: 被写入的字节若原值不同则丢弃(写测试会失败)。
-	ReadOnly bool
-	Closed   bool
+	// ProtectedFrom >= 0 时模拟写保护: 对该偏移及以上的写操作 NACK(真实 EE1004 行为)。
+	ProtectedFrom int
+	Closed        bool
 }
 
 type QuickOp struct {
@@ -33,12 +33,13 @@ type WriteOp struct {
 
 func NewFake() *FakeTransport {
 	return &FakeTransport{
+		ProtectedFrom: -1,
 		Ctrl:   Controller{Kind: KindI801, Index: 0, IOBase: 0xEFA0, Name: "Fake"},
 		EEProm: make([]byte, 1024),
 	}
 }
 
-func (f *FakeTransport) fill(v byte) {
+func (f *FakeTransport) Fill(v byte) {
 	for i := range f.EEProm {
 		f.EEProm[i] = v
 	}
@@ -60,7 +61,10 @@ func (f *FakeTransport) Quick(addr byte, write bool) error {
 func (f *FakeTransport) ReadByteData(addr byte, cmd byte) (byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	if cmd >= uint8(len(f.EEProm)) {
+	if f.Present != nil && !f.Present[addr] {
+		return 0, fmt.Errorf("设备无响应 NACK(0xC000000E)")
+	}
+	if int(cmd) >= len(f.EEProm) {
 		return 0, fmt.Errorf("越界 %#x", cmd)
 	}
 	return f.EEProm[cmd], nil
@@ -69,10 +73,11 @@ func (f *FakeTransport) ReadByteData(addr byte, cmd byte) (byte, error) {
 func (f *FakeTransport) WriteByteData(addr byte, cmd byte, val byte) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.WriteLog = append(f.WriteLog, WriteOp{Addr: addr, Cmd: cmd, Val: val})
-	if f.ReadOnly && f.EEProm[cmd] != val {
-		return nil // 写保护: 静默丢弃
+	if f.ProtectedFrom >= 0 && int(cmd) >= f.ProtectedFrom {
+		f.WriteLog = append(f.WriteLog, WriteOp{Addr: addr, Cmd: cmd, Val: val})
+		return fmt.Errorf("设备无响应 NACK(0xC000000E)")
 	}
+	f.WriteLog = append(f.WriteLog, WriteOp{Addr: addr, Cmd: cmd, Val: val})
 	f.EEProm[cmd] = val
 	return nil
 }
