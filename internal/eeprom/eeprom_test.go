@@ -2,6 +2,7 @@ package eeprom
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -1015,5 +1016,69 @@ func TestSetPageDoesNotBlindWriteMR11(t *testing.T) {
 		if w.Cmd == 11 {
 			t.Fatalf("不应盲写 MR11(实际写入 %#x)", w.Val)
 		}
+	}
+}
+
+// flakyWriteTransport 只把前 failWrites 次 byte-data 写换成非 NACK 的总线错误,
+// 其余事务全部转发 —— 用于验证 WriteTest 在"写是否生效未知"时会尽力还原。
+type flakyWriteTransport struct {
+	inner      smbus.Transport
+	failWrites int
+}
+
+func (t *flakyWriteTransport) Identity() (smbus.Controller, error) { return t.inner.Identity() }
+func (t *flakyWriteTransport) Quick(a byte, w bool) error          { return t.inner.Quick(a, w) }
+func (t *flakyWriteTransport) ReadByteData(a byte, c byte) (byte, error) {
+	return t.inner.ReadByteData(a, c)
+}
+func (t *flakyWriteTransport) WriteByteData(a byte, c byte, v byte) error {
+	if t.failWrites > 0 {
+		t.failWrites--
+		return fmt.Errorf("SMBus 操作失败(0x%08X)", 0xC0000000) // 非 NACK 的总线错误
+	}
+	return t.inner.WriteByteData(a, c, v)
+}
+func (t *flakyWriteTransport) WriteByteNoData(a byte) error { return t.inner.WriteByteNoData(a) }
+func (t *flakyWriteTransport) ReadBlockData(a byte, c byte) ([]byte, error) {
+	return t.inner.ReadBlockData(a, c)
+}
+func (t *flakyWriteTransport) WriteBlockData(a byte, c byte, d []byte) error {
+	return t.inner.WriteBlockData(a, c, d)
+}
+func (t *flakyWriteTransport) ReadWordData(a byte, c byte) (uint16, error) {
+	return t.inner.ReadWordData(a, c)
+}
+func (t *flakyWriteTransport) Close() error { return t.inner.Close() }
+
+// 写测试遇到非 NACK 错误时不能直接放弃: 写是否生效未知, 必须尽力还原原值
+// (审计 M6: 旧实现此时字节可能停在取反值上且无人知晓)。
+func TestWriteTestRestoresOnNonNACKError(t *testing.T) {
+	ft0 := smbus.NewFake()
+	d := make([]byte, 512)
+	d[2] = 0x0C
+	for i := range d {
+		d[i] = 0x11
+	}
+	copy(ft0.EEProm, d)
+	ft := &flakyWriteTransport{inner: ft0, failWrites: 1}
+	dev, err := New(ft, 0x50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const off = 0x0F // 保留字节, 写测试专用
+	_, err = dev.WriteTest(off)
+	if err == nil {
+		t.Fatal("非 NACK 写错误应上报")
+	}
+	if !strings.Contains(err.Error(), "已还原并确认") {
+		t.Fatalf("错误信息应说明原值已还原: %v", err)
+	}
+	// 设备该字节必须还是原值
+	got, err := dev.ReadOneByte(off)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 0x11 {
+		t.Fatalf("@%#x = %#x, want 0x11(原值)", off, got)
 	}
 }

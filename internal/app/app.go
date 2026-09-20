@@ -2,7 +2,6 @@
 package app
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -50,9 +49,6 @@ func (a *App) LogVersion() {
 	a.logf("SPD Reader Writer (Go) build %s · %s", BuildHash, BuildAuthor)
 }
 
-// SetContext 由 main.go 在 OnStartup 注入 Wails 运行时上下文。
-func (a *App) SetContext(ctx context.Context) { a.wctx = ctx }
-
 // App 持有全部状态; 方法绑定到前端(Wails)。
 type App struct {
 	mu sync.Mutex
@@ -86,9 +82,6 @@ type App struct {
 	editor         *spd.Editor
 	editSource     string
 	editFromDevice bool
-
-	// wctx 是 Wails 运行时上下文(OnStartup 注入), 对话框等运行时能力用。
-	wctx context.Context
 
 	// Emit 由 main.go 注入(wailsjs runtime events); tests 置 nil。
 	Emit func(event string, data ...interface{})
@@ -764,7 +757,11 @@ func (a *App) Decode(dump []byte) (*DecodeResult, error) {
 }
 
 // Close 释放全部传输。
-func (a *App) Close() {
+// Shutdown 释放设备与全部传输(main.go OnShutdown 调用)。
+// Wails v2 会把绑定结构体的全部导出方法都暴露给 JS, 没有方法级黑名单,
+// 这里只能靠命名自明: 页面脚本不该调它(自身的 app.js 从不调用);
+// 之前叫 Close 语义模糊, 像是"关窗口"的常规 API, 容易误触。
+func (a *App) Shutdown() {
 	defer a.lockOp()()
 	a.mu.Lock()
 	defer a.mu.Unlock()

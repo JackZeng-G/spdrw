@@ -978,9 +978,16 @@ func (d *Device) WriteTest(off uint16) (bool, error) {
 
 	if err := d.WriteByteAt(off, flipped); err != nil {
 		if isNACK(err) {
-			return false, nil // 设备拒绝写入 → 受保护
+			return false, nil // 设备拒绝写入 → 受保护(NACK = 一个字节都没写进去)
 		}
-		return false, fmt.Errorf("写测试写入 %#x: %w", off, err)
+		// 非 NACK 错误(超时/总线异常): 写是否生效**未知**, 不能假定没写进去 ——
+		// 尽力把原值写回并回读确认, 失败也要在错误信息里交代清楚(审计 M6:
+		// 旧实现在这里直接返回错误, 字节可能停在取反值上无人知晓)。
+		if ok, rerr := d.restoreByte(off, orig); !ok {
+			return false, fmt.Errorf("写测试写入 %#x 失败(%v), 且还原也失败(%v): 该字节可能停在取反值 %#x, 请立即用备份恢复",
+				off, err, rerr, flipped)
+		}
+		return false, fmt.Errorf("写测试写入 %#x: %w(原值 %#x 已还原并确认)", off, err, orig)
 	}
 
 	// 确认写是否真的生效: 有的 HUB/颗粒会静默忽略受保护块的写(不 NACK)。

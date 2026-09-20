@@ -502,7 +502,7 @@ func TestCloseDevice(t *testing.T) {
 	if _, err := a.Dump(); err == nil {
 		t.Fatal("CloseDevice 后 Dump 应报错")
 	}
-	a.Close()
+	a.Shutdown()
 }
 
 // ---------------- 编辑器服务层 ----------------
@@ -649,6 +649,40 @@ func TestEditorApplyToDevice(t *testing.T) {
 		t.Fatalf("写入后 CRC 应通过: %v %v", ok, err)
 	}
 	_ = f
+}
+
+// 编辑器内容与设备世代不符(DDR4 文件 → DDR3 设备)必须在备份/写保护探测**之前**被拦
+// (审计 M2: 旧实现先做真实写探测再在预检里报错, 探测本身有 8 次 NVM 写风险)。
+func TestEditorApplyRejectsWrongGenerationBeforeBackup(t *testing.T) {
+	a, _ := newWriteTestApp(t)
+	// 设备换成 DDR3 256B, 但编辑器从 DDR4 文件载入
+	f3 := smbus.NewFake()
+	d3 := make([]byte, 256)
+	d3[2] = 0x0B
+	if _, err := spd.FixCRC(d3); err != nil {
+		t.Fatal(err)
+	}
+	copy(f3.EEProm, d3)
+	a.mu.Lock()
+	a.transports = []smbus.Transport{f3}
+	a.mu.Unlock()
+	if err := a.Connect(0); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Select(0x50); err != nil {
+		t.Fatal(err)
+	}
+	path := writeTempFile(t, ddr4Fixture())
+	if _, err := a.editLoadPath(path); err != nil {
+		t.Fatal(err)
+	}
+	before := len(f3.WriteLog)
+	if _, err := a.EditApplyToDevice(false, false, "WRITE"); err == nil {
+		t.Fatal("世代不符必须被拒")
+	}
+	if len(f3.WriteLog) != before {
+		t.Fatalf("被拒时不应有任何写事务(含备份前的写保护探测): %d 次写", len(f3.WriteLog)-before)
+	}
 }
 
 func TestEditorBlocksWriteWhenFileStale(t *testing.T) {

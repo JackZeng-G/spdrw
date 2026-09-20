@@ -36,7 +36,6 @@ func main() {
 			Theme:                windows.Dark,
 		},
 		OnStartup: func(ctx context.Context) {
-			a.SetContext(ctx)
 			// app 服务层的 log/进度事件 → Wails 前端事件
 			a.Emit = func(event string, data ...interface{}) {
 				runtime.EventsEmit(ctx, event, data...)
@@ -54,7 +53,7 @@ func main() {
 			a.LogVersion()
 		},
 		// 关窗时释放设备会话与全局 SMBus 锁(否则句柄与互斥量要等进程退出才回收)
-		OnShutdown: func(ctx context.Context) { a.Close() },
+		OnShutdown: func(ctx context.Context) { a.Shutdown() },
 		Bind: []interface{}{
 			a,
 		},

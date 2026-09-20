@@ -146,7 +146,7 @@ func StatusToError(hr uint32) error {
 func win32Err(code uint16) error {
 	switch code {
 	case 2: // ERROR_FILE_NOT_FOUND
-		return fmt.Errorf("未安装 PawnIO 或驱动未运行")
+		return fmt.Errorf("找不到 PawnIO 驱动(0x80070002): 未安装 PawnIO 或驱动未运行")
 	case 5: // ERROR_ACCESS_DENIED
 		return fmt.Errorf("访问被拒绝: 本程序需要管理员权限(SMBus 内核访问); 正常双击启动时会自动请求提权, 请确认已同意 UAC")
 	case 32: // ERROR_SHARING_VIOLATION

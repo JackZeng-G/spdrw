@@ -43,14 +43,24 @@ type pawnioTransport struct {
 // 每条总线是独立的 PawnIO 会话(与 OpenRGB 相同做法)。
 func Discover() ([]Transport, error) {
 	var result []Transport
+	// pawnioOpen/load 是**驱动层**操作, 失败与具体控制器无关(没装 PawnIO /
+	// 没提权 / 模块签名校验失败): 不再吞掉, 否则前端拿到空列表+nil,
+	// "缺少 PawnIO / 需要管理员"的针对性提示永远不会出现。
+	var openErr, loadErr error
 
 	try := func(bin string, kind ControllerKind, index int, piix4Port int, selectFn func(*pawnioSession) error) {
 		s, err := pawnioOpen()
 		if err != nil {
-			return // 该控制器不存在/不支持
+			if openErr == nil {
+				openErr = fmt.Errorf("打开 PawnIO 失败: %w", err)
+			}
+			return
 		}
 		if err := s.load(assets.MustBytes(bin)); err != nil {
 			s.close()
+			if loadErr == nil {
+				loadErr = fmt.Errorf("加载 SMBus 模块 %s 失败: %w", bin, err)
+			}
 			return
 		}
 		if err := applySleepMode(s, DefaultSleepMode); err != nil {
@@ -66,7 +76,7 @@ func Discover() ([]Transport, error) {
 		ctrl, err := readIdentity(s, kind, index)
 		if err != nil {
 			s.close()
-			return
+			return // 该控制器本机不存在, 属正常情况
 		}
 		tr := &pawnioTransport{session: s, ctrl: ctrl, piix4Port: piix4Port, lastPort: -2, sleepMode: DefaultSleepMode}
 		if hz, err := readClockHz(s); err == nil {
@@ -90,6 +100,14 @@ func Discover() ([]Transport, error) {
 		nj, _ := result[j].Identity()
 		return ni.Name < nj.Name
 	})
+	if len(result) == 0 {
+		if openErr != nil {
+			return nil, openErr
+		}
+		if loadErr != nil {
+			return nil, loadErr
+		}
+	}
 	return result, nil
 }
 

@@ -368,6 +368,11 @@ func (a *App) EditApplyToDevice(force, dryRun bool, ack string) (*WriteResult, e
 	}
 	dump := make([]byte, len(ed.Bytes()))
 	copy(dump, ed.Bytes())
+	// M2(与 WriteConfirmed 的 M1 同理): 数据不合格(长度/世代/CRC)时**先拒绝**,
+	// 不要在"注定被拒"的目标上先备份再跑写保护探测(DDR4 及更早的探测是真实写)。
+	if err := gateDump(dev, dump); err != nil {
+		return nil, fmt.Errorf("写入被拒绝: %w", err)
+	}
 	img, backup, err := a.backupIfNeeded(dev, dryRun)
 	if err != nil {
 		return nil, fmt.Errorf("写入前备份失败, 已中止: %w", err)

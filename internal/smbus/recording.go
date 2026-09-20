@@ -245,19 +245,20 @@ func (r *RecordingTransport) writeGuard(cmd byte) (int, error) {
 func (r *RecordingTransport) Identity() (Controller, error) { return r.Inner.Identity() }
 
 func (r *RecordingTransport) Quick(addr byte, write bool) error {
-	op := Op{Kind: OpQuick, Addr: addr, Write: write}
+	// 与其他方法同序: 先转发、后记录, 这样内部错误(NACK/总线)也会进 op.Err,
+	// 回放/断言看到的事务序列与真实总线一致(旧实现转发前记录, 错误永远不落记录)。
 	var err error
 	if write && r.BanQuickWrite {
 		err = fmt.Errorf("设备无响应 NACK(0xC000000E)")
+	} else {
+		err = r.Inner.Quick(addr, write)
 	}
+	op := Op{Kind: OpQuick, Addr: addr, Write: write}
 	if err != nil {
 		op.Err = err.Error()
 	}
 	r.record(op)
-	if err != nil {
-		return err
-	}
-	return r.Inner.Quick(addr, write)
+	return err
 }
 
 func (r *RecordingTransport) ReadByteData(addr byte, cmd byte) (byte, error) {

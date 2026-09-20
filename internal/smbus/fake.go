@@ -99,7 +99,9 @@ func (f *FakeTransport) Quick(addr byte, write bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.QuickLog = append(f.QuickLog, QuickOp{Addr: addr, Write: write})
-	if f.Present != nil && !f.Present[addr] && addr < 0x30 {
+	// Present 表对**全部**地址生效(0x30-0x37 的 SWP/CWP/SPA 命令也含):
+	// 旧的 addr<0x30 豁免让 0x36/0x37 永远 ACK, "SPA 无人应答"的模拟形同虚设。
+	if f.Present != nil && !f.Present[addr] {
 		return fmt.Errorf("设备无响应 NACK(0xC000000E)")
 	}
 	// DDR4 EE1004 SPA 页切换: quick 写 0x36=SPA0 / 0x37=SPA1。
