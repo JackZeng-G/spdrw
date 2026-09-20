@@ -56,6 +56,12 @@ go test ./...
 
 > ⚠️ **写 SPD 有变砖风险**: 错误内容(尤其 DDR5 PMIC/内存相关字段)可能导致无法开机。修改前务必备份 dump, 并确认校验通过。BIOS 设置里若开启了 "SPD Write Disable", 需先关闭才能写入。
 
+## 文档
+
+- **[docs/实现文档.md](docs/实现文档.md)** — 实现细节:分层架构、SMBus/DDR4/DDR5 协议语义、Wails 绑定要点、测试体系、真机调试经验(踩坑实录)
+- **[docs/验证清单.md](docs/验证清单.md)** — 真机逐项验证步骤
+- **[docs/superpowers/specs/](docs/superpowers/specs/)** — 设计文档(需求与范围)
+
 ## 架构
 
 ```
