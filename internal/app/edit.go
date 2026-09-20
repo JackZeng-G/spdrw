@@ -3,6 +3,7 @@ package app
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"spdrw/internal/eeprom"
@@ -262,8 +263,12 @@ func (a *App) EditExportDialog() (string, error) {
 	src := a.editSource
 	a.mu.Unlock()
 	name := fmt.Sprintf("spd-edited-%d.bin", ed.Size())
-	if !a.editFromDevice {
-		name = strings.TrimSuffix(strings.TrimPrefix(src, "/"), "/") + "-edited.bin"
+	if !a.editFromDevice && src != "" {
+		// 从文件来的编辑器内容: 默认文件名取原文件名(含路径会变成带目录的怪名字,
+		// Windows 上还会被当成子路径)
+		base := filepath.Base(src)
+		ext := filepath.Ext(base)
+		name = strings.TrimSuffix(base, ext) + "-edited" + ext
 	}
 	path, err := a.SaveDialog("另存编辑后的 SPD dump", name)
 	if err != nil {
