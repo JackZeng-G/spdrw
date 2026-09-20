@@ -89,6 +89,14 @@ type App struct {
 // New 构造未连接的 App。
 func New() *App { return &App{now: time.Now} }
 
+// wrapCounting 给传输套上总线计数包装(已经是计数包装则原样返回)。
+func wrapCounting(t smbus.Transport) smbus.Transport {
+	if _, ok := t.(*smbus.CountingTransport); ok {
+		return t
+	}
+	return smbus.NewCounting(t)
+}
+
 // useEnumBackends 在 Windows 上枚举 PawnIO 控制器; 非 Windows 报可读错误。
 var useEnumBackends = func() ([]smbus.Transport, error) {
 	return smbus.DiscoverBackends()
@@ -138,6 +146,10 @@ func (a *App) ListControllers() ([]ControllerInfo, error) {
 		if err != nil {
 			return nil, err
 		}
+		// 套一层事务计数: 真机验证"干跑零写入"时需要从程序里读到总线事务数
+		for i, t := range ts {
+			ts[i] = wrapCounting(t)
+		}
 		a.transports = ts
 	}
 	out := make([]ControllerInfo, 0, len(a.transports))
@@ -163,6 +175,9 @@ func (a *App) Connect(index int) error {
 		return fmt.Errorf("控制器索引 %d 越界", index)
 	}
 	a.disconnectLocked()
+	// 统一在这里套总线计数(幂等): 无论传输是枚举来的还是测试注入的,
+	// 干跑/写入都能报告"总线下发了哪些事务"。
+	a.transports[index] = wrapCounting(a.transports[index])
 	a.active = a.transports[index]
 	c, err := a.active.Identity()
 	if err != nil {
@@ -660,4 +675,52 @@ func (a *App) emit(event string, data ...interface{}) {
 	if a.Emit != nil {
 		a.Emit(event, data...)
 	}
+}
+
+// BusStats 返回当前控制器自上次 Reset 以来的总线事务计数, 外加"对 SPD NVM 的字节写"
+// 数量(按当前设备的世代判定)。真机验证干跑时用这个作为"确实没写"的证据。
+func (a *App) BusStats() (*BusStatsResult, error) {
+	a.mu.Lock()
+	dev := a.dev
+	active := a.active
+	a.mu.Unlock()
+	c, ok := active.(*smbus.CountingTransport)
+	if !ok {
+		return nil, fmt.Errorf("当前控制器没有总线计数(未连接或非枚举得到的控制器)")
+	}
+	st := c.Stats()
+	ddr5 := dev != nil && dev.IsDDR5()
+	nvm := smbus.NVMWrites(c.WriteLog(), ddr5)
+	res := &BusStatsResult{
+		Reads: st.Reads, QuickWrites: st.QuickWrites,
+		ByteDataWrites: st.ByteDataWrites, ByteWrites: st.ByteWrites,
+		NVMWrites: len(nvm),
+	}
+	if dev != nil {
+		res.Generation = dev.Generation()
+	}
+	return res, nil
+}
+
+// ResetBusStats 清零总线计数(真机验证前后各调一次即可看到本次操作的净事务数)。
+func (a *App) ResetBusStats() error {
+	a.mu.Lock()
+	active := a.active
+	a.mu.Unlock()
+	c, ok := active.(*smbus.CountingTransport)
+	if !ok {
+		return fmt.Errorf("当前控制器没有总线计数")
+	}
+	c.Reset()
+	return nil
+}
+
+// BusStatsResult 是总线事务统计。
+type BusStatsResult struct {
+	Generation     string `json:"generation"`
+	Reads          int    `json:"reads"`
+	QuickWrites    int    `json:"quickWrites"`
+	ByteDataWrites int    `json:"byteDataWrites"`
+	ByteWrites     int    `json:"byteWrites"`
+	NVMWrites      int    `json:"nvmWrites"`
 }

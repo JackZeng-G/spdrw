@@ -188,7 +188,11 @@ func (d *Device) physOffset(off uint16) (byte, byte, error) {
 	return byte(p), phys, nil
 }
 
-// Read 读取 n 字节(n 为 0 时报错)。每字节读后间隔 1ms(对齐 RAMSPDToolkit
+// ReadDelay 是逐字节读之间的间隔。默认 1ms(对齐 RAMSPDToolkit 的 SPD_IO_DELAY,
+// DDR5 HUB 对背靠背事务敏感); 测试可临时置 0 把整片读取从秒级降到毫秒级。
+var ReadDelay = time.Millisecond
+
+// Read 读取 n 字节(n 为 0 时报错)。每字节读后间隔 ReadDelay(默认 1ms, 对齐 RAMSPDToolkit
 // SPD_IO_DELAY): DDR5 HUB 对背靠背事务敏感, 连发会导致数据错位。
 func (d *Device) Read(off uint16, n int) ([]byte, error) {
 	if n <= 0 {
@@ -208,7 +212,9 @@ func (d *Device) Read(off uint16, n int) ([]byte, error) {
 			return nil, fmt.Errorf("读取 %#x 失败: %w", off+uint16(i), err)
 		}
 		out[i] = b
-		time.Sleep(time.Millisecond)
+		if ReadDelay > 0 {
+			time.Sleep(ReadDelay)
+		}
 	}
 	return out, nil
 }

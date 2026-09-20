@@ -260,3 +260,76 @@ func TestDDR5ProtectedBlockBlocksWrite(t *testing.T) {
 		t.Fatalf("受保护块被改写: %02X %02X", ft.EEProm[0x2C5], ft.EEProm[0x2C6])
 	}
 }
+
+// TestDryRunReportsZeroNVMWrites 干跑结果必须自带"零 NVM 写"的证据:
+// 真机 V2 验证时用户就是靠这行日志/这个字段来确认 SPD 没被碰过。
+func TestDryRunReportsZeroNVMWrites(t *testing.T) {
+	a, _, _ := newDDR5WriteApp(t)
+	if _, err := a.EditLoadFromDevice(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.EditSetField("xmp3.p1.tCK", "0.416"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.EditFixCRC(); err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.EditApplyToDevice(false, true, "DRYRUN")
+	if err != nil {
+		t.Fatalf("干跑: %v", err)
+	}
+	if res.NVMWrites != 0 {
+		t.Fatalf("干跑出现了 NVM 写: %d", res.NVMWrites)
+	}
+	if res.BusStats == nil {
+		t.Fatal("干跑结果应带总线统计")
+	}
+	if res.BusStats.Reads == 0 {
+		t.Fatal("统计应至少有读事务(否则说明没真正读设备)")
+	}
+	if res.BusStats.NVMWrites != 0 {
+		t.Fatalf("统计里的 NVM 写应为 0: %+v", res.BusStats)
+	}
+	if !strings.Contains(res.Message, "零写入") {
+		t.Fatalf("干跑消息应明确写出零写入: %q", res.Message)
+	}
+	// BusStats() 绑定方法也要能读到(真机验证用)
+	st, err := a.BusStats()
+	if err != nil {
+		t.Fatalf("BusStats: %v", err)
+	}
+	if st.Generation != "DDR5" || st.Reads == 0 {
+		t.Fatalf("BusStats 内容异常: %+v", st)
+	}
+	// 真实写入后 NVM 写计数应等于实际写入字节数
+	res, err = a.EditApplyToDevice(false, false, "WRITE")
+	if err != nil {
+		t.Fatalf("写入: %v", err)
+	}
+	if res.NVMWrites == 0 || res.NVMWrites != res.Written {
+		t.Fatalf("真实写入的 NVM 计数 = %d, 实际写入 %d", res.NVMWrites, res.Written)
+	}
+}
+
+// TestNVMWriteClassification 分类逻辑本身: DDR5 的 MR 寄存器/切页写不算 NVM 写。
+func TestNVMWriteClassification(t *testing.T) {
+	// DDR5: cmd bit7=1 才是 NVM
+	ops := []smbus.WriteOp{
+		{Addr: 0x50, Cmd: 11, Val: 5},   // MR11 切页
+		{Addr: 0x50, Cmd: 12, Val: 8},   // MR12 保护位图
+		{Addr: 0x50, Cmd: 0x80, Val: 1}, // NVM 页内偏移 0
+		{Addr: 0x50, Cmd: 0xC6, Val: 2}, // NVM
+	}
+	if got := smbus.NVMWrites(ops, true); len(got) != 2 {
+		t.Fatalf("DDR5 应识别 2 个 NVM 写, got %+v", got)
+	}
+	// DDR4/更早: 字节写就是 NVM 写, 但地址不在 0x50-0x57 的排除
+	ops4 := []smbus.WriteOp{
+		{Addr: 0x36, Cmd: 0, Val: 0},    // SPA0 页选择(quick 由 Quick 计数, 不在这里)
+		{Addr: 0x30, Cmd: 0, Val: 0},    // PSWP 探测
+		{Addr: 0x50, Cmd: 0x10, Val: 9}, // NVM
+	}
+	if got := smbus.NVMWrites(ops4, false); len(got) != 1 || got[0].Cmd != 0x10 {
+		t.Fatalf("DDR4 应识别 1 个 NVM 写, got %+v", got)
+	}
+}
