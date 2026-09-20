@@ -470,7 +470,7 @@ func TestManufacturerNoteForMalformedID(t *testing.T) {
 
 // TestRealDumpXMP2TimingsMatchVendorSpec 用厂商公布的 XMP 规格核对 XMP 2.0 时序解析。
 //
-// 这条测试是为了锁住一个真实缺陷: 原版 C# 把 XMP profile 里 byte+0x14 的高位 nibble
+// 这条测试是为了锁住一个真实缺陷: 上游实现 C# 把 XMP profile 里 byte+0x14 的高位 nibble
 // 位序写反了(tRAS/tRC 互换), 于是 Viper4 3200 的 tRAS 被读成 87 周期(真实 36),
 // 而 tRC 只剩低字节(12.8 周期, 真实 64)。编辑器↔解析器的交叉校验抓不到这种错 ——
 // 两边用的是同一个错误约定 —— 只有拿厂商规格做外部参照才行。

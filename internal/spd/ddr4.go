@@ -2,7 +2,7 @@ package spd
 
 import "fmt"
 
-// DDR4 解析(对照原版 DDR4.cs 逐字段移植)。
+// DDR4 解析(字段定义逐项对照上游实现 DDR4.cs)。
 
 // DDR4ModuleTypeNames 是 DDR4 byte3 BaseModuleType 名称。
 var DDR4ModuleTypeNames = map[byte]string{
@@ -220,7 +220,7 @@ func (d *DDR4SPD) Manufacturer() (string, byte, byte) {
 
 // DateCode 返回 (年, 周) BCD。
 func (d *DDR4SPD) DateCode() (year, week int) {
-	return 2000 + BCD(d.raw[323]), BCD(d.raw[324]) // 原版显示层 +2000
+	return 2000 + BCD(d.raw[323]), BCD(d.raw[324]) // 上游实现显示层 +2000
 }
 
 // SerialNumber 返回序列号 4 字节。
@@ -279,7 +279,7 @@ func (d *DDR4SPD) XMPProfiles() []XMPProfile {
 		p.TRCD = d.timing(base+0x12, base+0x2D)
 		p.TRP = d.timing(base+0x13, base+0x2C)
 		// 高位 nibble 位序与 JEDEC 一致: bits3:0 = tRAS MSN, bits7:4 = tRC MSN
-		// (原版 C# 把两者写反了, 实测会把 36 周期的 tRAS 读成 87)
+		// (上游实现 C# 把两者写反了, 实测会把 36 周期的 tRAS 读成 87)
 		p.TRAS = d.timingLong(int(uint16(d.raw[base+0x15]) | uint16(subByteR(d.raw[base+0x14], 3, 4))<<8))
 		p.TRC = Timing{
 			Medium: int(uint16(d.raw[base+0x16]) | uint16(subByteR(d.raw[base+0x14], 7, 4))<<8),
@@ -306,7 +306,7 @@ func b2i(b bool) int {
 	return 0
 }
 
-// XMPString 格式化一份 profile 为 "3200 MHz 16-18-18-38 1.35V" 形式(原版 ToString)。
+// XMPString 格式化一份 profile 为 "3200 MHz 16-18-18-38 1.35V" 形式(上游实现 ToString)。
 func XMPString(p XMPProfile, tb Timebase) string {
 	if !p.Enabled {
 		return ""

@@ -2,7 +2,7 @@ package spd
 
 import "fmt"
 
-// DDR5 解析(对照原版 DDR5.cs 移植; 原版不含时序字段,保持同范围)。
+// DDR5 解析(字段定义对照上游实现 DDR5.cs; 上游不含时序字段)。
 
 // DDR5ModuleTypeNames 是 DDR5 byte3 BaseModuleType 名称。
 var DDR5ModuleTypeNames = map[byte]string{
@@ -108,7 +108,7 @@ func (d *DDR5SPD) ChannelBusWidth() (channels, extension, primary byte) {
 	return
 }
 
-// TotalCapacityBytes 计算模块总容量(单位 GiB, 原版公式直接出 GiB)。非对称返回 0。
+// TotalCapacityBytes 计算模块总容量(单位 GiB, 上游实现公式直接出 GiB)。非对称返回 0。
 func (d *DDR5SPD) TotalCapacityBytes() uint64 {
 	asym, ranks := d.Organization()
 	if asym {
@@ -117,12 +117,12 @@ func (d *DDR5SPD) TotalCapacityBytes() uint64 {
 	channels, _, primary := d.ChannelBusWidth()
 	dies, densities := d.DensityPackages()
 	ioW := d.IOWidths()
-	ioWidth := byte(4) << ioW[0] // 原版 IoWidth 未展示容量换算,按 JEDEC: 4<<code(0→4bit... code=0→4)
+	ioWidth := byte(4) << ioW[0] // 上游实现 IoWidth 未展示容量换算,按 JEDEC: 4<<code(0→4bit... code=0→4)
 	// 损坏/保留编码防护: IO 位宽 code>=6 时 `4<<code` 截断成 0, primary/0 会 panic。
 	if ioWidth == 0 || primary == 0 || ranks == 0 {
 		return 0
 	}
-	// 原版容量公式: channels * (primary/ioWidth) * dies * densityGb/8 * ranks
+	// 上游实现容量公式: channels * (primary/ioWidth) * dies * densityGb/8 * ranks
 	return uint64(channels) * uint64(primary/ioWidth) * uint64(dies[0]) * uint64(densities[0]) / 8 * uint64(ranks)
 }
 

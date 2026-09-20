@@ -226,8 +226,8 @@ func (p *pawnioTransport) xfer(addr byte, write bool, cmd byte, proto byte, data
 		p.lastPort = p.piix4Port
 	}
 
-	// 失败自动重试(对齐原版工具的宽容时序): PawnIO 模块单次事务 64ms 硬超时,
-	// 而 DDR5 SPD5 HUB/I3C 桥在空闲后的首次访问可能更慢; 原版轮询 1000ms 所以
+	// 失败自动重试(对齐上游实现工具的宽容时序): PawnIO 模块单次事务 64ms 硬超时,
+	// 而 DDR5 SPD5 HUB/I3C 桥在空闲后的首次访问可能更慢; 上游实现轮询 1000ms 所以
 	// "慢但能读"。这里对状态错误(NACK/超时)重试, 多数 HUB 重试一次即可恢复。
 	var ret uint64
 	for attempt := 0; attempt < 3; attempt++ {
@@ -280,8 +280,8 @@ func (p *pawnioTransport) ReadByteData(addr byte, cmd byte) (byte, error) {
 	return b[0], nil
 }
 
-// eepromWriteDelay 与原版一致: 对 EEPROM 地址的写事务后固定等待 25ms
-// (EE1004/SPD5 写周期), 是原版工具"慢但稳"的关键来源之一。
+// eepromWriteDelay 与上游实现一致: 对 EEPROM 地址的写事务后固定等待 25ms
+// (EE1004/SPD5 写周期), 是上游实现工具"慢但稳"的关键来源之一。
 const eepromWriteDelay = 25 * time.Millisecond
 
 func isEepromAddr(addr byte) bool { return addr >= 0x50 && addr <= 0x57 }

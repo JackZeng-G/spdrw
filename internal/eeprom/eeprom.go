@@ -1,11 +1,12 @@
 // Package eeprom 实现 SPD EEPROM 协议层: 分页、整片读写、校验、RSWP/PSWP 写保护。
 //
-// 逻辑移植自 SPD-Reader-Writer (1a2m3) 的 Eeprom.cs, SMBus 路径;
-// 其中 DDR4 页切换由原版的 BYTE 协议修正为 JEDEC EE1004 标准的 Quick 写。
+// 分页与写保护的语义对照 SPD-Reader-Writer (1a2m3) 的 Eeprom.cs(SMBus 路径),
+// 代码为本项目独立编写;
+// 其中 DDR4 页切换由上游实现的 BYTE 协议修正为 JEDEC EE1004 标准的 Quick 写。
 //
 // 写保护语义(与真实硬件一致):
 //   - RSWP(可逆): DDR4 quick 命令 / DDR5 MR12-MR13 位; 状态经写测试或位图读取
-//   - PSWP(永久): 仅状态检测(与原版 SMBus 路径一致); 设置需硬件 HV,不在 SMBus 能力内
+//   - PSWP(永久): 仅状态检测(与上游实现 SMBus 路径一致); 设置需硬件 HV,不在 SMBus 能力内
 package eeprom
 
 import (
@@ -18,7 +19,7 @@ import (
 	"spdrw/internal/spd"
 )
 
-// DDR4 EE1004 命令设备地址(原版 EepromCommand >> 1)。
+// DDR4 EE1004 命令设备地址(上游实现 EepromCommand >> 1)。
 const (
 	spa0 = 0x36 // 选择页 0
 	spa1 = 0x37 // 选择页 1
@@ -253,7 +254,7 @@ func (d *Device) setPage(p int) error {
 		return nil
 	}
 	// DDR4 页切换: 首选 Quick 写(EE1004 SPA), 失败回退 BYTE 写
-	// (与原版一致的退化路径, 部分控制器对 Quick 支持不佳)
+	// (与上游实现一致的退化路径, 部分控制器对 Quick 支持不佳)
 	err = d.t.Quick(byte(spa0+p), true)
 	if err != nil {
 		err = d.t.WriteByteNoData(byte(spa0 + p))

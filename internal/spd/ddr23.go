@@ -2,7 +2,7 @@ package spd
 
 import "fmt"
 
-// DDR2/DDR3 基本信息解析(对照原版 DDR2.cs/DDR3.cs 的关键字段)。
+// DDR2/DDR3 基本信息解析(对照上游实现 DDR2.cs/DDR3.cs 的关键字段)。
 
 // Basic 是旧世代(DDR2/DDR3)的基本信息。
 type Basic struct {
@@ -71,7 +71,7 @@ func parseDDR3(dump []byte) (*Basic, error) {
 	b.DeviceWidth = 4 << subByteR(dump[7], 2, 3)
 	_, b.BusWidthBits = b23BusWidth(dump)
 
-	// 容量: 单 die 容量(Mb) × 总线位宽/芯片位宽 × rank (原版 TotalModuleCapacityProgrammed)
+	// 容量: 单 die 容量(Mb) × 总线位宽/芯片位宽 × rank (上游实现 TotalModuleCapacityProgrammed)
 	capPerDieMb := uint64(1) << (subByteR(dump[4], 3, 4) + 8)
 	if b.DeviceWidth == 0 || b.Ranks == 0 { // 保留编码: 位宽 code>=6 会截断成 0, 别除
 		b.BytesMib = 0
@@ -111,7 +111,7 @@ func parseDDR3(dump []byte) (*Basic, error) {
 
 // parseDDR2 解析 DDR2 SPD。
 //
-// 注意: 原版 C# 移植前的 Go 版本把 byte8(接口电压)当总线位宽、byte6(模块数据宽度)
+// 注意: 早期版本把 byte8(接口电压)当总线位宽、byte6(模块数据宽度)
 // 当芯片位宽, 容量算错。依据 JEDEC DDR2 SPD:
 // byte6 = 模块数据宽度(总线, 含 ECC 的低 4 位需屏蔽), byte13 = 芯片位宽,
 // byte63 = 校验和(sum of bytes 0-62), byte64-71 = JEP106 厂商 ID(0x7F 为续延码),

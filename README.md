@@ -2,10 +2,13 @@
 
 <img src="build/icon/appicon.png" alt="图标" width="96" align="right">
 
-SPD-Reader-Writer 的 Go 复刻版: Windows 桌面工具, 通过 **PawnIO** 内核驱动直连芯片组 SMBus, 读写内存条 SPD 并解析。
+用 Go 写的 SPD 读写工具: Windows 桌面程序, 通过 **PawnIO** 内核驱动直连芯片组 SMBus, 读取/解析/编辑/写入内存条 SPD。
 
-原版: https://github.com/1a2m3/SPD-Reader-Writer (C# WinForms + Arduino/USB 或内核驱动 SMBus)。
-本项目**去除 Arduino 串口通道**, 仅保留芯片组 SMBus 直连, 后端从 CPU-Z 驱动换成开源签名驱动 **PawnIO**(namazso, OpenRGB/LibreHardwareMonitor 同款)。
+**独立实现, 未使用上游代码。** 编码 SPD 字段与时序语义时参考了
+[1a2m3/SPD-Reader-Writer](https://github.com/1a2m3/SPD-Reader-Writer)(C# WinForms)的字段定义与操作思路,
+仅此而已: 代码、架构、构建与验证流程都是本项目自己的; 唯一从那边取用的**数据**是 JEP106 厂商表
+(见「仓库布局说明」)。本项目的范围取舍: 只走芯片组 SMBus(不做 Arduino 串口通道); 内核访问用开源签名驱动
+**PawnIO**(namazso, OpenRGB/LibreHardwareMonitor 同款), 不用 CPU-Z 驱动。
 
 ## 功能
 
@@ -108,11 +111,11 @@ go test ./internal/app/ -run TestBuiltExe -v    # 产物自检(需先构建: 前
 
 ## 仓库布局说明
 
-本仓库**自带全部可复现材料**, 不内嵌任何参考项目:
+本仓库**自带全部可复现材料**, 不含任何外部项目的代码:
 
-- 上游 SPD-Reader-Writer 只作为出处引用(见下)。JEP106 厂商表已提取为
-  `internal/spd/data/idcodes.json`, 出处与重建流程记在 `internal/spd/data/README.md`
-  (上游 URL + 取用 commit + 为什么必须拆成 15 个银行 + 三步重建命令)。
+- 参考项目 SPD-Reader-Writer(1a2m3) 只用于对照字段语义, 没有复制其代码。唯一取用的**数据**是
+  JEP106 厂商表, 已提取为 `internal/spd/data/idcodes.json`; 出处与重建流程记在
+  `internal/spd/data/README.md`(上游 URL + 取用 commit + 为什么必须拆成 15 个银行 + 三步重建命令)。
 - 第三方二进制(PawnIO 模块与 DLL)出处与许可证见 `third_party/pawnio/README.md`。
 - 真实 dump 语料(67 份)与其来源清单见 `testdata/spd/MANIFEST.md`。
 - `build/` **不全是构建产物**: `build/icon/`(图标源)与 `build/winres/`(Windows 资源与版本信息
@@ -138,7 +141,7 @@ build/icon           图标源(go run ./tools/makeicon 生成: png/ico/各尺寸
 build/winres         Windows 资源配置(图标 + 版本信息 + 版权) → rsrc_windows_amd64.syso
 tools/makeicon       纯标准库图标生成器(4 倍超采样; 16/24 用简化版)
 internal/app         GUI 服务层: 连接/扫描/读写/保护/解析编排
-internal/spd         SPD 解析: DDR4 全量 / DDR5(原版范围) / DDR2-3 基本信息 + JEP106 厂商表
+internal/spd         SPD 解析: DDR4 全量 / DDR5 / DDR2-3 基本信息 + JEP106 厂商表
 internal/eeprom      设备语义: 分页(EE1004 quick / DDR5 MR11)、RSWP/PSWP、增量写+校验
 internal/smbus       Transport 接口 + PawnIO 后端(i801/PIIX4×2/SKX×2) + 内存 Fake(测试)
 internal/assets      内嵌 PawnIO 模块(SmbusI801/SmbusPIIX4/SmbusIntelSkylakeIMC .bin)与 PawnIOLib.dll
@@ -147,20 +150,10 @@ third_party/pawnio   模块与 DLL 的来源与许可证说明(LGPL-2.1)
 
 每次 SMBus 事务持有全局互斥 `Global\Access_SMBUS.HTP.Method`(与 Thaiphoon 等工具仲裁); 每个(控制器×总线)一个 PawnIO 会话, 会话开启 AlwaysSleep 模式。
 
-## 与原版的差异
-
-| 项 | 原版 | 本项目 |
-|---|---|---|
-| 语言/UI | C# WinForms | Go + Wails v2 (WebView2) |
-| SMBus 后端 | CPU-Z 内核驱动(封禁风险) | PawnIO(开源签名) |
-| Arduino/USB 通道 | 支持 | 移除 |
-| DDR4 分页协议 | BYTE 写 0x36/0x37 | **快速命令写**(EE1004 规范行为) |
-| PSWP 设置 | 不支持(SMBus 路径) | 同样不支持, 明确提示 |
-| DDR5 解析 | 无时序字段 | 保持一致 |
-| 平台 | Windows | Windows (逻辑层跨平台可测) |
-
 ## 许可证
 
 - 本项目代码: MIT, 版权 `by jackzeng 2026`(界面顶栏与 exe 属性里都会显示)
 - PawnIO 模块与 PawnIOLib.dll: LGPL-2.1 (见 `third_party/pawnio/`)
-- JEP106 厂商识别表自原版项目(gzip 资源)提取为 `internal/spd/data/idcodes.json`
+- JEP106 厂商识别表: 从上述参考项目的 gzip 资源里提取的**数据**(非代码), 存为
+  `internal/spd/data/idcodes.json`。表本身是 JEDEC JEP106 标准的厂商名录(事实数据), 上游项目
+  为 GPL-3.0, 本项目只取用这份数据并保留了出处与取用 commit —— 详见 `internal/spd/data/README.md`

@@ -36,7 +36,7 @@ func (c Controller) String() string {
 // 语义与 Linux i2c-dev/i2c-core 一致:
 //   - Quick: SMBus Quick 事务(START+addr+R/W+STOP), 用于设备探测与 DDR4 页切换/写保护命令
 //   - ReadByte/WriteByte: SMBus Byte Data 事务(带 8 位命令/偏移)
-//   - WriteByteNoData: Byte 协议写(地址+命令字节,无数据), 原版 PSWP 检测所用
+//   - WriteByteNoData: Byte 协议写(地址+命令字节,无数据), 上游实现 PSWP 检测所用
 //   - ReadWord: SMBus Word Data 读
 type Transport interface {
 	Identity() (Controller, error)

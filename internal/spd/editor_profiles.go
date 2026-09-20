@@ -11,7 +11,7 @@ import (
 //
 // 布局来源: Intel XMP 2.0(DD4 384 起, 2×63B 槽)、JEDEC SPD5118 XMP 3.0
 // (0x280 header + 0x2C0..0x3C0 五槽)、AMD EXPO(0x340 共 128B, 与 XMP 槽 3/User1 互斥)。
-// 与开源参考实现 ec-/DDR5XMPEditor 的偏移一致。
+// 与另一个开源实现 ec-/DDR5XMPEditor 的偏移一致。
 
 const (
 	xmp2Base     = 0x180 // DDR4 XMP 2.0 header
@@ -65,7 +65,7 @@ var xmp2ProfileSpecs = []pfSpec{
 	{"tRP", "tRP", pfMedFin, 0x13, 0x2C, 0, "medium", "", 0, 0},
 	// 高位 nibble 的位序与 JEDEC DDR4 一致: byte+0x14 的 bits3:0 = tRAS MSN,
 	// bits7:4 = tRC MSN(实测 Viper4 3200 的 0x10 解释为 tRC MSN=1 时 tRAS/tRC =
-	// 36/64 周期, 与厂商规格 16-18-18-36 吻合; 按原版 C# 的相反位序会得到 87/12.8 周期)
+	// 36/64 周期, 与厂商规格 16-18-18-36 吻合; 按上游实现 C# 的相反位序会得到 87/12.8 周期)
 	{"tRAS", "tRAS", pfNib12, 0x15, 0x14, 3, "medium", "", 0, 0},
 	{"tRC", "tRC", pfNib12, 0x16, 0x14, 7, "medium", "", 0, 0},
 	// tRFC1/2/4 是 16bit **MTB 计数**(与 JEDEC 一致), 不是 ps:
@@ -234,7 +234,7 @@ func (e *Editor) expoFields() []Field {
 		out = append(out, Field{
 			Key: pre + ".enabled", Name: fmt.Sprintf("Profile %d 启用", n+1), Group: "EXPO",
 			Kind: "bool", Value: boolStr(e.dump[expoOffset+5]&(1<<bit) != 0), Offset: "0x345", Risk: "medium",
-			Note: "P2 的启用位是 bit4(参考实现 expoProfile2EnableBit), 不是 bit1",
+			Note: "P2 的启用位是 bit4(上游实现 expoProfile2EnableBit), 不是 bit1",
 		})
 		for _, sp := range expoProfileSpecs {
 			out = append(out, e.fieldFromSpec(pre+"."+sp.Suffix, sp, pb, fmt.Sprintf("EXPO P%d", n+1), "EXPO"))
@@ -299,7 +299,7 @@ func (e *Editor) fieldFromSpec(key string, sp pfSpec, base int, prefix, group st
 
 // setProfileField 处理 XMP/EXPO 字段写入。
 // expoEnableBit 返回 EXPO 第 n 份 profile(0/1)的启用位。
-// 参考实现(DDR5SPDEditor): P1 = bit0, P2 = expoProfile2EnableBit = 4 —— 早期实现误用
+// 上游实现(DDR5SPDEditor): P1 = bit0, P2 = expoProfile2EnableBit = 4 —— 早期实现误用
 // bit1, 于是真实 dump(0x345=0x03)会被读成"P2 也启用", 而改 P2 的开关实际动的是 P1 的伴随位。
 func expoEnableBit(n int) (bit int) {
 	if n == 1 {

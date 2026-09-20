@@ -38,7 +38,7 @@ type DecodeResult struct {
 	DateWeek         int    `json:"dateWeek"`
 	SerialHex        string `json:"serialHex"`
 
-	// 时序(DDR4 详尽; DDR5 原版不含时序字段)
+	// 时序(DDR4 详尽; DDR5 上游实现不含时序字段)
 	HasTimings bool        `json:"hasTimings"`
 	TCK        *TimingView `json:"tck,omitempty"`
 	TAA        *TimingView `json:"taa,omitempty"`

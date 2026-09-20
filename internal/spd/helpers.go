@@ -1,6 +1,6 @@
 package spd
 
-// 位操作与共享结构(对应原版 Data.cs 的 SubByte/GetBit 与 Spd.Timing)。
+// 位操作与共享结构(对应上游实现 Data.cs 的 SubByte/GetBit 与 Spd.Timing)。
 
 // subByte 取 value 的 [offset 位起, count 位] 字段(低位优先)。
 func subByte(value byte, offset, count int) byte {
@@ -13,9 +13,9 @@ func subByte(value byte, offset, count int) byte {
 	return byte(value>>offset) & byte((1<<count)-1)
 }
 
-// subByteR 按原版 C# Data.SubByte(input, position, count) 语义取位:
+// subByteR 按上游实现 C# Data.SubByte(input, position, count) 语义取位:
 // 从 position 位起向右数 count 位, 即 [position-count+1 .. position]。
-// 移植字段时直接抄原版调用参数, 避免手工换算出错。
+// 对照字段时沿用同一套位域参数(位置/位数直接照搬文档值), 避免手工换算出错。
 func subByteR(value byte, position, count int) byte {
 	return subByte(value, position-count+1, count)
 }

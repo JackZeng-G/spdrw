@@ -12,7 +12,7 @@ import (
 //go:embed data/idcodes.json
 var idcodesFS embed.FS
 
-// RAMType 是 SPD byte2 的 DRAM 类型(值与 SPD 标准/原版一致)。
+// RAMType 是 SPD byte2 的 DRAM 类型(值与 SPD 标准/上游实现一致)。
 type RAMType byte
 
 const (
@@ -49,7 +49,7 @@ func (r RAMType) String() string {
 	return fmt.Sprintf("未知(%#x)", byte(r))
 }
 
-// SPDSize 返回该类型的 SPD 序列总大小。未知类型 256(原版同款保守值)。
+// SPDSize 返回该类型的 SPD 序列总大小。未知类型 256(上游实现同款保守值)。
 func (r RAMType) SPDSize() int {
 	switch r {
 	case DDR4, DDR4E, LPDDR3, LPDDR4, LPDDR4X:
@@ -170,7 +170,7 @@ func ManufacturerName(cont, code byte) string {
 	return ""
 }
 
-// FindManufacturer 按名(不区分大小写,完整匹配)查厂商,返回 continuation/码(含奇偶位,按原版规则补齐)。
+// FindManufacturer 按名(不区分大小写,完整匹配)查厂商,返回 continuation/码(含奇偶位,按上游实现规则补齐)。
 func FindManufacturer(name string) (cont, code byte, ok bool) {
 	_ = idcodesOnce()
 	if idcodesErr != nil {
@@ -195,7 +195,7 @@ func FindManufacturer(name string) (cont, code byte, ok bool) {
 	return 0, 0, false
 }
 
-// parityOdd 返回为使 1 的个数为奇数,MSB 是否应置 1(原版 GetParity(Odd) 语义)。
+// parityOdd 返回为使 1 的个数为奇数,MSB 是否应置 1(上游实现 GetParity(Odd) 语义)。
 func parityOdd(b byte) bool {
 	n := 0
 	for v := b; v != 0; v &= v - 1 {

@@ -283,7 +283,7 @@ func (a *App) Scan() ([]DimmInfo, error) {
 	}
 	scanOnce()
 	if len(out) == 0 {
-		// 第二遍: 总线/HUB 空闲后重试(对齐原版的宽容时序)
+		// 第二遍: 总线/HUB 空闲后重试(对齐上游实现的宽容时序)
 		time.Sleep(300 * time.Millisecond)
 		scanOnce()
 	}
