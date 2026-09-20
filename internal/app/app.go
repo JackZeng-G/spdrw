@@ -247,7 +247,38 @@ func (a *App) Dump() ([]byte, error) {
 	}
 	a.emit("dump:done", len(data))
 	a.logf("读取 %d 字节", len(data))
+	// DDR5 诊断: 关键 MR 寄存器 + NVM 前 4 字节直读, 用于定位页/NVM 访问问题
+	if a.dev.IsDDR5() {
+		a.mu.Unlock()
+		a.dumpDiagnostics()
+		a.mu.Lock()
+	}
 	return data, nil
+}
+
+// dumpDiagnostics 只读诊断: HUB 型号/页寄存器/写保护状态/NVM 窗口。
+func (a *App) dumpDiagnostics() {
+	t := a.active
+	addr := a.dev.Addr()
+	rd := func(name string, cmd byte) {
+		if b, err := t.ReadByteData(addr, cmd); err == nil {
+			a.logf("  MR %#x = %#x (%s)", cmd, b, name)
+		} else {
+			a.logf("  MR %#x 读取失败: %v", cmd, err)
+		}
+	}
+	rd("MR0 DeviceType", 0x00)
+	rd("MR11 PageReg", 0x0B)
+	rd("MR29 I2CWriteProt", 0x1D)
+	rd("MR3 LegacyMode", 0x03)
+	rd("MR48 Status", 0x30)
+	for _, c := range []byte{0x80, 0x81, 0x82, 0xFF} {
+		if b, err := t.ReadByteData(addr, c); err == nil {
+			a.logf("  NVM[%#x] = %#x", c, b)
+		} else {
+			a.logf("  NVM[%#x] 读取失败: %v", c, err)
+		}
+	}
 }
 
 // SaveDump 读取并保存到文件。

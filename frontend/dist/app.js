@@ -175,9 +175,16 @@ $("dimm-select").onchange = async () => {
 };
 
 async function doDump() {
-  const dump = await call("Dump");
-  currentDump = Array.from(dump);
-  renderHex(currentDump);
+  let dump = await call("Dump");
+  // Wails v2 将 Go []byte 序列化为 base64 字符串; 保持 base64 形态传递,
+  // 渲染/展示时再解码。
+  if (typeof dump === "string") {
+    currentDump = dump;
+  } else {
+    // 兜底(测试注入 Uint8Array 等): 转成 base64
+    currentDump = btoa(String.fromCharCode(...dump));
+  }
+  renderHexB64(currentDump);
   enableOps(true);
   await decodeCurrent();
 }
@@ -201,6 +208,13 @@ $("btn-scan").onclick = async () => {
 $("btn-dump").onclick = () => doDump().catch((e) => addLog("", "读取失败: " + e));
 
 // ---------- 十六进制视图 ----------
+function renderHexB64(b64) {
+  const bin = atob(b64);
+  const dump = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) dump[i] = bin.charCodeAt(i);
+  renderHex(dump);
+}
+
 function renderHex(dump) {
   const grid = $("hexgrid");
   $("hex-meta").textContent = `${dump.length} 字节`;
@@ -224,7 +238,7 @@ function renderHex(dump) {
 async function decodeCurrent() {
   if (!currentDump) return;
   try {
-    const r = await call("Decode", currentDump);
+    const r = await call("Decode", currentDump); // base64 string → Go []byte
     renderInfo(r);
   } catch (e) {
     $("info-body").innerHTML = `<div class="placeholder">解析失败: ${escapeHtml(String(e))}</div>`;
@@ -297,9 +311,8 @@ $("btn-load-decode").onclick = () => pickFile(async (path) => {
   try {
     const r = await call("DecodeFile", path);
     renderInfo(r);
-    const dump = await call("ReadFileBytes", path);
-    currentDump = Array.from(dump);
-    renderHex(currentDump);
+    currentDump = await call("ReadFileBytes", path); // base64 string
+    renderHexB64(currentDump);
     addLog("", "已解析 " + path);
   } catch (e) { addLog("", "解析失败: " + e); }
 });
