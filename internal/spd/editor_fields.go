@@ -115,7 +115,58 @@ func (e *Editor) Fields() []Field {
 		out = append(out, f)
 	}
 	out = append(out, e.profileFields()...)
-	return out
+	return markPrimary(out)
+}
+
+// primarySuffix 是"常用/关键"字段的 key 末段(如 ddr5.tAA → tAA、xmp3.p1.tCK → tCK)。
+// 其余字段仍然可编辑, 只是默认收在"显示全部"后面 —— 一次铺满几十行没人看得下去。
+var primarySuffix = map[string]bool{
+	// 常用信息(无点号的 key 一律 primary, 见 markPrimary)
+	"present": true, "version": true,
+	// 时序
+	"tCK": true, "tCKAVGmin": true, "tCKAVGmax": true, "tCKmin": true, "tCKmax": true,
+	"tAA": true, "tRCD": true, "tRP": true, "tRAS": true, "tRC": true, "tWR": true,
+	"tRFC": true, "tRFC1": true, "tRFC2": true, "tRFCsb": true, "tRFC4": true,
+	"tRRD_L": true, "tCCD_L": true, "tFAW": true, "tRTP": true,
+	// 电压与 CL 掩码
+	"vdd": true, "vddq": true, "vpp": true, "cl": true,
+}
+
+// markPrimary 给字段打"常用"标记:
+//   - 常用信息整组;
+//   - 时序/电压/CL 等关键字段(见 primarySuffix);
+//   - XMP/EXPO 的"是否存在/启用位/名称"以及**第 1 份 profile** 的关键字段
+//     (第 2..5 份 profile 收在"显示全部"后面 —— 五份 profile 一次铺出来是上百行)。
+func markPrimary(fields []Field) []Field {
+	for i := range fields {
+		f := &fields[i]
+		if f.Group == "常用信息" {
+			f.Primary = true
+			continue
+		}
+		segs := strings.Split(f.Key, ".")
+		base := segs[len(segs)-1]
+		switch {
+		case strings.HasPrefix(base, "enabled"), strings.HasPrefix(base, "name"),
+			base == "present", base == "version":
+			f.Primary = true
+		case profileSegIndex(segs) > 1:
+			// 第 2..5 份 profile: 默认收起
+		case primarySuffix[base]:
+			f.Primary = true
+		}
+	}
+	return fields
+}
+
+// profileSegIndex 从 key 里取出 profile 序号(p1 → 1; 没有 profile 段 → 0)。
+func profileSegIndex(segs []string) int {
+	for _, s := range segs {
+		if len(s) == 2 && s[0] == 'p' && s[1] >= '1' && s[1] <= '9' {
+			return int(s[1] - '0')
+		}
+	}
+	return 0
 }
 
 func (e *Editor) identityFields() []Field {

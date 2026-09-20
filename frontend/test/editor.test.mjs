@@ -8,9 +8,11 @@ const state = {
   dirty: false, changeCount: 0, crcOk: true, canWrite: true,
 };
 const fields = [
-  { key: "partNumber", name: "部件号", group: "常用信息", kind: "string", value: "TEST16GB-DDR4-3200", offset: "0x149-20B", risk: "low" },
-  { key: "serial", name: "序列号(hex)", group: "常用信息", kind: "hex", value: "DEADBEEF", offset: "0x145-4B", risk: "low" },
-  { key: "ddr4.tAA", name: "tAA", group: "JEDEC 时序", kind: "float", unit: "ns", value: "1.5", offset: "0x18/0x7B", risk: "medium" },
+  { key: "partNumber", name: "部件号", group: "常用信息", kind: "string", value: "TEST16GB-DDR4-3200", offset: "0x149-20B", risk: "low", primary: true },
+  { key: "serial", name: "序列号(hex)", group: "常用信息", kind: "hex", value: "DEADBEEF", offset: "0x145-4B", risk: "low", primary: true },
+  { key: "ddr4.tAA", name: "tAA", group: "JEDEC 时序", kind: "float", unit: "ns", value: "1.5", offset: "0x18/0x7B", risk: "medium", primary: true },
+  // 非常用字段: 默认收起, 勾"显示全部字段"后才出现
+  { key: "ddr4.tCCD_L_WR2", name: "tCCD_L_WR2", group: "JEDEC 时序", kind: "float", unit: "ns", value: "8", offset: "0x50", risk: "medium" },
 ];
 const diffDirty = {
   changes: [{ offset: 325, old: 0xde, new: 0x11, field: "序列号", risk: "low" }],
@@ -48,6 +50,7 @@ test("编辑器: 标签页切换与从设备载入", async () => {
   assert.ok(calls.some((c) => c.name === "EditFields"), "载入后应拉字段");
   assert.match(el("edit-state").textContent, /设备 0x50/);
   assert.match(el("edit-fields").html(), /部件号/);
+  assert.match(el("edit-field-count").textContent, /常用 \d+ \/ \d+ 个字段/, "应显示常用/全部字段数");
   assert.equal(el("btn-edit-write").disabled, false, "CRC 通过且有变更时应可写入");
 });
 
@@ -62,6 +65,7 @@ test("编辑器: 分组切换(JEDEC 时序/常用信息分开渲染)", async () 
   const names = tabs.map((t) => t.textContent).join("|");
   assert.match(names, /常用信息/);
   assert.match(names, /JEDEC 时序/);
+  assert.match(names, /\(\d+\/\d+\)/, "分组按钮应带 常用/全部 计数");
   // 切到 JEDEC 分组后应渲染 tAA 输入框
   const jedec = tabs.find((t) => t.textContent.includes("JEDEC"));
   jedec.onclick();
@@ -78,7 +82,7 @@ test("编辑器: 左侧 hex 点击可就地改字节(十六进制解析)", async
   await el("btn-edit-load-dev").onclick();
   await flush();
   assert.match(el("hexgrid").innerHTML, /data-off="260"/, "hex 视图的字节应带 data-off(可点击)");
-  assert.match(el("hex-hint").textContent, /点击/, "应提示左侧 hex 可直接修改");
+  assert.match(el("hexgrid").innerHTML, /colhead/, "hex 视图应有列头(00..0F)");
 
   // 每次提交后 hex 视图会整体重绘, 所以要重新取格子(与真实点击一致)
   const findTarget = () =>
@@ -237,32 +241,25 @@ test("编辑器: CRC 不通过时禁止写入", async () => {
   assert.match(el("edit-diff").innerHTML, /CRC 不通过/);
 });
 
-test("编辑器: 未勾选备份拒绝写入; 干跑走 DRYRUN", async () => {
-  const { el, calls, alerts } = setup();
+test("写入设备: 不再需要勾备份/干跑, 只需确认串(自动备份)", async () => {
+  const { el, calls } = setup();
   await flush();
   el("tab-edit").onclick();
   await el("btn-edit-load-dev").onclick();
   await flush();
 
-  el("chk-edit-backup").checked = false;
+  // 界面上已没有"我已另有备份"与"干跑"控件(查询返回空壳元素: className 为空)
+  assert.equal(el("chk-edit-backup").className, "", "备份勾选应已移除(每次自动备份)");
+  assert.equal(el("chk-edit-dryrun").className, "", "干跑勾选应已移除");
+
   el("inp-edit-ack").value = "WRITE";
   await el("btn-edit-write").onclick();
   await flush();
-  assert.equal(calls.some((c) => c.name === "EditApplyToDevice"), false, "未备份不得写入");
-  assert.equal(alerts.length, 1);
-
-  // 干跑
-  el("chk-edit-dryrun").checked = true;
-  el("chk-edit-dryrun").onchange();
-  assert.equal(el("inp-edit-ack").placeholder, "DRYRUN");
-  el("inp-edit-ack").value = "DRYRUN";
-  await el("btn-edit-write").onclick();
-  await flush();
   const call = calls.find((c) => c.name === "EditApplyToDevice");
-  assert.ok(call);
-  assert.deepEqual([...call.args], [false, true, "DRYRUN"]);
+  assert.ok(call, "应调用 EditApplyToDevice");
+  assert.deepEqual([...call.args], [false, false, "WRITE"]);
+  assert.equal(el("inp-edit-ack").placeholder, "WRITE");
 });
-
 
 test("编辑器: 写入失败后自动重读设备(回滚结果只有重读才知道)", async () => {
   const { el, calls } = setup({
@@ -285,28 +282,45 @@ test("编辑器: 写入失败后自动重读设备(回滚结果只有重读才�
   assert.match(el("log").text(), /设备当前实际内容/, "要说明左侧现在显示的是设备内容");
 });
 
-test("与设备比对: 重新读取并逐字节比较(写入后的独立校验)", async () => {
-  let same = false;
+test("写入成功后自动复核(不需要用户手点)", async () => {
+  let verified = false;
   const { el, calls } = setup({
-    EditVerifyFile: () => same
-      ? { changes: [], fields: [], highRisk: 0, crcFields: 0, changeCount: 0, crcOk: true, truncated: false }
-      : { changes: [{ offset: 325, old: 0x01, new: 0xAB, field: "与设备不一致", risk: "medium" }], fields: [], highRisk: 0, crcFields: 0, changeCount: 1, crcOk: true, truncated: false },
+    EditVerifyFile: () => {
+      verified = true;
+      return { changes: [], fields: [], highRisk: 0, crcFields: 0, changeCount: 0, crcOk: true, truncated: false };
+    },
   });
   await flush();
   el("tab-edit").onclick();
   await el("btn-edit-load-dev").onclick();
   await flush();
 
-  await el("btn-edit-verify-dev").onclick();
+  el("inp-edit-ack").value = "WRITE";
+  await el("btn-edit-write").onclick();
   await flush();
-  assert.ok(calls.some((c) => c.name === "EditVerifyFile"), "应调用 EditVerifyFile");
-  assert.match(el("edit-diff").innerHTML, /0x145/, "不一致的偏移要显示出来");
-  assert.match(el("log").text(), /比对/);
-
-  same = true;
-  await el("btn-edit-verify-dev").onclick();
-  await flush();
+  assert.ok(calls.some((c) => c.name === "EditApplyToDevice"), "应先写入");
+  assert.ok(verified, "写入成功后必须自动复核(调用 EditVerifyFile)");
+  assert.match(el("log").text(), /自动复核通过/, "复核结果要写进日志");
   assert.match(el("edit-diff").innerHTML, /逐字节一致/);
+});
+
+test("自动复核发现不一致时要显眼提示", async () => {
+  const { el } = setup({
+    EditVerifyFile: () => ({
+      changes: [{ offset: 0x208, old: 0x00, new: 0x01, field: "与设备不一致", risk: "medium" }],
+      fields: [], highRisk: 0, crcFields: 0, changeCount: 1, crcOk: true, truncated: false,
+    }),
+  });
+  await flush();
+  el("tab-edit").onclick();
+  await el("btn-edit-load-dev").onclick();
+  await flush();
+  el("inp-edit-ack").value = "WRITE";
+  await el("btn-edit-write").onclick();
+  await flush();
+  assert.match(el("edit-diff").innerHTML, /不一致/);
+  assert.match(el("edit-diff").innerHTML, /0x208/);
+  assert.match(el("log").text(), /不一致/);
 });
 
 test("切换设备后前端编辑器必须复位(后端已清空, 界面不能还留着上一根条的内容)", async () => {
@@ -315,7 +329,7 @@ test("切换设备后前端编辑器必须复位(后端已清空, 界面不能�
   el("tab-edit").onclick();
   await el("btn-edit-load-dev").onclick();
   await flush();
-  assert.equal(el("btn-edit-verify-dev").disabled, false, "载入后比对按钮应可用");
+  assert.equal(el("btn-edit-fixcrc").disabled, false, "载入后重算 CRC 应可用");
   assert.match(el("edit-fields").html(), /部件号/);
 
   // 切换设备: 后端 Select 会清空编辑器
@@ -326,19 +340,7 @@ test("切换设备后前端编辑器必须复位(后端已清空, 界面不能�
   assert.ok(calls.some((c) => c.name === "Select"), "应调用 Select");
   assert.equal(el("edit-fields").html().includes("部件号"), false, "字段表单应清空");
   assert.match(el("edit-fields").html(), /先载入数据/);
-  assert.equal(el("btn-edit-verify-dev").disabled, true, "未载入时比对按钮应禁用");
   assert.equal(el("btn-edit-fixcrc").disabled, true, "未载入时重算 CRC 应禁用");
   assert.equal(el("btn-edit-write").disabled, true, "未载入时禁止写入");
   assert.match(el("log").text(), /编辑器内容已失效/, "要明确告诉用户需要重新载入");
-});
-
-test("与设备比对: 未载入时给出可读提示而不是抛后端错误", async () => {
-  const { el, calls } = setup();
-  await flush();
-  el("tab-edit").onclick();
-  // 按钮本身是禁用的; 直接调用回调也要能被拦下
-  await el("btn-edit-verify-dev").onclick();
-  await flush();
-  assert.equal(calls.some((c) => c.name === "EditVerifyFile"), false, "未载入不得调后端");
-  assert.match(el("log").text(), /载入/, "应提示先载入");
 });

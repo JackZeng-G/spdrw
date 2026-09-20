@@ -28,7 +28,17 @@
     <section id="hex-panel">
       <div class="panel-title">SPD 内容 <span id="hex-meta" class="muted"></span>
         <span id="crc-status" class="crc-badge">—</span>
-        <span id="hex-hint" class="muted small"></span></div>
+        <button id="btn-edit-fixcrc" class="mini" disabled title="按当前内容重算校验字节(CRC/校验和)">重算 CRC</button>
+        <button class="q" data-hint="hint-hex" title="说明">?</button>
+        <span class="spacer"></span>
+      </div>
+      <div id="hint-hex" class="hint hidden">
+        点击任意字节可就地修改(十六进制, 可带 0x, 回车提交 / Esc 取消)。<br>
+        改动配色: <span class="legend"><i class="sw sw-crc"></i>红底 = 影响校验(须重算 CRC)</span>
+        <span class="legend"><i class="sw sw-free"></i>蓝底 = 不影响校验(序列号/日期等)</span>
+        <span class="legend"><i class="sw sw-crcbyte"></i>黄框 = CRC 值本身</span><br>
+        改动落在校验范围内时, 右上角状态会提示"需重算 CRC"。
+      </div>
       <div id="hexgrid" class="hexgrid"><div class="placeholder">先连接控制器并扫描设备</div></div>
     </section>
 
@@ -51,75 +61,77 @@
         <input type="file" id="file-input" class="hidden">
       </div>
 
-      <div class="panel-title ops-title">总线统计</div>
-      <div class="ops bus">
-        <div id="bus-stats" class="bus-stats muted">—</div>
-        <button id="btn-bus-stats" disabled>读取总线统计</button>
-        <button id="btn-bus-reset" disabled>清零计数</button>
-        <div id="bus-tuning" class="bus-stats muted">—</div>
-        <div id="read-mode" class="bus-stats muted">—</div>
-        <div class="muted small">
-          真机验证"干跑不写盘"用: 干跑前后各读一次, <b>NVM 写</b>必须为 0。<br>
-          NVM 写 = 真正落到 SPD 内容区的字节写(读写流程必需的页选择/寄存器写不计入)。
-        </div>
-      </div>
-
-      <div class="panel-title ops-title">写保护</div>
-      <div class="ops wp">
-        <div id="wp-blocks" class="wp-blocks muted">—</div>
-        <div id="wp-summary" class="wp-summary"></div>
-        <button id="btn-wp-status" disabled>查询保护状态</button>
-        <button id="btn-wp-set" disabled class="danger">RSWP 加保护…</button>
-        <button id="btn-wp-clear" disabled>RSWP 清除</button>
-        <button id="btn-write-probe" disabled>检测写入能力(单字节, 写后还原)</button>
-        <label class="chk">确认串 <input id="inp-wp-ack" type="text" placeholder="RSWP / CLEAR" size="12" autocomplete="off"></label>
-        <div id="probe-result" class="bus-stats muted"></div>
-        <div class="muted small">
-          <b>检测写入能力</b>: 在一个空闲字节上写反值再立即还原(自动备份 + 整片复核), 用来回答
-          "这条到底能不能写" —— 如果回读仍是原值, 说明写入被平台/器件忽略(BIOS 的 SPD 写保护、
-          块保护或 WP# 引脚), 而不是工具的问题。<br>
-          加保护要输入 <b>RSWP</b>, 清除要输入 <b>CLEAR</b>;两者都会真写设备,
-          下发后程序会**回读复核**是否真的生效(EE1004 的 SWP/CWP 需要 WP 引脚 VHV, 器件可能 ACK 但忽略)。
-        </div>
-        <div class="muted small">
-          DDR5 每块 64B(MR12/MR13 位图, 置位后正常运行时不可清零, 需离线模式或断电);<br>
-          DDR4 及更早每块 128B, 无状态寄存器 → 查询会对块首做"写测试"(写入取反值再还原);<br>
-          PSWP(永久保护)只有 DDR2/DDR3 可用 SMBus 探测; DDR4/DDR5 不支持设置也不适用, 需高压编程器。
-        </div>
+      <div class="muted small" id="read-mode-wrap">
+        读取方式: <span id="read-mode" class="muted">—</span>
       </div>
       </div>
 
       <div id="view-edit" class="tabview hidden">
-        <div class="panel-title">编辑器
-          <span id="edit-state" class="muted small"></span>
+        <div class="panel-title">编辑器 <span id="edit-state" class="muted small"></span>
+          <button class="q" data-hint="hint-edit" title="说明">?</button>
+        </div>
+        <div id="hint-edit" class="hint hidden">
+          编辑只改内存副本, 不点"写入设备…"不会碰硬件。<br>
+          字段按分组显示: 默认只列常用字段, 点"显示全部"可展开全部(如五份 XMP profile)。<br>
+          写字节也可以直接在左侧 hex 里点格子改。
         </div>
         <div class="ops edit-load">
           <button id="btn-edit-load-dev" disabled>从设备载入</button>
           <button id="btn-edit-load-file" disabled>打开 dump 文件…</button>
           <button id="btn-edit-reset" disabled>放弃修改</button>
-          <button id="btn-edit-fixcrc" disabled>重算 CRC</button>
           <button id="btn-edit-export" disabled>另存为…</button>
         </div>
         <div id="edit-groups" class="edit-groups"></div>
+        <div class="edit-fields-head">
+          <label class="chk"><input type="checkbox" id="chk-edit-all"> 显示全部字段</label>
+          <span id="edit-field-count" class="muted small"></span>
+        </div>
         <div id="edit-fields" class="edit-fields"><div class="placeholder">先载入数据</div></div>
         <datalist id="mfg-list"></datalist>
 
         <div class="panel-title ops-title">变更与写入</div>
         <div class="ops edit-apply">
           <div id="edit-diff" class="edit-diff muted">—</div>
-          <div class="muted small">
-            改字节: 直接点左侧 hex 里的格子输入(十六进制, 可带 0x)。<br>
-            左侧配色区分改动是否影响校验(见右侧色块, 与格子里实际颜色一致):
-            <span class="legend"><i class="sw sw-crc"></i>红底 = 落在校验范围内, 必须点"重算 CRC"</span>
-            <span class="legend"><i class="sw sw-free"></i>蓝底 = 不在校验范围(序列号/生产日期/部件号等), CRC 仍然有效</span>
-            <span class="legend"><i class="sw sw-crcbyte"></i>黄框 = CRC 值本身</span>
-            改完记得看左侧标题旁的校验状态。
+          <div class="write-row">
+            <label class="chk">确认串 <input id="inp-edit-ack" type="text" placeholder="WRITE" size="10" autocomplete="off"></label>
+            <button id="btn-edit-write" class="danger" disabled>写入设备…</button>
           </div>
-          <label class="chk"><input type="checkbox" id="chk-edit-backup"> 我已另有备份</label>
-          <label class="chk"><input type="checkbox" id="chk-edit-dryrun"> 干跑(不写入)</label>
-          <label class="chk">确认串 <input id="inp-edit-ack" type="text" placeholder="WRITE" size="10" autocomplete="off"></label>
-          <button id="btn-edit-write" class="danger" disabled>预览并写入设备…</button>
-          <button id="btn-edit-verify-dev" disabled>与设备比对(重新读取校验)</button>
+          <button class="q" data-hint="hint-write" title="说明">?</button>
+        </div>
+        <div id="hint-write" class="hint hidden">
+          写入前程序会自动: ① 备份设备当前整片内容到 <code>~/.spdrw/backups</code>(失败即中止);
+          ② 预检长度/世代/CRC/写保护与 BIOS 写禁止; ③ 按计划只写**改动过的字节**, CRC 排最后;
+          ④ 每个字节写完立即回读 → 整片比对 → 再关掉块读/字读整片逐字节复核;
+          ⑤ 任何一步失败自动回滚到写入前内容, 并重新读设备与复核。<br>
+          确认串: 真实写入输入 <b>WRITE</b>(界面上不再需要勾"我已另有备份", 因为每次都会自动备份)。
+        </div>
+
+        <div class="panel-title ops-title">写保护</div>
+        <div class="ops wp">
+          <div id="wp-blocks" class="wp-blocks muted">—</div>
+          <div id="wp-summary" class="wp-summary"></div>
+          <div class="write-row">
+            <button id="btn-wp-status" disabled>查询保护状态</button>
+            <button id="btn-write-probe" disabled>检测写入能力</button>
+          </div>
+          <div class="write-row">
+            <label class="chk">确认串 <input id="inp-wp-ack" type="text" placeholder="RSWP / CLEAR" size="12" autocomplete="off"></label>
+            <button id="btn-wp-set" disabled class="danger">RSWP 加保护…</button>
+            <button id="btn-wp-clear" disabled>RSWP 清除</button>
+          </div>
+          <div id="probe-result" class="bus-stats muted"></div>
+          <button class="q" data-hint="hint-wp" title="说明">?</button>
+        </div>
+        <div id="hint-wp" class="hint hidden">
+          <b>查询保护状态</b>: DDR5 读 MR12/MR13 位图(不写设备); DDR4 及更早没有状态寄存器,
+          只能对块首"取反写一字节再还原"来测 —— 这类世代会先自动备份、测完整片复核。<br>
+          <b>检测写入能力</b>: 在一个空闲字节上写反值再立即还原(自动备份 + 整片复核), 回答
+          "这条到底能不能写"。回读仍是原值 = 写入被平台/器件忽略(BIOS 的 SPD 写保护、块保护
+          或 WP# 引脚), 不是工具问题。<br>
+          <b>RSWP 加保护/清除</b>: 加保护输入 <b>RSWP</b>, 清除输入 <b>CLEAR</b>;都会真写设备,
+          下发后回读复核是否生效(EE1004 的 SWP/CWP 需要 WP 引脚 VHV, 器件可能 ACK 但忽略)。
+          DDR5 每块 64B(MR12/MR13 位图); DDR4 及更早每块 128B。清除在部分平台/颗粒上需要
+          离线模式或断电。
         </div>
       </div>
     </aside>
@@ -140,9 +152,9 @@
         <summary>逐字节 diff</summary>
         <div id="write-changes" class="write-changes"></div>
       </details>
-      <label class="chk"><input type="checkbox" id="chk-backup"> 我已另有备份(写入前程序还会自动备份一份到 ~/.spdrw/backups)</label>
-      <label class="chk"><input type="checkbox" id="chk-force"> 强制模式(写入全部字节, 含相同值)</label>
-      <label class="chk"><input type="checkbox" id="chk-dryrun"> 干跑模式(只做计划与校验, 一个字节都不写)</label>
+      <div class="muted small">写入前会自动备份设备当前整片内容到 <code>~/.spdrw/backups</code>;
+        失败会自动回滚, 写完自动三层校验并重新读设备复核。</div>
+      <label class="chk"><input type="checkbox" id="chk-force"> 强制模式(写入全部字节, 含相同值;修复时才需要)</label>
       <label class="chk">确认串 <input id="inp-ack" type="text" placeholder="WRITE" autocomplete="off"></label>
       <div class="modal-actions">
         <button id="btn-write-cancel">取消</button>

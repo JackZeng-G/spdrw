@@ -24,9 +24,10 @@
   };
   const editState = { source: "设备 0x50", generation: "DDR4", size: 512, dirty: true, changeCount: 3, crcOk: true, canWrite: true, crcStale: false };
   const editFields = [
-    { key: "partNumber", name: "部件号", group: "常用信息", kind: "string", value: "TEST-PN", offset: "0x149-20B", risk: "low" },
-    { key: "serial", name: "序列号(hex)", group: "常用信息", kind: "hex", value: "DEADBEEF", offset: "0x145-4B", risk: "low" },
-    { key: "ddr4.tAA", name: "tAA", group: "JEDEC 时序", kind: "float", unit: "ns", value: "1.5", offset: "0x18/0x7B", risk: "medium" },
+    { key: "partNumber", name: "部件号", group: "常用信息", kind: "string", value: "TEST-PN", offset: "0x149-20B", risk: "low", primary: true },
+    { key: "serial", name: "序列号(hex)", group: "常用信息", kind: "hex", value: "DEADBEEF", offset: "0x145-4B", risk: "low", primary: true },
+    { key: "ddr4.tAA", name: "tAA", group: "JEDEC 时序", kind: "float", unit: "ns", value: "1.5", offset: "0x18/0x7B", risk: "medium", primary: true },
+    { key: "ddr4.tCCD_L_WR2", name: "tCCD_L_WR2", group: "JEDEC 时序", kind: "float", unit: "ns", value: "8", offset: "0x50", risk: "medium" },
   ];
   const editDiff = {
     changes: [{ offset: 325, old: 0xde, new: 0x11, field: "序列号", risk: "low" }],

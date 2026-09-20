@@ -151,10 +151,15 @@ export function makeAppStub(overrides = {}) {
 // loadApp 在最小 DOM 中加载 app.js, 返回可断言的句柄。
 export function loadApp({ appStub } = {}) {
   const els = new Map();
+  const docListeners = {};
   const document = {
     getElementById(id) { if (!els.has(id)) els.set(id, new El()); return els.get(id); },
     createElement(t) { return new El(t); },
     createTextNode(t) { const e = new El("#text"); e.textContent = t; return e; },
+    addEventListener(name, cb) { (docListeners[name] = docListeners[name] || []).push(cb); },
+    removeEventListener() {},
+    // 测试里可以手工派发点击(模拟冒泡到 document 的委托处理)
+    dispatch(name, ev) { (docListeners[name] || []).forEach((cb) => cb(ev)); },
   };
   const window = { runtime: undefined };
   const go = appStub ? { app: { App: appStub } } : undefined;

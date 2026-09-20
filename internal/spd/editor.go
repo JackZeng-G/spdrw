@@ -25,19 +25,22 @@ type EditChange struct {
 
 // Field 是一个可编辑字段(供 UI 生成表单)。
 type Field struct {
-	Key    string   `json:"key"`
-	Name   string   `json:"name"`
-	Group  string   `json:"group"`
-	Kind   string   `json:"kind"` // int / float / string / hex / bool / select
-	Unit   string   `json:"unit,omitempty"`
-	Min    float64  `json:"min,omitempty"`
-	Max    float64  `json:"max,omitempty"`
-	Step   float64  `json:"step,omitempty"`
-	Value  string   `json:"value"`
-	Offset string   `json:"offset"`
-	Risk   string   `json:"risk"`
-	Note   string   `json:"note,omitempty"`
-	Params []string `json:"params,omitempty"` // 附加参数(如 XMP profile 名/槽位)
+	Key    string  `json:"key"`
+	Name   string  `json:"name"`
+	Group  string  `json:"group"`
+	Kind   string  `json:"kind"` // int / float / string / hex / bool / select
+	Unit   string  `json:"unit,omitempty"`
+	Min    float64 `json:"min,omitempty"`
+	Max    float64 `json:"max,omitempty"`
+	Step   float64 `json:"step,omitempty"`
+	Value  string  `json:"value"`
+	Offset string  `json:"offset"`
+	Risk   string  `json:"risk"`
+	// Primary 标记"常用/关键"字段: 界面默认只显示这些, 其余收在"显示全部"后面,
+	// 免得一次铺满几十行(用户反馈: JEDEC 时序优先显示重要的)。
+	Primary bool     `json:"primary,omitempty"`
+	Note    string   `json:"note,omitempty"`
+	Params  []string `json:"params,omitempty"` // 附加参数(如 XMP profile 名/槽位)
 }
 
 // Editor 是对一份 dump 的可编辑视图。

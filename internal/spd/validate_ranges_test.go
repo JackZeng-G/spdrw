@@ -259,3 +259,63 @@ func mustType(t *testing.T, dump []byte) RamType {
 	}
 	return rt
 }
+
+// 字段优先级: "常用/关键"字段必须有标记, 且各分组里都留了默认显示的字段 ——
+// 界面默认只显示 primary, 否则一屏铺不下(用户反馈: JEDEC 时序优先显示重要的)。
+func TestFieldsMarkPrimary(t *testing.T) {
+	dumps := corpusDumps(t)
+	if len(dumps) == 0 {
+		t.Skip("无语料")
+	}
+	checked := 0
+	for name, dump := range dumps {
+		if !strings.HasPrefix(name, "ddr5") && !strings.HasPrefix(name, "ddr4") {
+			continue
+		}
+		ed, err := NewEditor(dump)
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		byGroup := map[string][2]int{} // [primary, total]
+		for _, f := range ed.Fields() {
+			c := byGroup[f.Group]
+			c[1]++
+			if f.Primary {
+				c[0]++
+			}
+			byGroup[f.Group] = c
+		}
+		for g, c := range byGroup {
+			if c[0] == 0 {
+				t.Errorf("%s: 分组 %q 没有任何常用字段(默认会显示空白)", name, g)
+			}
+			limit := 24
+			if g == "XMP 3.0" || g == "XMP 2.0" || g == "EXPO" {
+				limit = 40 // profile 组: 第一份 profile 的关键字段 + 启用位/名称
+			}
+			if c[0] > limit {
+				t.Errorf("%s: 分组 %q 常用字段过多(%d/%d), 起不到收敛作用", name, g, c[0], c[1])
+			}
+		}
+		// 关键时序必须是常用字段(仅限 JEDEC 组与第 1 份 profile: 其余 profile 默认收起)
+		for _, f := range ed.Fields() {
+			base := f.Key
+			if j := strings.LastIndex(base, "."); j >= 0 {
+				base = base[j+1:]
+			}
+			isFirstProfile := !strings.Contains(f.Key, ".p2.") && !strings.Contains(f.Key, ".p3.") &&
+				!strings.Contains(f.Key, ".p4.") && !strings.Contains(f.Key, ".p5.")
+			switch base {
+			case "tAA", "tRCD", "tRP", "tRAS", "tRC", "cl":
+				if isFirstProfile && !f.Primary {
+					t.Errorf("%s: %s(%s) 应标记为常用字段", name, f.Key, f.Name)
+				}
+			}
+		}
+		checked++
+	}
+	if checked == 0 {
+		t.Skip("无 DDR4/DDR5 语料")
+	}
+	t.Logf("字段优先级检查: %d 份 dump", checked)
+}

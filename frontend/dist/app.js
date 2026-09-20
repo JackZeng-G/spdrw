@@ -200,10 +200,9 @@ function resetEditorState() {
 // setEditLoadedUI 区分"可以载入"和"已载入可操作"两档:
 // 载入类按钮由 enableOps 控制, 操作类(放弃修改/重算 CRC/另存/与设备比对/写入)只有真载入后才可用。
 function setEditLoadedUI(loaded) {
-  ["btn-edit-reset", "btn-edit-fixcrc", "btn-edit-export", "btn-edit-verify-dev"].forEach(
+  ["btn-edit-reset", "btn-edit-fixcrc", "btn-edit-export"].forEach(
     (id) => ($(id).disabled = !loaded));
   if (!loaded) $("btn-edit-write").disabled = true;
-  $("hex-hint").textContent = loaded ? "· 点击字节就地修改(hex) · 红=改动影响校验, 蓝=不影响" : "";
 }
 
 async function doDump() {
@@ -221,7 +220,6 @@ async function doDump() {
   enableOps(true);
   await decodeCurrent();
   await refreshReadMode().catch(() => {});
-  await refreshBusTuning().catch(() => {});
   await refreshCRCStatus().catch(() => {});
 }
 
@@ -304,11 +302,11 @@ $("hexgrid").onclick = (ev) => {
 function renderHex(dump) {
   const grid = $("hexgrid");
   $("hex-meta").textContent = `${dump.length} 字节`;
-  $("hex-hint").textContent = editorLoaded
-    ? "· 点击字节就地修改(hex) · 红=改动影响校验, 蓝=不影响"
-    : "";
   grid.classList.toggle("editable", editorLoaded);
-  let html = "";
+  // 列头(00..0F): 没有它就看不出某一列对应哪个偏移
+  let html = `<div class="row head"><span class="offset">off</span>`;
+  for (let i = 0; i < 16; i++) html += `<span class="colhead">${i.toString(16).padStart(2, "0")}</span> `;
+  html += `</div>`;
   for (let off = 0; off < dump.length; off += 16) {
     let line = `<span class="offset">${off.toString(16).padStart(4, "0")}</span>`;
     let ascii = "";
@@ -556,9 +554,6 @@ $("chk-force").onchange = async () => {
   if (!writeState.path) return;
   try { await openWritePanel(writeState.path); } catch (e) { addLog("", "预检失败: " + e); }
 };
-$("chk-dryrun").onchange = () => {
-  $("inp-ack").placeholder = $("chk-dryrun").checked ? "DRYRUN" : "WRITE";
-};
 
 function closeWritePanel() {
   $("write-modal").classList.add("hidden");
@@ -618,27 +613,21 @@ function renderPreflight(pf) {
   $("write-changes").innerHTML = d;
 
   $("btn-write-go").disabled = !!pf.blocked || pf.changeCount === 0;
-  $("inp-ack").placeholder = $("chk-dryrun").checked ? "DRYRUN" : "WRITE";
+  $("inp-ack").placeholder = "WRITE";
 }
 
 $("btn-write-go").onclick = async () => {
   const pf = writeState.preflight;
   if (!pf) return;
-  const dryRun = $("chk-dryrun").checked;
+  const dryRun = false;      // 干跑已从界面移除(需要时可在后端/测试里用)
   const force = $("chk-force").checked;
   if (pf.blocked) { addLog("", "预检未通过, 已阻断: " + pf.blockReason); return; }
-  if (!dryRun && !$("chk-backup").checked) {
-    alert("请先勾选“我已另有备份”——写错 SPD 可能导致主板无法启动。");
-    return;
-  }
   try {
     const res = await call("WriteConfirmed", writeState.path, force, dryRun, $("inp-ack").value);
     addLog("", (res && res.message) || (dryRun ? "干跑完成" : "写入完成"));
     if (res && res.backupPath) addLog("", "备份: " + res.backupPath);
     closeWritePanel();
-    if (dryRun) addLog("", "干跑模式: SPD 未被改动");
-    else await doDump();
-    await refreshBusStats().catch(() => {});
+    await doDump();
     await refreshReadMode().catch(() => {});
   } catch (e) {
     addLog("", "写入失败: " + e);
@@ -658,63 +647,31 @@ async function resyncAfterFailure() {
   }
 }
 
-// ---------- 总线统计 ----------
-// 真机 V2 验证: 干跑前后各读一次计数, NVM 写必须为 0。
-$("btn-bus-stats").onclick = async () => {
-  try {
-    await refreshBusStats();
-    await refreshBusTuning();
-  } catch (e) { addLog("", "读取总线统计失败: " + e); }
-};
-$("btn-bus-reset").onclick = async () => {
-  try { await call("ResetBusStats"); addLog("", "总线计数已清零"); await refreshBusStats(); }
-  catch (e) { addLog("", "清零失败: " + e); }
-};
-
-// 总线调优: SMBus 时钟频率 + 等待模式。
-//
-// 等待模式决定读速的量级: 休眠模式下模块的每次等待都交给 Windows 线程休眠, 一个时钟
-// 中断约 15.6ms, 于是一次 2 字节读固定花 ~31ms(整片 1024 字节 = 512 次事务 ≈ 16 秒);
-// 忙等模式回到真实总线时间(396kHz 下一次约 116µs)。
-async function refreshBusTuning() {
-  try {
-    const t = await call("BusTuning");
-    if (!t) return;
-    const clock = t.clockHz ? `${(t.clockHz / 1000).toFixed(1)} kHz` : (t.clockNote || "时钟未知");
-    $("bus-tuning").innerHTML = `SMBus 时钟 <b>${escapeHtml(clock)}</b> · 等待模式 ` +
-      `<b class="${t.sleepMode === 2 ? "warn" : "ok"}">${escapeHtml(t.sleepModeName || "?")}</b>` +
-      ` · 读加速 <b>自动</b>(块读→字读→逐字节, 失败自动降级)` +
-      (t.note ? `<br><span class="warn">${escapeHtml(t.note)}</span>` : "");
-  } catch (e) { /* 未连接 */ }
-}
-
 // 读加速(块读 → 字读 → 逐字节)与等待模式(忙等 → 折中)都不再需要手动开关:
 // 程序自己按"探测可用档位 + 失败自动降级"选路, 并把实际档位/降级原因写进日志。
+
+let busTuningCache = null;
 
 async function refreshReadMode() {
   try {
     const st = await call("ReadStats");
     if (!st) return;
+    let tune = "";
+    try {
+      const t = await call("BusTuning");
+      busTuningCache = t;
+      if (t) {
+        const clock = t.clockHz ? `${(t.clockHz / 1000).toFixed(1)}kHz` : "";
+        tune = [clock, t.sleepModeName].filter(Boolean).join(" ");
+      }
+    } catch (e) { /* 未连接 */ }
     const mode = st.mode || (st.blockReadKnown ? (st.blockReadOK ? "块读加速" : "逐字节(块读不可用)") : "尚未读取");
     $("read-mode").innerHTML = `本次读取: <b>${mode}</b> · 事务 ${st.transactions} 次` +
       (st.elapsedMs ? ` · 耗时 ${(st.elapsedMs / 1000).toFixed(2)}s` : "") +
       ` · 块读 ${st.blockBytes}B / 字读 ${st.wordBytes || 0}B / 逐字节 ${st.fallbackBytes}B` +
+      (tune ? ` · ${escapeHtml(tune)}` : "") +
       (st.note ? `<br><span class="warn">${escapeHtml(st.note)}</span>` : "");
   } catch (e) { /* 未选设备 */ }
-}
-
-async function refreshBusStats() {
-  const b = await call("BusStats");
-  if (!b) throw new Error("后端未返回统计");
-  const nvm = b.nvmWrites || 0;
-  $("bus-stats").innerHTML =
-    `${escapeHtml(b.generation || "")}<br>` +
-    `读 <b>${b.reads}</b> · 页选择/命令写 <b>${(b.quickWrites || 0) + (b.byteWrites || 0)}</b> · ` +
-    `字节写 <b>${b.byteDataWrites}</b><br>` +
-    `其中 NVM 写 <b class="${nvm === 0 ? "ok" : "bad"}">${nvm}</b>`;
-  addLog("", `总线统计: 读 ${b.reads} / 页选择与命令写 ${(b.quickWrites || 0) + (b.byteWrites || 0)} / ` +
-    `字节写 ${b.byteDataWrites}(NVM ${nvm})`);
-  return b;
 }
 
 // ---------- 写保护 ----------
@@ -865,6 +822,18 @@ whenBindingsReady(() => {
 // ---------- SPD 编辑器 ----------
 let editFieldsCache = [];
 
+// 悬浮问号: 点一下展开/收起说明(不占常驻空间)
+document.addEventListener("click", (ev) => {
+  const t = ev.target;
+  if (!t || !t.getAttribute) return;
+  const id = t.getAttribute("data-hint");
+  if (!id) return;
+  const box = $(id);
+  if (box) box.classList.toggle("hidden");
+});
+
+$("chk-edit-all").onchange = () => renderEditFields();
+
 $("tab-info").onclick = () => switchTab("info");
 $("tab-edit").onclick = () => switchTab("edit");
 function switchTab(which) {
@@ -923,6 +892,7 @@ function renderEditFields() {
   if (!editFieldsCache.length) {
     box.innerHTML = `<div class="placeholder">无可编辑字段</div>`;
     tabs.innerHTML = "";
+    $("edit-field-count").textContent = "";
     return;
   }
   const groups = [];
@@ -934,32 +904,37 @@ function renderEditFields() {
   if (!editGroup || !groups.some((g) => g.name === editGroup)) {
     editGroup = groups[0].name;
   }
-  // 分组按钮(字段多时不必一次渲染全部, 也更好找)
   tabs.innerHTML = "";
   for (const g of groups) {
     const b = document.createElement("button");
-    b.textContent = `${g.name}(${g.items.length})`;
+    const primary = g.items.filter((f) => f.primary).length;
+    b.textContent = `${g.name}(${primary}/${g.items.length})`;
     b.className = g.name === editGroup ? "active" : "";
     b.onclick = () => { editGroup = g.name; renderEditFields(); };
     tabs.appendChild(b);
   }
-  let html = "";
-  for (const g of groups) {
-    if (g.name !== editGroup) continue;
-    html += `<table>`;
-    for (const f of g.items) {
-      const risk = f.risk === "high" ? "risk-high" : f.risk === "medium" ? "risk-medium" : "";
-      const kind = f.kind === "bool" ? "text" : "text";
-      const title = [f.offset, f.unit, f.note].filter(Boolean).join(" · ");
-      const list = f.key === "manufacturer" || f.key === "dramManufacturer" ? ` list="mfg-list"` : "";
-      html += `<tr title="${escapeHtml(title)}">` +
-        `<td class="${risk}">${escapeHtml(f.name)}</td>` +
-        `<td><input type="${kind}" data-key="${escapeHtml(f.key)}" value="${escapeHtml(f.value)}"${list}></td>` +
-        `<td class="act"><button data-apply="${escapeHtml(f.key)}">应用</button></td></tr>`;
-    }
-    html += `</table>`;
+  const cur = groups.find((g) => g.name === editGroup);
+  const showAll = $("chk-edit-all").checked;
+  const shown = showAll ? cur.items : cur.items.filter((f) => f.primary);
+  $("edit-field-count").textContent = showAll
+    ? `共 ${cur.items.length} 个字段`
+    : `常用 ${shown.length} / ${cur.items.length} 个字段`;
+  let html = `<div class="field-grid">`;
+  for (const f of shown) {
+    const risk = f.risk === "high" ? "risk-high" : f.risk === "medium" ? "risk-medium" : "";
+    const title = [f.offset, f.unit, f.note].filter(Boolean).join(" · ");
+    const list = f.key === "manufacturer" || f.key === "dramManufacturer" ? ` list="mfg-list"` : "";
+    html += `<div class="fitem" title="${escapeHtml(title)}">` +
+      `<label class="${risk}" for="fld-${escapeHtml(f.key)}">${escapeHtml(f.name)}</label>` +
+      `<div class="frow">` +
+      `<input id="fld-${escapeHtml(f.key)}" type="text" data-key="${escapeHtml(f.key)}" value="${escapeHtml(f.value)}"${list}>` +
+      `<button data-apply="${escapeHtml(f.key)}">应用</button>` +
+      `</div></div>`;
   }
-  // datalist 是静态元素(在 index.html 里), 这里只填选项
+  if (!shown.length) {
+    html += `<div class="placeholder">该分组没有常用字段, 勾选"显示全部字段"查看</div>`;
+  }
+  html += `</div>`;
   box.innerHTML = html;
   box.querySelectorAll("button[data-apply]").forEach((b) => {
     b.onclick = () => applyEditField(b.getAttribute("data-apply"), box);
@@ -1023,39 +998,6 @@ $("btn-edit-fixcrc").onclick = async () => {
   } catch (e) { addLog("", "重算 CRC 失败: " + e); }
 };
 
-// 与设备比对: 重新整片读取设备, 与编辑器内容逐字节比较(写入后的独立复核)。
-// 注意: 这会在真机上重读整片(本机 DDR5 约 16s), 是"写入到底成没成"的独立证据。
-$("btn-edit-verify-dev").onclick = async () => {
-  if (!editorLoaded) {
-    addLog("", '与设备比对需要先在编辑器里载入数据(点"从设备载入"或"打开 dump 文件…")');
-    return;
-  }
-  try {
-    addLog("", "正在重新读取设备并与编辑器内容比对…");
-    const d = await call("EditVerifyFile");
-    renderEditState(await call("EditState"));
-    const lines = [];
-    if (!d.changeCount) {
-      lines.push('<span class="ok">设备内容与编辑器内容逐字节一致(校验通过)</span>');
-      addLog("", "与设备比对: 逐字节一致(校验通过)");
-    } else {
-      lines.push(`<span class="danger">与设备不一致 ${d.changeCount} 处</span>`);
-      let n = 0;
-      for (const c of (d.changes || [])) {
-        if (n++ >= 8) break;
-        lines.push(`<span class="danger">0x${Number(c.offset).toString(16).toUpperCase().padStart(3, "0")}: ` +
-          `设备 ${Number(c.old).toString(16).padStart(2, "0")} ≠ 编辑器 ${Number(c.new).toString(16).padStart(2, "0")}</span>`);
-      }
-      if (d.changeCount > 8) lines.push("…");
-      addLog("", `与设备比对: 有 ${d.changeCount} 处不一致(见变更面板)`);
-    }
-    lines.push(d.crcOk ? "CRC 校验通过" : '<span class="danger">CRC 不通过</span>');
-    $("edit-diff").innerHTML = lines.join("<br>");
-  } catch (e) {
-    addLog("", "与设备比对失败: " + e);
-  }
-};
-
 $("btn-edit-export").onclick = async () => {
   try {
     const path = await call("EditExportDialog");
@@ -1102,35 +1044,52 @@ async function refreshEditDiff() {
   if (d.truncated) lines.push("(变更过多, 列表已截断)");
   $("edit-diff").innerHTML = lines.join("<br>");
   $("btn-edit-write").disabled = !d.crcOk || d.changeCount === 0;
-  $("inp-edit-ack").placeholder = $("chk-edit-dryrun").checked ? "DRYRUN" : "WRITE";
+  $("inp-edit-ack").placeholder = "WRITE";
 }
 
-$("chk-edit-dryrun").onchange = () => {
-  $("inp-edit-ack").placeholder = $("chk-edit-dryrun").checked ? "DRYRUN" : "WRITE";
-};
+
+
+// 写入设备: 界面不再需要勾"我已另有备份"(每次都会自动备份), 也不再提供干跑;
+// 确认串仍是唯一且必要的闸门(后端同样校验)。
+// 写入成功后自动做一次独立复核: 重新整片读取设备并与编辑器内容逐字节比较。
+// (写入内部已有三层校验; 这一步是"再读一遍"的独立确认, 读速修好后只要约 1 秒。)
+async function autoVerifyAfterWrite() {
+  try {
+    addLog("", "自动复核: 正在重新读取设备并与写入内容逐字节比对…");
+    const d = await call("EditVerifyFile");
+    if (!d || !d.changeCount) {
+      addLog("", "自动复核通过: 设备内容与写入内容逐字节一致");
+      $("edit-diff").innerHTML = '<span class="ok">自动复核通过: 设备内容与写入内容逐字节一致</span>';
+      return;
+    }
+    addLog("", `自动复核发现 ${d.changeCount} 处不一致(见变更面板) —— 请勿断电, 把日志发我`);
+    const lines = [`<span class="danger">自动复核: 有 ${d.changeCount} 处与写入内容不一致</span>`];
+    let n = 0;
+    for (const c of (d.changes || [])) {
+      if (n++ >= 8) break;
+      lines.push(`<span class="danger">0x${Number(c.offset).toString(16).toUpperCase().padStart(3, "0")}: ` +
+        `设备 ${Number(c.old).toString(16).padStart(2, "0")} ≠ 目标 ${Number(c.new).toString(16).padStart(2, "0")}</span>`);
+    }
+    $("edit-diff").innerHTML = lines.join("<br>");
+  } catch (e) {
+    addLog("", "自动复核失败: " + e + "(写入本身已通过三层校验)");
+  }
+}
 
 $("btn-edit-write").onclick = async () => {
-  const dryRun = $("chk-edit-dryrun").checked;
-  if (!dryRun && !$("chk-edit-backup").checked) {
-    alert("请先勾选“我已另有备份”——写错 SPD 可能导致主板无法启动。");
-    return;
-  }
+  const dryRun = false;
   try {
     const res = await call("EditApplyToDevice", false, dryRun, $("inp-edit-ack").value);
     addLog("", (res && res.message) || "写入完成");
     if (res && res.backupPath) addLog("", "备份: " + res.backupPath);
-    if (res && res.verified && !dryRun) {
-      addLog("", '已校验通过;要再独立确认一次可点"与设备比对(重新读取校验)"');
-    }
     if (!dryRun) {
+      // 写完后: 左侧显示设备实际内容, 编辑器基线也更新为设备当前内容(复用刚读的缓存),
+      // 然后自动做一次独立复核 —— 三步走完界面上的"变更"归零、复核显示逐字节一致。
       await doDump();
-      const st = await call("EditState");
-      renderEditState(st);
-      editFieldsCache = (await call("EditFields")) || [];
-      renderEditFields();
-      await refreshEditDiff();
+      await loadEditor("EditLoadFromDevice");
+      if (res && res.verified) await autoVerifyAfterWrite();
     } else {
-      addLog("", "干跑模式: SPD 未被改动");
+      await autoVerifyAfterWrite();
     }
   } catch (e) {
     addLog("", "写入失败: " + e);
@@ -1144,7 +1103,4 @@ const _origEnableOps = enableOps;
 enableOps = function (on) {
   _origEnableOps(on);
   $("btn-edit-load-dev").disabled = !on;
-  $("btn-bus-stats").disabled = !on;
-  $("btn-bus-reset").disabled = !on;
-  refreshBusTuning().catch(() => {});
 };

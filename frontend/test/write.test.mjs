@@ -70,51 +70,33 @@ test("写入: 预检阻断时禁止执行并显示原因", async () => {
   assert.match(el("write-summary").innerHTML, /高危字节 1 个/);
 });
 
-test("写入: 未勾选备份则拒绝执行(必须传确认串给后端)", async () => {
-  const { el, calls, alerts } = setup(preflightOK);
-  await flush();
-  await el("btn-write").onclick();
-  await flush();
-  el("chk-backup").checked = false;
-  el("inp-ack").value = "WRITE";
-  await el("btn-write-go").onclick();
-  await flush();
-
-  assert.equal(calls.some((c) => c.name === "WriteConfirmed"), false, "未勾选备份不得调用后端写入");
-  assert.equal(alerts.length, 1, "应弹出备份提示");
-  assert.match(alerts[0], /备份/);
-});
-
-test("写入: 勾选备份 + 确认串 → WriteConfirmed(path, force, dryRun, ack)", async () => {
+test("写入: 备份勾选已移除, 确认串仍需传给后端", async () => {
   const { el, calls } = setup(preflightOK);
   await flush();
   await el("btn-write").onclick();
   await flush();
-  el("chk-backup").checked = true;
+  // 界面不再有"我已另有备份"(每次写入都会自动备份)
+  assert.equal(el("chk-backup").className, "", "备份勾选应已移除");
+  assert.equal(el("chk-dryrun").className, "", "干跑勾选应已移除");
   el("inp-ack").value = "WRITE";
   await el("btn-write-go").onclick();
   await flush();
-
   const call = calls.find((c) => c.name === "WriteConfirmed");
   assert.ok(call, "应调用 WriteConfirmed");
   assert.deepEqual([...call.args], ["/tmp/dump.bin", false, false, "WRITE"]);
-  assert.equal(el("write-modal").classList.contains("hidden"), true, "执行后应关闭面板");
 });
 
-test("写入: 勾选干跑 → dryRun=true 且不重读设备", async () => {
+test("写入: 强制模式勾选 → force=true", async () => {
   const { el, calls } = setup(preflightOK);
   await flush();
   await el("btn-write").onclick();
   await flush();
-  el("chk-dryrun").checked = true;
-  el("chk-dryrun").onchange();
-  assert.equal(el("inp-ack").placeholder, "DRYRUN", "干跑提示确认串 DRYRUN");
-  el("inp-ack").value = "DRYRUN";
+  el("chk-force").checked = true;
+  el("inp-ack").value = "WRITE";
   await el("btn-write-go").onclick();
   await flush();
-
   const call = calls.find((c) => c.name === "WriteConfirmed");
   assert.ok(call);
-  assert.deepEqual([...call.args], ["/tmp/dump.bin", false, true, "DRYRUN"]);
-  assert.equal(calls.some((c) => c.name === "Dump"), false, "干跑后不应重读设备");
+  assert.deepEqual([...call.args], ["/tmp/dump.bin", true, false, "WRITE"]);
+  assert.equal(el("write-modal").classList.contains("hidden"), true, "执行后应关闭面板");
 });
