@@ -148,6 +148,13 @@ $("ctl-select").onchange = async () => {
 function fillDimmSelect(dimms) {
   const sel = $("dimm-select");
   sel.innerHTML = "";
+  if (dimms.length) {
+    // 默认不选中: 首项为占位, 用户手动选择后才读取
+    const ph = document.createElement("option");
+    ph.value = "-1";
+    ph.textContent = "— 请选择 —";
+    sel.appendChild(ph);
+  }
   dimms.forEach((d) => {
     const opt = document.createElement("option");
     opt.value = d.addr;
