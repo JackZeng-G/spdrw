@@ -15,6 +15,9 @@ build/*.pdb
 build/*.log
 
 # ---------- 临时文件与生成物 ----------
+# 曾被当成测试 HOME 的仓库内临时目录(Go telemetry / ~/.spdrw/backups 会落到里面);
+# 现在测试自己把 HOME 指到系统临时目录, 这里再兜一层, 免得混进提交。
+.tmphome/
 _mock.html
 *.tmp
 *.orig

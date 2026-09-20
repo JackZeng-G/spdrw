@@ -148,7 +148,7 @@ func win32Err(code uint16) error {
 	case 2: // ERROR_FILE_NOT_FOUND
 		return fmt.Errorf("未安装 PawnIO 或驱动未运行")
 	case 5: // ERROR_ACCESS_DENIED
-		return fmt.Errorf("访问被拒绝: 请以管理员身份运行")
+		return fmt.Errorf("访问被拒绝: 本程序需要管理员权限(SMBus 内核访问); 正常双击启动时会自动请求提权, 请确认已同意 UAC")
 	case 32: // ERROR_SHARING_VIOLATION
 		return fmt.Errorf("SMBus 正被其他程序占用")
 	default:

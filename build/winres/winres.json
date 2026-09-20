@@ -12,6 +12,24 @@
       ]
     }
   },
+  "RT_MANIFEST": {
+    "#1": {
+      "0804": {
+        "identity": {
+          "name": "spdrw.SPDReaderWriter",
+          "version": "0.1.0.0"
+        },
+        "description": "SPD Reader Writer (Go) - SMBus SPD 读写工具(需要管理员权限)",
+        "minimum-os": "win7",
+        "execution-level": "requireAdministrator",
+        "ui-access": false,
+        "auto-elevate": false,
+        "dpi-awareness": "permonitorv2",
+        "long-path-aware": false,
+        "use-common-controls-v6": true
+      }
+    }
+  },
   "RT_VERSION": {
     "#1": {
       "0000": {

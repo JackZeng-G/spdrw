@@ -56,7 +56,7 @@ async function checkEnv() {
     if (msg.includes("管理员") || msg.includes("0x80070005")) {
       el.textContent = "需要管理员";
       el.className = "bad";
-      setWarn("请以管理员身份运行本程序 —— SMBus 直连需要内核访问权限。");
+      setWarn("没能取得管理员权限 —— SMBus 直连需要内核访问。若启动时拒绝了 UAC 提权, 请重新运行并同意。");
     } else if (msg.includes("0x80070002") || msg.toLowerCase().includes("找不到") || msg.toLowerCase().includes("not found")) {
       el.textContent = "缺少 PawnIO";
       el.className = "bad";

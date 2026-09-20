@@ -63,6 +63,12 @@ func TestBuiltExeHasWindowsResources(t *testing.T) {
 			t.Errorf("版本信息里缺少 %q", s)
 		}
 	}
+	// 清单: 双击自动提权(requireAdministrator)与 DPI 感知都在这里面
+	for _, want := range []string{"requireAdministrator", "permonitorv2", "Microsoft.Windows.Common-Controls"} {
+		if !bytes.Contains(data, []byte(want)) {
+			t.Errorf("应用清单里缺少 %q —— 提权/DPI 感知会在构建时丢掉", want)
+		}
+	}
 	// 图标: RT_ICON 直接存 PNG 原文件, 所以 256px 的图标字节应原样出现
 	icon, err := os.ReadFile(filepath.Join("..", "..", "build", "icon", "appicon-256.png"))
 	if err != nil {

@@ -24,13 +24,19 @@ go run github.com/tc-hib/go-winres@latest make \
 go test ./internal/app/ -run TestBuiltExeHasWindowsResources -v
 ```
 
-## 两个刻意的决定
+## 清单(RT_MANIFEST): 提权与 DPI
 
-- **不带 `RT_MANIFEST`**: 加清单会改变 DPI/虚拟化行为(现有 exe 没有清单), 要动就得
-  单独验证一遍界面在高 DPI 下的表现, 不在当前范围内。
-- **不加 `requireAdministrator`**: 程序**需要**管理员权限才能碰 SMBus, 但没有把提权写进
-  清单 —— 启动时由程序自己检测 PawnIO 与权限并给出可读提示, 这样"先看界面再决定提权"
-  是可能的, 也避免每次启动都弹 UAC。
+清单是**故意加上的**, 两个要点:
+
+- **`requestedExecutionLevel = requireAdministrator`**: 这个工具没有管理员权限就碰不到
+  SMBus(读也一样), 与其让用户自己"右键 → 以管理员身份运行", 不如让 Windows 在双击时
+  弹一次 UAC。**拒绝提权就启动不了**, 这是有意的取舍。
+  想改回去: 把 `winres.json` 里 `execution-level` 改成 `as invoker` 重新生成 syso 即可。
+- **DPI 感知与 `wails build` 的模板一致**(`dpiAware=true` + `dpiAwareness=permonitorv2,system`,
+  外加 Common-Controls v6): 这样界面在高 DPI 下由 WebView2 按显示器缩放渲染, 不会糊。
+  本项目不用 wails CLI, 所以这份清单得自己带, 否则 exe 是 DPI 不感知的(整窗被位图拉伸)。
+- 程序内部仍保留"权限不足"的检测与可读提示作为兜底(例如有人手工改过清单, 或用任务计划
+  程序以低权限启动)。
 
 ## 图标本身
 
