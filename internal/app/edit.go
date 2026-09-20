@@ -1,0 +1,332 @@
+package app
+
+import (
+	"fmt"
+	"os"
+	"strings"
+
+	"spdrw/internal/eeprom"
+	"spdrw/internal/spd"
+)
+
+// SPD 编辑器的服务层。
+//
+// 编辑只发生在内存工作副本上; 写设备必须走 EditApplyToDevice(预检 + 备份 +
+// 确认串 + 可选干跑), 与文件写入共用同一套护栏。
+
+// EditState 是编辑器的当前状态(前端每次操作后刷新)。
+type EditState struct {
+	Source      string `json:"source"` // "设备 0x50" 或文件路径
+	Generation  string `json:"generation"`
+	Size        int    `json:"size"`
+	Dirty       bool   `json:"dirty"`
+	ChangeCount int    `json:"changeCount"`
+	CRCOK       bool   `json:"crcOk"`
+	CanWrite    bool   `json:"canWrite"` // 只有来自设备的编辑才能写回设备
+}
+
+// EditDiff 是编辑结果的差异视图。
+type EditDiff struct {
+	Changes       []spd.EditChange `json:"changes"`
+	Fields        []FieldChange    `json:"fields"`
+	HighRisk      int              `json:"highRisk"`
+	CRCFields     int              `json:"crcFields"`
+	ChangeCount   int              `json:"changeCount"`
+	CRCOK         bool             `json:"crcOk"`
+	Truncated     bool             `json:"truncated"`
+	PreviewBase64 string           `json:"previewBase64,omitempty"`
+}
+
+// EditLoadFromDevice 把当前选中设备的整片内容读进编辑器。
+func (a *App) EditLoadFromDevice() (*EditState, error) {
+	a.mu.Lock()
+	dev := a.dev
+	a.mu.Unlock()
+	if dev == nil {
+		return nil, fmt.Errorf("请先选择设备")
+	}
+	dump, err := dev.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+	ed, err := spd.NewEditor(dump)
+	if err != nil {
+		return nil, err
+	}
+	a.mu.Lock()
+	a.editor = ed
+	a.editSource = fmt.Sprintf("设备 %#x", dev.Addr())
+	a.editFromDevice = true
+	a.mu.Unlock()
+	a.logf("编辑器载入设备 %#x(%d 字节, %s)", dev.Addr(), len(dump), dev.Generation())
+	return a.EditState()
+}
+
+// EditLoadPath 从文件载入编辑器(用于离线修改 dump)。
+func (a *App) EditLoadPath(path string) (*EditState, error) {
+	dump, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("读取 %s: %w", path, err)
+	}
+	ed, err := spd.NewEditor(dump)
+	if err != nil {
+		return nil, err
+	}
+	a.mu.Lock()
+	a.editor = ed
+	a.editSource = path
+	a.editFromDevice = false
+	a.mu.Unlock()
+	a.logf("编辑器载入 %s(%d 字节)", path, len(dump))
+	return a.EditState()
+}
+
+// EditLoadFileDialog 通过对话框选择文件载入编辑器。
+func (a *App) EditLoadFileDialog() (*EditState, error) {
+	if err := a.dialogGuard(); err != nil {
+		return nil, err
+	}
+	path, err := a.OpenDialog("选择要编辑的 SPD dump 文件")
+	if err != nil {
+		return nil, err
+	}
+	if path == "" {
+		return nil, fmt.Errorf("已取消")
+	}
+	return a.EditLoadPath(path)
+}
+
+// EditState 返回编辑器状态。
+func (a *App) EditState() (*EditState, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.editor == nil {
+		return nil, fmt.Errorf("编辑器尚未载入数据")
+	}
+	return &EditState{
+		Source:      a.editSource,
+		Generation:  a.editor.RamType().String(),
+		Size:        a.editor.Size(),
+		Dirty:       a.editor.IsDirty(),
+		ChangeCount: len(a.editor.Changes()),
+		CRCOK:       a.editor.CRCOK(),
+		CanWrite:    a.editFromDevice,
+	}, nil
+}
+
+// editLocked 返回编辑器(调用方需自行保证并发安全)。
+func (a *App) editLocked() (*spd.Editor, error) {
+	a.mu.Lock()
+	ed := a.editor
+	a.mu.Unlock()
+	if ed == nil {
+		return nil, fmt.Errorf("编辑器尚未载入数据")
+	}
+	return ed, nil
+}
+
+// EditFields 返回全部可编辑字段(当前值/范围/风险)。
+func (a *App) EditFields() ([]spd.Field, error) {
+	ed, err := a.editLocked()
+	if err != nil {
+		return nil, err
+	}
+	return ed.Fields(), nil
+}
+
+// EditSetField 修改一个字段(值非法时返回错误, 编辑器保持原样)。
+func (a *App) EditSetField(key, value string) (*EditState, error) {
+	ed, err := a.editLocked()
+	if err != nil {
+		return nil, err
+	}
+	if err := ed.SetField(key, value); err != nil {
+		return nil, err
+	}
+	return a.EditState()
+}
+
+// EditSetByte 原始 hex 编辑: 直接改一个字节(高风险)。
+func (a *App) EditSetByte(offset, value int) (*EditState, error) {
+	ed, err := a.editLocked()
+	if err != nil {
+		return nil, err
+	}
+	if value < 0 || value > 255 {
+		return nil, fmt.Errorf("字节值必须在 0-255 之间")
+	}
+	if err := ed.SetByte(offset, byte(value)); err != nil {
+		return nil, err
+	}
+	return a.EditState()
+}
+
+// EditFixCRC 重算全部 CRC/校验和。
+func (a *App) EditFixCRC() (*EditState, error) {
+	ed, err := a.editLocked()
+	if err != nil {
+		return nil, err
+	}
+	n, err := ed.FixCRC()
+	if err != nil {
+		return nil, err
+	}
+	a.logf("编辑器: 已重算 CRC(改动 %d 字节)", n)
+	return a.EditState()
+}
+
+// EditReset 放弃全部编辑。
+func (a *App) EditReset() (*EditState, error) {
+	ed, err := a.editLocked()
+	if err != nil {
+		return nil, err
+	}
+	ed.Reset()
+	a.logf("编辑器: 已放弃全部修改")
+	return a.EditState()
+}
+
+// EditDiff 返回变更列表(按区域聚合 + 高风险计数)。
+func (a *App) EditDiff() (*EditDiff, error) {
+	ed, err := a.editLocked()
+	if err != nil {
+		return nil, err
+	}
+	changes := ed.Changes()
+	d := &EditDiff{ChangeCount: len(changes), CRCOK: ed.CRCOK()}
+	const maxShow = 500
+	shown := changes
+	if len(shown) > maxShow {
+		shown, d.Truncated = shown[:maxShow], true
+	}
+	d.Changes = shown
+	if d.Changes == nil {
+		d.Changes = []spd.EditChange{}
+	}
+	byteChanges := make([]eeprom.ByteChange, 0, len(changes))
+	crcSet := map[int]bool{}
+	for _, off := range spd.CRCOffsets(ed.Bytes()) {
+		crcSet[off] = true
+	}
+	for _, c := range changes {
+		bc := eeprom.ByteChange{Offset: c.Offset, Old: c.Old, New: c.New, IsCRC: crcSet[c.Offset]}
+		byteChanges = append(byteChanges, bc)
+		if bc.IsCRC {
+			d.CRCFields++
+		}
+		if c.Risk == "high" {
+			d.HighRisk++
+		}
+	}
+	d.Fields = summarizeFields(byteChanges, ed.Bytes())
+	return d, nil
+}
+
+// EditBytes 返回编辑器当前内容的 base64(前端刷新 hex 视图用)。
+func (a *App) EditBytes() ([]byte, error) {
+	ed, err := a.editLocked()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]byte, len(ed.Bytes()))
+	copy(out, ed.Bytes())
+	return out, nil
+}
+
+// EditExportDialog 把编辑器内容另存为文件(不写设备)。
+func (a *App) EditExportDialog() (string, error) {
+	if err := a.dialogGuard(); err != nil {
+		return "", err
+	}
+	ed, err := a.editLocked()
+	if err != nil {
+		return "", err
+	}
+	a.mu.Lock()
+	src := a.editSource
+	a.mu.Unlock()
+	name := fmt.Sprintf("spd-edited-%d.bin", ed.Size())
+	if !a.editFromDevice {
+		name = strings.TrimSuffix(strings.TrimPrefix(src, "/"), "/") + "-edited.bin"
+	}
+	path, err := a.SaveDialog("另存编辑后的 SPD dump", name)
+	if err != nil {
+		return "", err
+	}
+	if path == "" {
+		return "", fmt.Errorf("已取消")
+	}
+	if err := os.WriteFile(path, ed.Bytes(), 0o644); err != nil {
+		return "", fmt.Errorf("写入 %s: %w", path, err)
+	}
+	a.logf("编辑器: 已导出 %s(%d 字节)", path, ed.Size())
+	return path, nil
+}
+
+// EditApplyToDevice 把编辑器内容写入设备。要求确认串 WRITE(真实写入)或 DRYRUN(干跑)。
+func (a *App) EditApplyToDevice(force, dryRun bool, ack string) (*WriteResult, error) {
+	want := "WRITE"
+	if dryRun {
+		want = "DRYRUN"
+	}
+	if strings.ToUpper(strings.TrimSpace(ack)) != want {
+		return nil, fmt.Errorf("确认串不正确(应输入 %s)", want)
+	}
+	ed, err := a.editLocked()
+	if err != nil {
+		return nil, err
+	}
+	a.mu.Lock()
+	fromDev := a.editFromDevice
+	a.mu.Unlock()
+	if !fromDev {
+		return nil, fmt.Errorf("当前编辑器内容来自文件, 请用“写入文件…”流程或先“从设备载入”")
+	}
+	dump := make([]byte, len(ed.Bytes()))
+	copy(dump, ed.Bytes())
+	label := "编辑器内容"
+	pf, err := a.buildPreflight(label, dump, force)
+	if err != nil {
+		return nil, err
+	}
+	return a.writeWithPreflight(pf, dump, force, dryRun)
+}
+
+// MfgSearch 在 JEP106 厂商表中搜索(编辑器厂商下拉用)。
+func (a *App) MfgSearch(query string, limit int) ([]spd.MfgEntry, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 50
+	}
+	return spd.SearchManufacturers(query, limit), nil
+}
+
+// EditVerifyFile 把编辑器内容与设备当前内容比对(不写入)。
+func (a *App) EditVerifyFile() (*EditDiff, error) {
+	ed, err := a.editLocked()
+	if err != nil {
+		return nil, err
+	}
+	a.mu.Lock()
+	dev := a.dev
+	a.mu.Unlock()
+	if dev == nil {
+		return nil, fmt.Errorf("请先选择设备")
+	}
+	cur, err := dev.ReadAll()
+	if err != nil {
+		return nil, err
+	}
+	d := &EditDiff{CRCOK: ed.CRCOK()}
+	for i, b := range cur {
+		want := ed.Bytes()[i]
+		if b != want {
+			d.Changes = append(d.Changes, spd.EditChange{Offset: i, Old: b, New: want, Field: "与设备不一致", Risk: "medium"})
+			if len(d.Changes) >= 500 {
+				d.Truncated = true
+				break
+			}
+		}
+	}
+	d.ChangeCount = len(d.Changes)
+	return d, nil
+}

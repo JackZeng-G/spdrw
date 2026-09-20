@@ -45,6 +45,7 @@ type Device struct {
 	addr      byte
 	ddr5      bool
 	size      int
+	ramType   byte // SPD byte2(DDR2=0x08/0x09/0x0A, DDR3=0x0B, DDR4=0x0C...)
 	page      int  // 当前页(DDR4: 0-1; DDR5: 0-7)
 	pageKnown bool // false = 未知(HUB 的 MR11 可能有 BIOS 残留值), 首次切页前须回读
 
@@ -83,6 +84,7 @@ func New(t smbus.Transport, addr byte) (*Device, error) {
 		if err != nil {
 			return nil, fmt.Errorf("读取 DRAM 类型失败(地址 %#x): %w", addr, err)
 		}
+		d.ramType = ramType
 		d.size = sizeByRamType(ramType)
 	}
 
@@ -307,7 +309,12 @@ func (d *Device) CRCOffsets(dump []byte) []int {
 	}
 	switch d.size {
 	case 256:
-		out = append(out, 126, 127)
+		// DDR2 是 8 位和校验(byte63 = sum(0..62)); DDR3 是 CRC16(126/127)
+		if isDDR2Type(d.ramType) {
+			out = append(out, 63)
+		} else {
+			out = append(out, 126, 127)
+		}
 	case 512:
 		out = append(out, 126, 127, 254, 255)
 	default: // DDR5 1024
@@ -825,4 +832,9 @@ func contains(s, sub string) bool {
 		}
 		return false
 	})()
+}
+
+// isDDR2Type 判断 SPD byte2 是否 DDR2 系(0x08 DDR2 / 0x09 FB-DIMM / 0x0A FB-DIMM Probe)。
+func isDDR2Type(ramType byte) bool {
+	return ramType == 0x08 || ramType == 0x09 || ramType == 0x0A
 }

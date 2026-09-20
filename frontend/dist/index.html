@@ -31,6 +31,12 @@
     </section>
 
     <aside id="info-panel">
+      <div class="tabs">
+        <button id="tab-info" class="tab active">SPD 信息</button>
+        <button id="tab-edit" class="tab">编辑器</button>
+      </div>
+
+      <div id="view-info" class="tabview">
       <div class="panel-title">SPD 信息</div>
       <div id="info-body" class="info-body"><div class="placeholder">读取后显示</div></div>
 
@@ -54,6 +60,38 @@
           DDR5 每块 64B(MR12/MR13 位图, 置位后正常运行时不可清零, 需离线模式或断电);<br>
           DDR4 及更早每块 128B, 无状态寄存器 → 查询会对块首做"写测试"(写入取反值再还原);<br>
           PSWP(永久保护)只有 DDR2/DDR3 可用 SMBus 探测; DDR4/DDR5 不支持设置也不适用, 需高压编程器。
+        </div>
+      </div>
+      </div>
+
+      <div id="view-edit" class="tabview hidden">
+        <div class="panel-title">编辑器
+          <span id="edit-state" class="muted small"></span>
+        </div>
+        <div class="ops edit-load">
+          <button id="btn-edit-load-dev" disabled>从设备载入</button>
+          <button id="btn-edit-load-file" disabled>打开 dump 文件…</button>
+          <button id="btn-edit-reset" disabled>放弃修改</button>
+          <button id="btn-edit-fixcrc" disabled>重算 CRC</button>
+          <button id="btn-edit-export" disabled>另存为…</button>
+        </div>
+        <div id="edit-fields" class="edit-fields"><div class="placeholder">先载入数据</div></div>
+
+        <div class="panel-title ops-title">原始 hex 编辑</div>
+        <div class="ops hexedit">
+          <label>偏移 <input id="hex-off" type="text" placeholder="0x1F0" size="6"></label>
+          <label>值 <input id="hex-val" type="text" placeholder="0x5A" size="5"></label>
+          <button id="btn-hex-apply" disabled>写入该字节</button>
+          <div class="muted small">直接改任意字节(高风险); 之后用"重算 CRC"修正校验和。</div>
+        </div>
+
+        <div class="panel-title ops-title">变更与写入</div>
+        <div class="ops edit-apply">
+          <div id="edit-diff" class="edit-diff muted">—</div>
+          <label class="chk"><input type="checkbox" id="chk-edit-backup"> 我已另有备份</label>
+          <label class="chk"><input type="checkbox" id="chk-edit-dryrun"> 干跑(不写入)</label>
+          <label class="chk">确认串 <input id="inp-edit-ack" type="text" placeholder="WRITE" size="10" autocomplete="off"></label>
+          <button id="btn-edit-write" class="danger" disabled>预览并写入设备…</button>
         </div>
       </div>
     </aside>

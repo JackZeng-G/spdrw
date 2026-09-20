@@ -64,6 +64,18 @@ type DecodeResult struct {
 
 	// 旧代基本信息
 	Basic *spd.Basic `json:"basic,omitempty"`
+
+	// DDR5 JEDEC 时序(JEDEC DDR5 SPD byte 20-102)
+	DDR5Timings []TimingEntry `json:"ddr5Timings,omitempty"`
+}
+
+// TimingEntry 是一条已换算的时序项(ns + 相对 tCK 的周期数)。
+type TimingEntry struct {
+	Name   string  `json:"name"`
+	NS     float64 `json:"ns"`
+	PS     int     `json:"ps,omitempty"` // 原始皮秒值(仅 ps 单位项)
+	Cycles int     `json:"cycles"`
+	Lower  int     `json:"lower,omitempty"` // lower limit 计数(0 = 无)
 }
 
 // XMPEntry 是一份 profile 的展示数据。
@@ -102,6 +114,8 @@ func DecodeDump(dump []byte) (*DecodeResult, error) {
 		r.BusWidth = b.BusWidthBits
 		r.Manufacturer = b.Manufacturer
 		r.PartNumber = b.PartNumber
+		r.DateYear, r.DateWeek = b.DateYear, b.DateWeek
+		r.SerialHex = b.SerialHex
 		r.CRCOK = b.CRCOK
 		if b.TCKminNS > 0 {
 			r.HasTimings = true
@@ -188,6 +202,62 @@ func decodeDDR5(dump []byte, r *DecodeResult) {
 	if ch > 0 {
 		r.BusWidth = primary
 	}
+
+	// JEDEC 时序(旧版完全不解析 DDR5 时序)
+	t := d.Timings()
+	if t.TCKMinPS > 0 {
+		r.HasTimings = true
+		tck := t.TCKMinPS
+		ps := func(name string, v int) TimingEntry {
+			e := TimingEntry{Name: name, PS: v, NS: float64(v) / 1000}
+			if tck > 0 {
+				e.Cycles = int((e.NS + float64(tck)/1000 - 1e-9) / (float64(tck) / 1000))
+			}
+			return e
+		}
+		ns := func(name string, v int) TimingEntry {
+			e := TimingEntry{Name: name, NS: float64(v)}
+			if tck > 0 {
+				e.Cycles = int((e.NS + float64(tck)/1000 - 1e-9) / (float64(tck) / 1000))
+			}
+			return e
+		}
+		r.DDR5Timings = []TimingEntry{
+			ps("tCKAVGmin", t.TCKMinPS),
+			ps("tAA", t.TAA),
+			ps("tRCD", t.TRCD),
+			ps("tRP", t.TRP),
+			ps("tRAS", t.TRAS),
+			ps("tRC", t.TRC),
+			ps("tWR", t.TWR),
+			ns("tRFC1(SLR)", t.RFC1SLR),
+			ns("tRFC2(SLR)", t.RFC2SLR),
+			ns("tRFCsb(SLR)", t.RFCSbSLR),
+			ns("tRFC1(DLR)", t.RFC1DLR),
+			ns("tRFC2(DLR)", t.RFC2DLR),
+			ns("tRFCsb(DLR)", t.RFCSbDLR),
+			withLower(ps("tRRD_L", t.TRRDL), t.Limits["tRRD_L"]),
+			withLower(ps("tCCD_L", t.TCCDL), t.Limits["tCCD_L"]),
+			withLower(ps("tCCD_L_WR", t.TCCDLWR), t.Limits["tCCD_L_WR"]),
+			withLower(ps("tCCD_L_WR2", t.TCCDLWR2), t.Limits["tCCD_L_WR2"]),
+			withLower(ps("tFAW", t.TFAW), t.Limits["tFAW"]),
+			withLower(ps("tCCD_L_WTR", t.TCCDLWTR), t.Limits["tCCD_L_WTR"]),
+			withLower(ps("tCCD_S_WTR", t.TCCDSWTR), t.Limits["tCCD_S_WTR"]),
+			withLower(ps("tRTP", t.TRTP), t.Limits["tRTP"]),
+		}
+		r.CasLat = ""
+		for i, cl := range t.CL {
+			if i > 0 {
+				r.CasLat += ","
+			}
+			r.CasLat += fmt.Sprintf("%d", cl)
+		}
+	}
+}
+
+func withLower(e TimingEntry, lower int) TimingEntry {
+	e.Lower = lower
+	return e
 }
 
 func timingView(t spd.Timing, tb spd.Timebase, ref *spd.Timing) *TimingView {
