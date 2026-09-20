@@ -473,3 +473,21 @@ func TestVerifyByteWiseCoversWholeImage(t *testing.T) {
 		t.Fatalf("复核后应恢复块读路径: %v", err)
 	}
 }
+
+// 读加速与等待模式都不再有手动开关(用户要求"做成自动切换, 异常自动降级, 日志体现"):
+// 这条用例锁住"后端仍然提供 BusTuning 供界面显示, 而设置入口不再是界面开关"。
+// 真正的档位回退(块读→字读→逐字节)已有 eeprom 用例; 这里只确认服务层不会因为
+// 缺少可调优能力而报错(测试用 Fake 没有 Tuner)。
+func TestBusTuningIsInformational(t *testing.T) {
+	a, _ := newWriteTestApp(t)
+	res, err := a.BusTuning()
+	if err != nil {
+		t.Fatalf("BusTuning 不应报错: %v", err)
+	}
+	if res.Tunable {
+		t.Fatal("Fake 不该报告可调优")
+	}
+	if res.Note == "" {
+		t.Fatal("应说明不可调优的原因")
+	}
+}

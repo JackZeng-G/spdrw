@@ -46,29 +46,21 @@ test("总线统计: 清零按钮调用后端并刷新", async () => {
   assert.match(el("bus-stats").innerHTML, /读 <b>0<\/b>/, "清零后应刷新为 0");
 });
 
-test("块读加速: 开关调后端并提示, 读取方式显示事务数", async () => {
+test("读取方式: 显示事务数与各档位字节数(读加速档位由后端自动决定)", async () => {
   const readStats = {
     bytes: 1024, transactions: 34, blockBytes: 1024, fallbackBytes: 0,
-    blockReadOK: true, blockReadKnown: true,
+    blockReadOK: true, blockReadKnown: true, mode: "块读(32 字节/事务)", elapsedMs: 210, sleepMs: 0,
   };
-  const { stub, calls } = makeAppStub({ ReadStats: () => readStats, SetFastRead: () => true });
+  const { stub, calls } = makeAppStub({ ReadStats: () => readStats, BusTuning: () => ({ tunable: true, clockHz: 396000, sleepMode: 0, sleepModeName: "忙等(最快)" }) });
   const { el } = loadApp({ appStub: stub });
   await flush();
   await el("btn-bus-stats").onclick();
   await flush();
-
-  el("chk-fastread").checked = false;
-  await el("chk-fastread").onchange();
-  await flush();
-  const call = calls.find((c) => c.name === "SetFastRead");
-  assert.ok(call, "切换开关应调用 SetFastRead");
-  assert.deepEqual([...call.args], [false]);
-  assert.match(el("log").text(), /块读加速/);
-
-  // refreshReadMode 在 app.js 里是函数声明(挂在 vm 全局上), 直接调用它
   await globalThis.__ctx.refreshReadMode();
-  assert.match(el("read-mode").innerHTML, /块读加速/);
-  assert.match(el("read-mode").innerHTML, /34/);
+  assert.ok(calls.some((c) => c.name === "ReadStats"), "应读取读取方式统计");
+  assert.match(el("read-mode").innerHTML, /块读/);
+  assert.match(el("read-mode").innerHTML, /34/, "要显示事务数");
+  assert.match(el("read-mode").innerHTML, /0\.21s/, "要显示耗时");
 });
 
 test("读取方式: 后端给 mode/wordBytes/elapsedMs 时按加速档渲染(块读与字读都要显示)", async () => {
@@ -94,43 +86,58 @@ test("读取方式: 后端给 mode/wordBytes/elapsedMs 时按加速档渲染(块
   assert.match(html, /NACK/, "块读失败原因要能看到");
 });
 
-test("总线调优: 显示 SMBus 时钟与等待模式, 勾选低 CPU 模式会切到休眠", async () => {
-  const { stub, calls } = makeAppStub({
+test("总线调优: 显示 SMBus 时钟/等待模式, 且读加速与等待模式都是自动的", async () => {
+  const { stub } = makeAppStub({
     BusTuning: () => ({ tunable: true, clockHz: 396000, sleepMode: 0, sleepModeName: "忙等(最快)", fastRead: true }),
-    SetSleepMode: () => 2,
     BusStats: () => stats,
   });
-  const { el } = loadApp({ appStub: stub });
+  const { el, document } = loadApp({ appStub: stub });
   await flush();
   await el("btn-bus-stats").onclick();
   await flush();
 
   assert.match(el("bus-tuning").innerHTML, /396\.0 kHz/, "应显示 SMBus 时钟频率");
   assert.match(el("bus-tuning").innerHTML, /忙等/, "应显示等待模式");
-  assert.equal(el("chk-lowsleep").checked, false, "忙等模式下不该勾选低 CPU 模式");
-
-  // 勾上 → 切休眠(2)
-  el("chk-lowsleep").checked = true;
-  await el("chk-lowsleep").onchange();
-  await flush();
-  const call = calls.find((c) => c.name === "SetSleepMode");
-  assert.ok(call, "应调用 SetSleepMode");
-  assert.deepEqual([...call.args], [2]);
-  assert.match(el("log").text(), /休眠/);
+  assert.match(el("bus-tuning").innerHTML, /读加速 <b>自动<\/b>/, "读加速应标为自动");
+  // 手动开关已按需求移除: 一切自动 + 日志体现
+  assert.equal(document.getElementById("chk-fastread").className, "", "读加速开关应已移除");
+  assert.equal(document.getElementById("chk-lowsleep").className, "", "低 CPU 开关应已移除");
 });
 
-test("总线调优: 休眠模式会给出「慢几十倍」的警示", async () => {
-  const { stub } = makeAppStub({
-    BusTuning: () => ({
-      tunable: true, clockHz: 396000, sleepMode: 2, sleepModeName: "休眠(最省 CPU, 最慢)",
-      note: "当前为休眠模式: 每次事务固定多花约 31ms, 整片读取会慢几十倍;除非要省 CPU, 建议切成忙等",
+test("写入能力探测: 按钮调后端并把结论写进面板", async () => {
+  const { stub, calls } = makeAppStub({
+    WPStatus: () => ddr5Status,
+    WriteProbe: () => ({
+      addr: 80, offset: 560, offsetText: "0x230", old: 0, new: 255, readBack: 255,
+      verdict: "ok", note: "写入生效: 0x230 从 0x00 变成 0xff(该条可写)",
+      restored: true, verified: true, backupPath: "/root/.spdrw/backups/x.bin",
     }),
-    BusStats: () => stats,
   });
-  const { el } = loadApp({ appStub: stub });
+  const { el, ctx } = loadApp({ appStub: stub });
   await flush();
-  await el("btn-bus-stats").onclick();
+  ctx.confirm = () => true;
+  await el("btn-write-probe").onclick();
   await flush();
-  assert.match(el("bus-tuning").innerHTML, /31ms/, "休眠模式要提示代价");
-  assert.equal(el("chk-lowsleep").checked, true);
+  assert.ok(calls.some((c) => c.name === "WriteProbe"), "应调用 WriteProbe");
+  assert.match(el("probe-result").innerHTML, /可写/);
+  assert.match(el("probe-result").innerHTML, /0x230/);
+  assert.match(el("log").text(), /写入能力探测/);
+});
+
+test("写入能力探测: 被忽略时要说清是平台/器件拒绝而不是工具问题", async () => {
+  const { stub } = makeAppStub({
+    WPStatus: () => ddr5Status,
+    WriteProbe: () => ({
+      addr: 80, offset: 560, offsetText: "0x230", old: 0, new: 255, readBack: 0,
+      verdict: "ignored", note: "写入被忽略: 目标值 0xff 发出后, 回读仍是 0x00 —— 器件接受了事务但没有改内容",
+      restored: true, verified: true, backupPath: "/tmp/b.bin",
+    }),
+  });
+  const { el, ctx } = loadApp({ appStub: stub });
+  await flush();
+  ctx.confirm = () => true;
+  await el("btn-write-probe").onclick();
+  await flush();
+  assert.match(el("probe-result").innerHTML, /被忽略/);
+  assert.match(el("probe-result").innerHTML, /接受了事务但没有改内容/);
 });

@@ -307,7 +307,19 @@ func (a *App) Dump() ([]byte, error) {
 	start := time.Now()
 	data, err := a.dev.ReadAll()
 	if err != nil {
-		return nil, err
+		// 自动降级: 忙等(默认, 最快)下若出现事务异常, 自动换成"轮询忙等 + 长等待休眠"
+		// 再试一次 —— 有些控制器/HUB 需要更宽松的等待, 用户不必关心这些细节, 但日志要写清楚。
+		if tuner, ok := smbus.TunerOf(a.active); ok && tuner.SleepMode() == smbus.SleepModeAlwaysBusy {
+			a.logf("读取失败(%v): 自动把总线等待模式降级为「%s」后重试",
+				err, smbus.SleepModeName(smbus.SleepModeShortBusy))
+			if serr := tuner.SetSleepMode(smbus.SleepModeShortBusy); serr == nil {
+				start = time.Now()
+				data, err = a.dev.ReadAll()
+			}
+		}
+		if err != nil {
+			return nil, err
+		}
 	}
 	st := a.dev.ReadStats()
 	mode := st.Mode

@@ -56,8 +56,6 @@
         <div id="bus-stats" class="bus-stats muted">—</div>
         <button id="btn-bus-stats" disabled>读取总线统计</button>
         <button id="btn-bus-reset" disabled>清零计数</button>
-        <label class="chk"><input type="checkbox" id="chk-fastread" checked> 读加速(块读 32B / 字读 2B; 关掉则逐字节兼容)</label>
-        <label class="chk"><input type="checkbox" id="chk-lowsleep"> 低 CPU 模式(每次事务休眠, 读取慢几十倍)</label>
         <div id="bus-tuning" class="bus-stats muted">—</div>
         <div id="read-mode" class="bus-stats muted">—</div>
         <div class="muted small">
@@ -73,8 +71,13 @@
         <button id="btn-wp-status" disabled>查询保护状态</button>
         <button id="btn-wp-set" disabled class="danger">RSWP 加保护…</button>
         <button id="btn-wp-clear" disabled>RSWP 清除</button>
+        <button id="btn-write-probe" disabled>检测写入能力(单字节, 写后还原)</button>
         <label class="chk">确认串 <input id="inp-wp-ack" type="text" placeholder="RSWP / CLEAR" size="12" autocomplete="off"></label>
+        <div id="probe-result" class="bus-stats muted"></div>
         <div class="muted small">
+          <b>检测写入能力</b>: 在一个空闲字节上写反值再立即还原(自动备份 + 整片复核), 用来回答
+          "这条到底能不能写" —— 如果回读仍是原值, 说明写入被平台/器件忽略(BIOS 的 SPD 写保护、
+          块保护或 WP# 引脚), 而不是工具的问题。<br>
           加保护要输入 <b>RSWP</b>, 清除要输入 <b>CLEAR</b>;两者都会真写设备,
           下发后程序会**回读复核**是否真的生效(EE1004 的 SWP/CWP 需要 WP 引脚 VHV, 器件可能 ACK 但忽略)。
         </div>

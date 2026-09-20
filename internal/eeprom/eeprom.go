@@ -482,6 +482,10 @@ func (d *Device) readBlockChunk(off uint16, max int) ([]byte, error) {
 	return got, nil
 }
 
+// ReadOneByte 对外暴露"逐字节读一个字节"(强制走字节读, 不经过块读/字读)。
+// 探测与单字节校验用它, 避免"写进去的位置"和"读回来的位置"经过不同的读路径。
+func (d *Device) ReadOneByte(off uint16) (byte, error) { return d.readOne(off) }
+
 // readOne 逐字节读一个字节(带 ReadDelay 间隔)。
 func (d *Device) readOne(off uint16) (byte, error) {
 	_, phys, err := d.physOffset(off)
@@ -753,6 +757,35 @@ func (d *Device) Verify(dump []byte) error {
 		}
 	}
 	return nil
+}
+
+// PhysDesc 返回某个逻辑偏移的物理访问描述(纯计算, 不碰总线), 用于错误报告:
+// DDR5 = "页 1, cmd 0x88"; DDR4 及更早 = "页 0, cmd 0x88"。
+func (d *Device) PhysDesc(off uint16) string {
+	ps := d.pageSize()
+	if d.ddr5 {
+		return fmt.Sprintf("页 %d, cmd %#02x", int(off)/ps, byte(int(off)%ps)|spd5NVMReg)
+	}
+	return fmt.Sprintf("页 %d(SPA%d), cmd %#02x", int(off)>>8, int(off)>>8, byte(off))
+}
+
+// MRSnapshot 只读地抓一份 DDR5 hub 的关键寄存器现场(非 DDR5 返回空串)。
+//
+// 写入失败时把它附在错误里: MR12/MR13 是 RSWP 块位图, MR52 bit6 是"最近有写受保护块
+// 被忽略", MR48 bit3 与 NVM 访问许可相关 —— 有这几个值就能判断"到底是谁拒绝了写入"。
+func (d *Device) MRSnapshot() string {
+	if !d.ddr5 {
+		return ""
+	}
+	read := func(reg byte) string {
+		v, err := d.t.ReadByteData(d.addr, reg)
+		if err != nil {
+			return "??"
+		}
+		return fmt.Sprintf("%#02x", v)
+	}
+	return fmt.Sprintf("MR11=%s MR12=%s MR13=%s MR29=%s MR48=%s MR52=%s",
+		read(MR11), read(MR12), read(MR13), read(MR29), read(MR48), read(MR52))
 }
 
 // VerifyChangedByteWise 用**最原始的逐字节读法**复核改动过的字节。

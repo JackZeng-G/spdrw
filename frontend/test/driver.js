@@ -34,7 +34,8 @@
     step("清零调用后端", window.__CALLS.some((c) => c.name === "ResetBusStats"));
     // 读速的关键环境: SMBus 时钟 + 等待模式(休眠模式会让每次事务固定多花 ~31ms)
     step("显示总线时钟与等待模式", /kHz|时钟/.test($("bus-tuning").textContent) && /忙等|休眠/.test($("bus-tuning").textContent));
-    step("低 CPU 模式开关存在", !!document.getElementById("chk-lowsleep"));
+    step("读加速与等待模式都是自动的(无手动开关)", !document.getElementById("chk-fastread") &&
+      !document.getElementById("chk-lowsleep"));
 
     // 写保护
     await $("btn-wp-status").onclick();
@@ -45,6 +46,8 @@
     step("PSWP 文案(DDR4 适用)", $("wp-summary").textContent.includes("PSWP 未设置"));
     // RSWP 加保护/清除都是真写设备且可能不可逆 → 必须带确认串(后端也校验)
     step("写保护确认串输入框存在", !!document.getElementById("inp-wp-ack"));
+    step("写入能力探测按钮存在", !!document.getElementById("btn-write-probe"));
+    step("探测按钮已可用", $("btn-write-probe").disabled === false);
     step("缺确认串时 RSWP 不下发", (() => {
       window.prompt = () => "1";
       window.confirm = () => true;

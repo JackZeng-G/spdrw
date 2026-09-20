@@ -79,6 +79,7 @@
     BusStats: rec("BusStats", { generation: "DDR4", reads: 2140, quickWrites: 3, byteDataWrites: 2, byteWrites: 14, nvmWrites: 0 }),
     BusTuning: rec("BusTuning", { tunable: true, clockHz: 396000, sleepMode: 0, sleepModeName: "忙等(最快)", fastRead: true }),
     SetSleepMode: rec("SetSleepMode", 0),
+    WriteProbe: rec("WriteProbe", { addr: 80, offset: 560, offsetText: "0x230", old: 0, new: 255, readBack: 255, verdict: "ok", note: "写入生效", restored: true, verified: true, backupPath: "/tmp/b.bin" }),
     ResetBusStats: rec("ResetBusStats", null),
     WPStatus: rec("WPStatus", ddr4Status),
     WPSet: rec("WPSet", null),

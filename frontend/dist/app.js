@@ -454,7 +454,7 @@ function fmtT(t) {
 
 // ---------- 文件操作 ----------
 function enableOps(on) {
-  ["btn-save", "btn-load-decode", "btn-verify", "btn-write", "btn-wp-status", "btn-wp-set", "btn-wp-clear"].forEach((id) => ($(id).disabled = !on));
+  ["btn-save", "btn-load-decode", "btn-verify", "btn-write", "btn-wp-status", "btn-wp-set", "btn-wp-clear", "btn-write-probe"].forEach((id) => ($(id).disabled = !on));
 }
 
 $("btn-save").onclick = async () => {
@@ -645,32 +645,13 @@ async function refreshBusTuning() {
     const clock = t.clockHz ? `${(t.clockHz / 1000).toFixed(1)} kHz` : (t.clockNote || "时钟未知");
     $("bus-tuning").innerHTML = `SMBus 时钟 <b>${escapeHtml(clock)}</b> · 等待模式 ` +
       `<b class="${t.sleepMode === 2 ? "warn" : "ok"}">${escapeHtml(t.sleepModeName || "?")}</b>` +
+      ` · 读加速 <b>自动</b>(块读→字读→逐字节, 失败自动降级)` +
       (t.note ? `<br><span class="warn">${escapeHtml(t.note)}</span>` : "");
-    $("chk-lowsleep").checked = t.sleepMode === 2;
   } catch (e) { /* 未连接 */ }
 }
 
-$("chk-lowsleep").onchange = async () => {
-  const mode = $("chk-lowsleep").checked ? 2 : 0; // 2=休眠(省 CPU) 0=忙等(最快)
-  try {
-    await call("SetSleepMode", mode);
-    addLog("", mode === 2
-      ? "等待模式: 休眠(省 CPU;每次事务多花约 31ms, 整片读取会慢几十倍)"
-      : "等待模式: 忙等(最快;读取回到真实总线时间)");
-    await refreshBusTuning();
-  } catch (e) {
-    addLog("", "切换等待模式失败: " + e);
-    await refreshBusTuning().catch(() => {});
-  }
-};
-
-// 块读加速开关(真机上对照慢/快用)
-$("chk-fastread").onchange = async () => {
-  try {
-    await call("SetFastRead", $("chk-fastread").checked);
-    addLog("", "块读加速: " + ($("chk-fastread").checked ? "已开启(请重新读取)" : "已关闭(逐字节兼容)"));
-  } catch (e) { addLog("", "切换块读失败: " + e); }
-};
+// 读加速(块读 → 字读 → 逐字节)与等待模式(忙等 → 折中)都不再需要手动开关:
+// 程序自己按"探测可用档位 + 失败自动降级"选路, 并把实际档位/降级原因写进日志。
 
 async function refreshReadMode() {
   try {
@@ -780,6 +761,25 @@ $("btn-wp-set").onclick = async () => {
     addLog("", "RSWP 设置失败: " + e);
     await refreshWP().catch(() => {});
   }
+};
+
+// 检测写入能力: 单字节写反值再还原(后端自动备份 + 整片复核)。
+$("btn-write-probe").onclick = async () => {
+  if (!confirm("在空闲字节上做一次写入探测(写反值后立即还原, 前后都会整片校验)?\n\n" +
+    "这不是写入你的修改, 只是确认这条 SPD 能否被写入。")) return;
+  try {
+    addLog("", "正在探测写入能力(备份 → 单字节写 → 回读 → 还原 → 整片复核)…");
+    const r = await call("WriteProbe");
+    const cls = r.verdict === "ok" ? "ok" : "bad";
+    $("probe-result").innerHTML = `<b class="${cls}">写入能力: ` +
+      `${r.verdict === "ok" ? "可写" : r.verdict === "ignored" ? "被忽略(写不进去)" : "被拒绝"}</b>` +
+      ` · ${escapeHtml(r.offsetText)} ${hex(r.old, 2)}→${hex(r.new, 2)} 回读 ${hex(r.readBack, 2)}` +
+      ` · 已还原 ${r.restored ? "是" : "否"} · 整片复核 ${r.verified ? "通过" : "不通过"}<br>` +
+      `<span class="muted">${escapeHtml(r.note)}</span>`;
+    addLog("", "写入能力探测: " + r.note);
+    if (r.backupPath) addLog("", "备份: " + r.backupPath);
+    await refreshWP().catch(() => {});
+  } catch (e) { addLog("", "写入能力探测失败: " + e); }
 };
 
 $("btn-wp-clear").onclick = async () => {

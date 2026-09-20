@@ -782,8 +782,10 @@ func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun 
 				ByteDataWrites: st.ByteDataWrites, ByteWrites: st.ByteWrites, NVMWrites: nvm,
 			}
 			res.NVMWrites = nvm
-			res.Message += fmt.Sprintf("; 期间总线事务: 读 %d 次 / 页选择与命令写 %d 次 / 字节写 %d 次, 其中对 SPD NVM 的数据写 %d 次",
-				st.Reads, st.QuickWrites+st.ByteWrites, st.ByteDataWrites, nvm)
+			// 说明: DDR5 的切页是 MR11 寄存器写(记在"字节写"里), DDR4 的切页是 Quick 写;
+			// 两者都不是 NVM 数据写 —— 所以这里把"非 NVM 写"合并成一项, 避免误读。
+			res.Message += fmt.Sprintf("; 期间总线事务: 读 %d 次 / 非 NVM 写 %d 次(切页/寄存器) / 其中对 SPD NVM 的数据写 %d 次",
+				st.Reads, st.QuickWrites+st.ByteWrites+st.ByteDataWrites-nvm, nvm)
 			if nvm == 0 {
 				res.Message += "(零写入)"
 			} else {
@@ -836,6 +838,17 @@ func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun 
 
 	if fail != nil {
 		res.Written = writtenOf(fail, len(changes))
+		// 现场: 失败字节的物理位置 + hub 寄存器(MR12/13=RSWP 位图, MR52 bit6=写受保护块被忽略)。
+		// 真机排障时这一行就能回答"是平台拒绝、块保护还是别的原因"。
+		var we *eeprom.WriteError
+		if errors.As(fail, &we) {
+			scene := fmt.Sprintf("现场: 0x%03X(%s)", we.Offset, dev.PhysDesc(uint16(we.Offset)))
+			if snap := dev.MRSnapshot(); snap != "" {
+				scene += "; " + snap
+			}
+			a.logf("%s", scene)
+			fail = fmt.Errorf("%w [%s]", fail, scene)
+		}
 		res.RolledBack, res.RollbackNote = a.rollbackAfterFailure(dev, img, backup, fail)
 		a.attachBusStats(res, dev, counter)
 		res.Message = fmt.Sprintf("写入未完成: %v; %s", fail, res.RollbackNote)

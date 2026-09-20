@@ -103,6 +103,7 @@ export function makeAppStub(overrides = {}) {
     BusStats: null,
     BusTuning: { tunable: true, clockHz: 396000, sleepMode: 0, sleepModeName: "忙等(最快)", fastRead: true },
     SetSleepMode: 0,
+    WriteProbe: { addr: 80, offset: 560, offsetText: "0x230", old: 0, new: 255, readBack: 255, verdict: "ok", note: "写入生效", restored: true, verified: true, backupPath: "/tmp/b.bin" },
     SetFastRead: null,
     ReadStats: null,
     ResetBusStats: null,
