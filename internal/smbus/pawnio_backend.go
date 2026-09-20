@@ -152,8 +152,11 @@ func (p *pawnioTransport) xfer(addr byte, write bool, cmd byte, proto byte, data
 	defer unlock()
 
 	// AMD KernCZ: 每次事务前把端口选择切回本会话的端口
+	// (端口索引寄存器是全局硬件状态, 多会话并存时必须每次重设;
+	//  ioctl 会回写 old_port, 必须提供输出缓冲, 否则 STATUS_INVALID_PARAMETER)
 	if p.piix4Port >= 0 {
-		if _, err := p.session.execute(fnPiix4PortSel, []uint64{uint64(p.piix4Port)}, nil); err != nil {
+		selOut := make([]uint64, 1)
+		if _, err := p.session.execute(fnPiix4PortSel, []uint64{uint64(p.piix4Port)}, selOut); err != nil {
 			return nil, fmt.Errorf("设置 PIIX4 端口 %d 失败: %w", p.piix4Port, err)
 		}
 	}
