@@ -164,16 +164,34 @@ func (d *DDR5SPD) EXPOPresence() bool {
 	return string(d.raw[expoOffset:expoOffset+4]) == "EXPO"
 }
 
-// XMP30Slots 返回各 XMP 3.0 槽位是否存在(非空白: 既非全 0x00 也非全 0xFF)。
+// XMP30SlotPresent 判断某个 XMP 3.0 槽是否是一份真实 profile。
+//
+// 判据: 槽首字节是 VPP 电压编码((ones<<5)|hundredths/5), 真实 profile 的 VPP ≥ 1.0V
+// → 首字节 ≥ 0x20。实测多份厂商 dump(TeamGroup/威刚/十铨…)在最后一个槽 0x3C0 放了
+// 非零数据但没有有效的 profile CRC —— 若按"非空白即存在"判定, 会把这些完全正常的
+// 内存条误报为 "CRC 校验失败", 并让写入预检拒绝一份合法 dump。
+func XMP30SlotPresent(dump []byte, idx int) bool {
+	if idx < 0 || idx >= len(XMP30ProfileOffsets) {
+		return false
+	}
+	off := XMP30ProfileOffsets[idx]
+	if off+64 > len(dump) {
+		return false
+	}
+	vpp := dump[off]
+	return vpp >= 0x20 && vpp != 0xFF
+}
+
+// XMP30Slots 返回各 XMP 3.0 槽位是否存在。
 // EXPO 存在时 0x340/0x380 两槽被 EXPO 占用, 一律报 false。
 func (d *DDR5SPD) XMP30Slots() [5]bool {
 	var out [5]bool
 	expo := d.EXPOPresence()
-	for i, off := range XMP30ProfileOffsets {
+	for i := range XMP30ProfileOffsets {
 		if expo && (i == 2 || i == 3) {
 			continue
 		}
-		out[i] = !isBlank(d.raw[off : off+62])
+		out[i] = XMP30SlotPresent(d.raw, i)
 	}
 	return out
 }

@@ -70,12 +70,12 @@ func CRCOffsets(dump []byte) []int {
 			out = append(out, xmp30Offset+62, xmp30Offset+63)
 		}
 		expo := len(dump) >= expoOffset+4 && string(dump[expoOffset:expoOffset+4]) == "EXPO"
-		for i, off := range XMP30ProfileOffsets {
+		for i := range XMP30ProfileOffsets {
 			if expo && (i == 2 || i == 3) {
 				continue
 			}
-			if off+64 <= len(dump) && !isBlank(dump[off:off+62]) {
-				out = append(out, off+62, off+63)
+			if XMP30SlotPresent(dump, i) {
+				out = append(out, XMP30ProfileOffsets[i]+62, XMP30ProfileOffsets[i]+63)
 			}
 		}
 		if expo {
@@ -132,7 +132,7 @@ func FixCRC(dump []byte) ([]int, error) {
 			if expo && (i == 2 || i == 3) {
 				continue
 			}
-			if off+64 > len(dump) || isBlank(dump[off:off+62]) {
+			if !XMP30SlotPresent(dump, i) {
 				continue
 			}
 			s := dump[off : off+64]
