@@ -57,11 +57,23 @@ class El {
     this._html = String(v);
     this.children = parseTags(this._html);
   }
-  appendChild(c) { this.children.push(c); return c; }
-  setAttribute(k, v) { this.attrs[k] = String(v); }
+  appendChild(c) { c.parent = this; this.children.push(c); return c; }
+  setAttribute(k, v) {
+    this.attrs[k] = String(v);
+    // 真实 DOM 里 setAttribute("class", ...) 会同步 classList; 夹具必须一致,
+    // 否则基于 classList.contains 的实现会被误判为没命中。
+    if (k === "class") this.className = String(v);
+  }
   getAttribute(k) { return this.attrs[k]; }
   addEventListener() {}
   removeEventListener() {}
+  focus() {}
+  select() {}
+  remove() {
+    this.removed = true;
+    const p = this.parent;
+    if (p) p.children = p.children.filter((c) => c !== this);
+  }
   // 极简选择器: 支持 tag、tag[attr]、tag[attr="value"]
   querySelectorAll(sel) { return this.children.filter((c) => matches(c, sel)); }
   querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }

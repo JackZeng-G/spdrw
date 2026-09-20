@@ -217,3 +217,9 @@ table.timing th { background: var(--bg3); color: var(--muted); text-align: left;
 }
 #hexgrid.editable .hexbyte:hover { background: #3a4256; outline: 1px solid #5a6b8c; }
 .hexbyte.changed { background: #4a3a1f; outline: 1px solid #ffd479; }
+
+.hexgrid input.hexedit {
+  width: 2.2em; font: inherit; padding: 0; text-align: center;
+  background: #2b3245; color: #ffd479;
+  border: 1px solid #ffd479; border-radius: 2px; outline: none;
+}
