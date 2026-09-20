@@ -62,8 +62,12 @@ func Discover() ([]Transport, error) {
 	}
 
 	try("SmbusI801.bin", KindI801, 0, -1, nil)
-	try("SmbusPIIX4.bin", KindPIIX4, 0, 0, func(s *pawnioSession) error { return piix4SelectPort(s, 0) })
-	try("SmbusPIIX4.bin", KindPIIX4, 1, 1, func(s *pawnioSession) error { return piix4SelectPort(s, 1) })
+	// AMD KernCZ: 端口 0/2/3/4 走端口索引寄存器(同一 0x0B00 基址),
+	// 端口 1 为独立 aux 控制器(0x0B20)。AM5 部分主板 SPD 在端口 2/3。
+	for port := 0; port <= 4; port++ {
+		p := port
+		try("SmbusPIIX4.bin", KindPIIX4, p, p, func(s *pawnioSession) error { return piix4SelectPort(s, p) })
+	}
 	try("SmbusIntelSkylakeIMC.bin", KindSkylakeIMC, 0, -1, func(s *pawnioSession) error { return skxSelectIndex(s, 0) })
 	try("SmbusIntelSkylakeIMC.bin", KindSkylakeIMC, 1, -1, func(s *pawnioSession) error { return skxSelectIndex(s, 1) })
 
