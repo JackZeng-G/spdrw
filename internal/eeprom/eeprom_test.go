@@ -87,14 +87,12 @@ func TestNewDetectsSizes(t *testing.T) {
 
 func TestDDR4Paging(t *testing.T) {
 	d, ft := newDDR4(t)
-	// 探测阶段零写操作(无页复位); 首次同页读不应产生 quick 写
+	// 首次读页 0 应显式 quick 写 0x36(EE1004 页状态无寄存器可读, 需显式切换)
 	if _, err := d.Read(0, 1); err != nil {
 		t.Fatalf("Read: %v", err)
 	}
-	for _, q := range ft.QuickLog {
-		if q.Write {
-			t.Fatalf("读页 0 不应切页: %v", ft.QuickLog)
-		}
+	if len(ft.QuickLog) == 0 || !ft.QuickLog[0].Write || ft.QuickLog[0].Addr != 0x36 {
+		t.Fatalf("首次读应 quick 写 0x36: %v", ft.QuickLog)
 	}
 
 	// 读页 1 (0x100) 应先 quick 写 0x37
@@ -232,8 +230,8 @@ func TestWriteRejectsOversizeAndProtected(t *testing.T) {
 func TestRSWP(t *testing.T) {
 	// DDR5: MR12/MR13 位图
 	d5, ft := newDDR5(t)
-	ft.EEProm[MR12] = 0x00
-	ft.EEProm[MR13] = 0x00
+	ft.MR[MR12] = 0x00
+	ft.MR[MR13] = 0x00
 	blocks, err := d5.RSWPStatus()
 	if err != nil || len(blocks) != 16 {
 		t.Fatalf("DDR5 RSWPStatus: %v len=%d", err, len(blocks))
@@ -246,13 +244,13 @@ func TestRSWP(t *testing.T) {
 	if err := d5.RSWPSet(3); err != nil {
 		t.Fatalf("RSWPSet(3): %v", err)
 	}
-	if ft.EEProm[MR12] != 0x08 {
+	if ft.MR[MR12] != 0x08 {
 		t.Fatalf("MR12 = %#x, want 0x08", ft.EEProm[MR12])
 	}
 	if err := d5.RSWPSet(9); err != nil {
 		t.Fatalf("RSWPSet(9): %v", err)
 	}
-	if ft.EEProm[MR13] != 0x02 {
+	if ft.MR[MR13] != 0x02 {
 		t.Fatalf("MR13 = %#x, want 0x02", ft.EEProm[MR13])
 	}
 	blocks, _ = d5.RSWPStatus()
@@ -265,7 +263,7 @@ func TestRSWP(t *testing.T) {
 	if err := d5.RSWPClear(); err != nil {
 		t.Fatalf("RSWPClear: %v", err)
 	}
-	if ft.EEProm[MR12] != 0 || ft.EEProm[MR13] != 0 {
+	if ft.MR[MR12] != 0 || ft.MR[MR13] != 0 {
 		t.Fatal("清除后 MR12/MR13 应为 0")
 	}
 
@@ -329,12 +327,12 @@ func TestPSWPStatus(t *testing.T) {
 
 func TestOfflineMode(t *testing.T) {
 	d5, ft := newDDR5(t)
-	ft.EEProm[MR48] = 0x00
+	ft.MR[MR48] = 0x00
 	ok, err := d5.OfflineMode()
 	if err != nil || ok {
 		t.Fatalf("offline: %v %v", ok, err)
 	}
-	ft.EEProm[MR48] = 0x04
+	ft.MR[MR48] = 0x04
 	ok, err = d5.OfflineMode()
 	if err != nil || !ok {
 		t.Fatalf("offline bit2: %v %v", ok, err)
@@ -342,5 +340,35 @@ func TestOfflineMode(t *testing.T) {
 	d4, _ := newDDR4(t)
 	if _, err := d4.OfflineMode(); err == nil {
 		t.Fatal("非 DDR5 不支持 offline 查询")
+	}
+}
+
+func TestDDR5ResidualPage(t *testing.T) {
+	// 模拟 BIOS 上电后 MR11 残留页 5: New 必须回读同步缓存,
+	// 首次读页 0 时显式切页, 数据才是页 0 的真实内容。
+	ft := smbus.NewFake()
+	ft.SetDDR5(true)
+	ft.Fill(0xFF)
+	for i := 0; i < 1024; i++ {
+		ft.EEProm[i] = byte(i)
+	}
+	// 残留页 5
+	ft.QuickLog = nil
+	if err := ft.WriteByteData(0x50, 11, 5); err != nil {
+		t.Fatalf("seed page 5: %v", err)
+	}
+	d, err := New(ft, 0x50)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	data, err := d.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if data[0] != 0x00 || data[1] != 0x01 || data[127] != 0x7F {
+		t.Fatalf("页 0 数据错误: %#x %#x %#x", data[0], data[1], data[127])
+	}
+	if data[128] != 0x80 || data[0x1FF] != 0xFF {
+		t.Fatalf("页 1/尾页 数据错误: %#x %#x", data[128], data[0x1FF])
 	}
 }
