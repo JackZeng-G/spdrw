@@ -13,7 +13,7 @@ import "fmt"
 //   - DDR4/LPDDR4 系(512B): 两段各 128B, CRC 在每段末 2 字节
 //   - DDR5/LPDDR5 系(1024B): 基础段 0-509(CRC 510/511) + XMP 3.0 header/各槽 + EXPO
 //   - DDR3(256B): 单段, 覆盖 126 或 117 字节(byte0 bit7 决定), CRC 在 126/127
-//   - DDR2(256B): 无 CRC, 恒为 true
+//   - DDR2(256B): 8 位校验和, byte63 = sum(bytes 0..62)
 func CRCOK(dump []byte) (bool, error) {
 	rt, size, err := Identify(dump)
 	if err != nil {
@@ -42,7 +42,8 @@ func CRCOK(dump []byte) (bool, error) {
 		}
 		return Crc16(dump[:coverage]) == uint16(dump[126])|uint16(dump[127])<<8, nil
 	case DDR2, DDR2FBDIMM, DDR2FBDIMMP:
-		return true, nil // DDR2 无 CRC 字段
+		// DDR2 没有 CRC16, 而是 byte63 = sum(bytes 0..62) & 0xFF
+		return ddr2Checksum(dump) == dump[63], nil
 	default:
 		return false, fmt.Errorf("%v 无 CRC 定义, 无法校验", rt)
 	}
@@ -57,6 +58,8 @@ func CRCOffsets(dump []byte) []int {
 	}
 	var out []int
 	switch rt {
+	case DDR2, DDR2FBDIMM, DDR2FBDIMMP:
+		out = append(out, 63)
 	case DDR3:
 		out = append(out, 126, 127)
 	case DDR4, DDR4E, LPDDR3, LPDDR4, LPDDR4X:
@@ -111,7 +114,8 @@ func FixCRC(dump []byte) ([]int, error) {
 		dump[126], dump[127] = byte(crc), byte(crc>>8)
 		return []int{126, 127}, nil
 	case DDR2, DDR2FBDIMM, DDR2FBDIMMP:
-		return nil, fmt.Errorf("DDR2 无 CRC, 无需修复")
+		dump[63] = ddr2Checksum(dump)
+		return []int{63}, nil
 	case DDR5, LPDDR5, DDR5NVDIMMP, LPDDR5X:
 		var touched []int
 		base := Crc16(dump[:510])
@@ -146,4 +150,13 @@ func FixCRC(dump []byte) ([]int, error) {
 	default:
 		return nil, fmt.Errorf("%v 无 CRC 定义", rt)
 	}
+}
+
+// ddr2Checksum 计算 DDR2 SPD 校验和: byte63 = sum(bytes 0..62) & 0xFF。
+func ddr2Checksum(dump []byte) byte {
+	sum := byte(0)
+	for _, v := range dump[:63] {
+		sum += v
+	}
+	return sum
 }

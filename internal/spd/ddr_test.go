@@ -291,11 +291,20 @@ func makeDDR2(t *testing.T) []byte {
 	d[3] = 13   // rows
 	d[4] = 10   // cols
 	d[5] = 1    // 2 ranks码1@bits0-2
-	d[6] = 1    // x8
-	d[8] = 3    // 64bit
+	// JEDEC DDR2: byte6 = 模块数据宽度(总线), byte13 = 芯片位宽, byte8 = 接口电压
+	d[6] = 64   // 64bit 总线
+	d[8] = 3    // 接口电压(不参与容量)
 	d[9] = 0x25 // 2.5ns
+	d[13] = 8   // x8 芯片
 	d[17] = 4   // banks
+	// 身份区
+	d[64], d[65] = 0x00, 0x2C // JEP106: cont=0, code=0x2C
+	d[72] = 0x03              // 生产地点
 	copy(d[73:91], []byte("DDR2-TEST-1GB     "))
+	d[91], d[92] = 0x12, 0x34 // 修订码
+	d[93], d[94] = 24, 15     // 2024 年第 15 周(非 BCD)
+	d[95], d[96], d[97], d[98] = 0xDE, 0xAD, 0xBE, 0xEF
+	d[63] = ddr2Checksum(d) // byte63 = sum(0..62)
 	return d
 }
 
@@ -317,5 +326,24 @@ func TestParseBasicDDR2(t *testing.T) {
 	}
 	if bi.Ranks != 2 || bi.DeviceWidth != 8 || bi.BusWidthBits != 64 {
 		t.Fatalf("org = %v", bi)
+	}
+	// 身份区与校验和
+	if bi.DateYear != 2024 || bi.DateWeek != 15 {
+		t.Fatalf("date = %d/%d", bi.DateYear, bi.DateWeek)
+	}
+	if bi.SerialHex != "DEADBEEF" {
+		t.Fatalf("sn = %q", bi.SerialHex)
+	}
+	if !bi.ChecksumOK || !bi.CRCOK {
+		t.Fatalf("DDR2 校验和应通过: %+v", bi)
+	}
+	if bi.Revision != 0x1234 {
+		t.Fatalf("revision = %#x", bi.Revision)
+	}
+	// 破坏一个字节后校验和必须失败
+	d[10] ^= 0xFF
+	bi2, _ := ParseBasic(d)
+	if bi2.CRCOK {
+		t.Fatal("改动字节后 DDR2 校验和应失败")
 	}
 }

@@ -267,6 +267,18 @@ function renderInfo(r) {
     html += `</table>`;
   }
 
+  if (r.ddr5Timings && r.ddr5Timings.length) {
+    html += `<div class="section">JEDEC 时序(DDR5)</div><table class="timing">`;
+    for (const t of r.ddr5Timings) {
+      const ns = (t.ns != null) ? `${t.ns.toFixed(3)} ns` : "—";
+      const cyc = t.cycles ? ` · ${t.cycles} clk` : "";
+      const low = t.lower ? ` <span class="muted">(下限 ${t.lower})</span>` : "";
+      html += `<tr><th>${escapeHtml(t.name)}</th><td>${ns}${cyc}${low}</td></tr>`;
+    }
+    html += `</table>`;
+    if (r.casLatencies) html += `<div class="kv"><div class="k">CL 支持</div><div class="v">${escapeHtml(r.casLatencies)}</div></div>`;
+  }
+
   if (r.hasXmp && r.xmp && r.xmp.length) {
     html += `<div class="section">Intel XMP</div><table class="timing">`;
     r.xmp.forEach((p) => {
@@ -522,4 +534,227 @@ function whenBindingsReady(cb, timeoutMs = 15000) {
     setTimeout(poll, 50);
   })();
 }
-whenBindingsReady(checkEnv);
+whenBindingsReady(() => {
+  // 离线编辑 dump 不依赖设备, 绑定就绪即可用
+  $("btn-edit-load-file").disabled = false;
+  checkEnv();
+});
+
+// ---------- SPD 编辑器 ----------
+let editFieldsCache = [];
+
+$("tab-info").onclick = () => switchTab("info");
+$("tab-edit").onclick = () => switchTab("edit");
+function switchTab(which) {
+  const info = which === "info";
+  $("tab-info").classList.toggle("active", info);
+  $("tab-edit").classList.toggle("active", !info);
+  $("view-info").classList.toggle("hidden", !info);
+  $("view-edit").classList.toggle("hidden", info);
+}
+
+function setEditEnabled(on) {
+  // 注意: btn-edit-write 由 refreshEditDiff 依据 CRC/变更数决定, 不在这里放开
+  ["btn-edit-reset", "btn-edit-fixcrc", "btn-edit-export", "btn-hex-apply"].forEach(
+    (id) => ($(id).disabled = !on));
+}
+
+$("btn-edit-load-dev").onclick = async () => {
+  try { await loadEditor("EditLoadFromDevice"); }
+  catch (e) { addLog("", "载入设备失败: " + e); }
+};
+$("btn-edit-load-file").onclick = async () => {
+  try { await loadEditor("EditLoadFileDialog"); }
+  catch (e) {
+    if (String(e).includes("已取消")) return;
+    addLog("", "载入文件失败: " + e);
+  }
+};
+
+async function loadEditor(method) {
+  const st = await call(method);
+  renderEditState(st);
+  editFieldsCache = (await call("EditFields")) || [];
+  renderEditFields();
+  await refreshEditDiff();
+  setEditEnabled(true);
+  addLog("", `编辑器已载入: ${st.source}(${st.generation} ${st.size}B)`);
+}
+
+function renderEditState(st) {
+  if (!st) { $("edit-state").textContent = ""; return; }
+  const parts = [`${st.source} · ${st.generation} ${st.size}B`];
+  parts.push(st.crcOk ? "CRC 通过" : "CRC 不通过");
+  if (st.dirty) parts.push(`${st.changeCount} 处改动`);
+  $("edit-state").textContent = parts.join(" | ");
+  $("edit-state").className = "muted small " + (st.crcOk ? "" : "danger");
+}
+
+function renderEditFields() {
+  const box = $("edit-fields");
+  if (!editFieldsCache.length) { box.innerHTML = `<div class="placeholder">无可编辑字段</div>`; return; }
+  const groups = [];
+  for (const f of editFieldsCache) {
+    let g = groups.find((x) => x.name === f.group);
+    if (!g) { g = { name: f.group, items: [] }; groups.push(g); }
+    g.items.push(f);
+  }
+  let html = "";
+  for (const g of groups) {
+    html += `<div class="grp">${escapeHtml(g.name)}</div><table>`;
+    for (const f of g.items) {
+      const risk = f.risk === "high" ? "risk-high" : f.risk === "medium" ? "risk-medium" : "";
+      const kind = f.kind === "bool" ? "text" : "text";
+      const title = [f.offset, f.unit, f.note].filter(Boolean).join(" · ");
+      const list = f.key === "manufacturer" || f.key === "dramManufacturer" ? ` list="mfg-list"` : "";
+      html += `<tr title="${escapeHtml(title)}">` +
+        `<td class="${risk}">${escapeHtml(f.name)}</td>` +
+        `<td><input type="${kind}" data-key="${escapeHtml(f.key)}" value="${escapeHtml(f.value)}"${list}></td>` +
+        `<td class="act"><button data-apply="${escapeHtml(f.key)}">应用</button></td></tr>`;
+    }
+    html += `</table>`;
+  }
+  html += `<datalist id="mfg-list"></datalist>`;
+  box.innerHTML = html;
+  box.querySelectorAll("button[data-apply]").forEach((b) => {
+    b.onclick = () => applyEditField(b.getAttribute("data-apply"), box);
+  });
+  box.querySelectorAll("input[data-key]").forEach((inp) => {
+    inp.onkeydown = (ev) => { if (ev.key === "Enter") applyEditField(inp.getAttribute("data-key"), box); };
+    if (inp.getAttribute("data-key") === "manufacturer" || inp.getAttribute("data-key") === "dramManufacturer") {
+      inp.oninput = debounce(async () => {
+        try {
+          const list = await call("MfgSearch", inp.value, 30);
+          $("mfg-list").innerHTML = list.map((m) => `<option value="${escapeHtml(m.name)}"></option>`).join("");
+        } catch (e) { /* 忽略搜索错误 */ }
+      }, 300);
+    }
+  });
+}
+
+function debounce(fn, ms) {
+  let t = null;
+  return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
+}
+
+async function applyEditField(key, box) {
+  const inp = box.querySelector(`input[data-key="${key}"]`);
+  if (!inp) return;
+  const val = inp.type === "checkbox" ? String(inp.checked) : inp.value;
+  try {
+    const st = await call("EditSetField", key, val);
+    renderEditState(st);
+    editFieldsCache = (await call("EditFields")) || [];
+    renderEditFields();
+    await refreshEditDiff();
+    addLog("", `编辑 ${key} = ${val}`);
+  } catch (e) {
+    addLog("", `编辑失败(${key}): ${e}`);
+  }
+}
+
+$("btn-edit-reset").onclick = async () => {
+  if (!confirm("放弃全部修改?")) return;
+  try {
+    const st = await call("EditReset");
+    renderEditState(st);
+    editFieldsCache = (await call("EditFields")) || [];
+    renderEditFields();
+    await refreshEditDiff();
+  } catch (e) { addLog("", "重置失败: " + e); }
+};
+
+$("btn-edit-fixcrc").onclick = async () => {
+  try {
+    const st = await call("EditFixCRC");
+    renderEditState(st);
+    editFieldsCache = (await call("EditFields")) || [];
+    renderEditFields();
+    await refreshEditDiff();
+  } catch (e) { addLog("", "重算 CRC 失败: " + e); }
+};
+
+$("btn-edit-export").onclick = async () => {
+  try {
+    const path = await call("EditExportDialog");
+    addLog("", "已导出: " + path);
+  } catch (e) {
+    if (String(e).includes("已取消")) return;
+    addLog("", "导出失败: " + e);
+  }
+};
+
+$("btn-hex-apply").onclick = async () => {
+  const off = parseHexOrDec($("hex-off").value);
+  const val = parseHexOrDec($("hex-val").value);
+  if (off == null || val == null) { addLog("", "偏移/值格式无效(可用 0x1F0 或 496)"); return; }
+  try {
+    const st = await call("EditSetByte", off, val);
+    renderEditState(st);
+    await refreshEditDiff();
+    await refreshEditBytes();
+  } catch (e) { addLog("", "原始编辑失败: " + e); }
+};
+
+function parseHexOrDec(s) {
+  s = String(s || "").trim();
+  if (!s) return null;
+  const v = /^0x/i.test(s) ? parseInt(s, 16) : parseInt(s, 10);
+  return isNaN(v) ? null : v;
+}
+
+async function refreshEditBytes() {
+  try {
+    const b64 = await call("EditBytes");
+    if (typeof b64 === "string") { currentDump = b64; renderHexB64(b64); }
+  } catch (e) { /* 编辑器未载入 */ }
+}
+
+async function refreshEditDiff() {
+  const d = await call("EditDiff");
+  const lines = [];
+  lines.push(`变更 <b>${d.changeCount}</b> 字节 · CRC 字段 ${d.crcFields} · 高危 ${d.highRisk}`);
+  lines.push(d.crcOk ? "CRC 校验通过" : `<span class="danger">CRC 不通过(记得"重算 CRC")</span>`);
+  for (const f of (d.fields || [])) {
+    const cls = f.risk === "high" ? "danger" : f.risk === "medium" ? "warn" : "";
+    lines.push(`<span class="${cls}">${escapeHtml(f.region)} × ${f.count}(${escapeHtml(f.ranges)})</span>`);
+  }
+  if (d.truncated) lines.push("(变更过多, 列表已截断)");
+  $("edit-diff").innerHTML = lines.join("<br>");
+  $("btn-edit-write").disabled = !d.crcOk || d.changeCount === 0;
+  $("inp-edit-ack").placeholder = $("chk-edit-dryrun").checked ? "DRYRUN" : "WRITE";
+}
+
+$("chk-edit-dryrun").onchange = () => {
+  $("inp-edit-ack").placeholder = $("chk-edit-dryrun").checked ? "DRYRUN" : "WRITE";
+};
+
+$("btn-edit-write").onclick = async () => {
+  const dryRun = $("chk-edit-dryrun").checked;
+  if (!dryRun && !$("chk-edit-backup").checked) {
+    alert("请先勾选“我已另有备份”——写错 SPD 可能导致主板无法启动。");
+    return;
+  }
+  try {
+    const res = await call("EditApplyToDevice", false, dryRun, $("inp-edit-ack").value);
+    addLog("", (res && res.message) || "写入完成");
+    if (res && res.backupPath) addLog("", "备份: " + res.backupPath);
+    if (!dryRun) {
+      await doDump();
+      const st = await call("EditState");
+      renderEditState(st);
+      editFieldsCache = (await call("EditFields")) || [];
+      renderEditFields();
+      await refreshEditDiff();
+    } else {
+      addLog("", "干跑模式: SPD 未被改动");
+    }
+  } catch (e) { addLog("", "写入失败: " + e); }
+};
+
+// 设备连接/选择后允许把设备内容载入编辑器
+const _origEnableOps = enableOps;
+enableOps = function (on) {
+  _origEnableOps(on);
+  $("btn-edit-load-dev").disabled = !on;
+};

@@ -66,6 +66,11 @@ type App struct {
 	lastDumpAddr byte
 	lastDump     []byte
 
+	// 编辑器状态(工作副本在 spd.Editor 内)
+	editor         *spd.Editor
+	editSource     string
+	editFromDevice bool
+
 	// wctx 是 Wails 运行时上下文(OnStartup 注入), 对话框等运行时能力用。
 	wctx context.Context
 
@@ -247,6 +252,9 @@ func (a *App) Select(addr byte) error {
 	}
 	a.dev = dev
 	a.lastDump = nil // 换设备后缓存失效
+	a.editor = nil   // 换设备后编辑器内容失效(避免把 A 条的编辑写进 B 条)
+	a.editSource = ""
+	a.editFromDevice = false
 	a.dimm = &DimmInfo{Addr: addr, IsDDR5: dev.IsDDR5(), Size: dev.Size()}
 	a.logf("已选择 %#x (%s, %d 字节)", addr, map[bool]string{true: "DDR5", false: "非DDR5"}[dev.IsDDR5()], dev.Size())
 	return nil

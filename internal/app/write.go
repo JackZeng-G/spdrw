@@ -125,27 +125,39 @@ var ddr3Regions = []spdRegion{
 	{"DRAM 类型/模块类型", 2, 3, "high"},
 	{"密度/寻址", 4, 6, "high"},
 	{"组织/总线位宽", 7, 8, "high"},
-	{"时序", 9, 30, "medium"},
-	{"保留区", 31, 61, "medium"},
-	{"模块特定", 62, 116, "medium"},
-	{"模块厂商", 117, 118, "low"},
+	{"时间基准/时序", 9, 33, "medium"},
+	{"精细时序修正", 34, 38, "medium"},
+	{"保留区", 39, 59, "medium"},
+	{"模块高度/厚度/参考设计", 60, 62, "medium"},
+	{"模块特定段", 63, 116, "medium"},
+	{"模块厂商 JEP106", 117, 118, "low"},
+	{"生产地点", 119, 119, "low"},
 	{"生产日期", 120, 121, "low"},
 	{"序列号", 122, 125, "low"},
-	{"CRC", 126, 127, "low"},
+	{"CRC16", 126, 127, "low"},
 	{"部件号", 128, 145, "low"},
-	{"保留区", 146, 255, "medium"},
+	{"模块修订", 146, 147, "low"},
+	{"DRAM 厂商", 148, 149, "low"},
+	{"厂商特定/客户区", 150, 255, "medium"},
 }
 
+// DDR2(JEDEC): byte6 = 模块数据宽度, byte13 = 芯片位宽, byte63 = 校验和,
+// byte64-71 = JEP106 厂商, 72 = 地点, 73-90 = 部件号, 91-92 = 修订, 93-94 = 年月, 95-98 = 序列号。
 var ddr2Regions = []spdRegion{
-	{"头部/行列", 0, 3, "high"},
-	{"密度/位宽", 4, 6, "high"},
-	{"总线位宽", 8, 8, "high"},
-	{"时序", 9, 30, "medium"},
-	{"bank 数", 17, 17, "high"},
-	{"保留区", 31, 64, "medium"},
-	{"模块组织", 65, 72, "medium"},
+	{"头部/行列/bank", 0, 5, "high"},
+	{"模块数据宽度(总线)", 6, 6, "high"},
+	{"接口电压/时序", 7, 30, "medium"},
+	{"保留区", 31, 61, "medium"},
+	{"SPD 修订", 62, 62, "medium"},
+	{"校验和(sum 0-62)", 63, 63, "low"},
+	{"模块厂商 JEP106", 64, 71, "low"},
+	{"生产地点", 72, 72, "low"},
 	{"部件号", 73, 90, "low"},
-	{"模块特定/保留区", 91, 255, "medium"},
+	{"模块修订", 91, 92, "low"},
+	{"生产日期", 93, 94, "low"},
+	{"序列号", 95, 98, "low"},
+	{"厂商特定/EPP", 99, 127, "medium"},
+	{"保留区", 128, 255, "medium"},
 }
 
 // regionsFor 返回该世代的区域表。
@@ -187,18 +199,23 @@ func (a *App) PickWriteFile() (string, error) {
 
 // PreflightWrite 计算写入计划并做全部前置检查(不写任何字节)。
 func (a *App) PreflightWrite(path string, force bool) (*WritePreflight, error) {
+	dump, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("读取 %s: %w", path, err)
+	}
+	return a.buildPreflight(path, dump, force)
+}
+
+// buildPreflight 对一份内存 dump 做写入前检查(编辑器与文件写入共用)。
+func (a *App) buildPreflight(label string, dump []byte, force bool) (*WritePreflight, error) {
 	a.mu.Lock()
 	dev := a.dev
 	a.mu.Unlock()
 	if dev == nil {
 		return nil, fmt.Errorf("请先选择设备")
 	}
-	dump, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("读取 %s: %w", path, err)
-	}
 	pf := &WritePreflight{
-		Path: path, Addr: dev.Addr(), Generation: dev.Generation(),
+		Path: label, Addr: dev.Addr(), Generation: dev.Generation(),
 		DeviceSize: dev.Size(), FileSize: len(dump), DryRun: dev.DryRun(),
 	}
 	pf.SizeOK = len(dump) == dev.Size()
@@ -444,11 +461,15 @@ func (a *App) WriteConfirmed(path string, force, dryRun bool, ack string) (*Writ
 	if err != nil {
 		return nil, err
 	}
-	return a.writeWithPreflight(pf, force, dryRun)
+	dump, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("读取 %s: %w", path, err)
+	}
+	return a.writeWithPreflight(pf, dump, force, dryRun)
 }
 
-// writeWithPreflight 在预检通过后执行写入(测试与 WriteConfirmed 共用)。
-func (a *App) writeWithPreflight(pf *WritePreflight, force, dryRun bool) (*WriteResult, error) {
+// writeWithPreflight 在预检通过后执行写入(文件写入、编辑器写入与测试共用)。
+func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun bool) (*WriteResult, error) {
 	if pf.Blocked {
 		return nil, fmt.Errorf("写入被拒绝: %s", pf.BlockReason)
 	}
@@ -457,10 +478,6 @@ func (a *App) writeWithPreflight(pf *WritePreflight, force, dryRun bool) (*Write
 	a.mu.Unlock()
 	if dev == nil {
 		return nil, fmt.Errorf("请先选择设备")
-	}
-	dump, err := os.ReadFile(pf.Path)
-	if err != nil {
-		return nil, fmt.Errorf("读取 %s: %w", pf.Path, err)
 	}
 	res := &WriteResult{DryRun: dryRun}
 

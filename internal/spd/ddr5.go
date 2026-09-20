@@ -187,6 +187,122 @@ func (d *DDR5SPD) XMP30HeaderCRCOK() bool {
 	return Crc16(sec[:62]) == uint16(sec[62])|uint16(sec[63])<<8
 }
 
+// DDR5 容量与身份区之后的时序布局(byte 20-102, 全部 16bit 小端)。
+//
+// 单位(依据 JEDEC DDR5 SPD / ec- DDR5XMPEditor 的实测布局):
+//   - tCKAVGmin/max、tAA/tRCD/tRP/tRAS/tRC/tWR、tRRD_L/tCCD_L/tCCD_L_WR/tCCD_L_WR2/
+//     tFAW/tCCD_L_WTR/tCCD_S_WTR/tRTP/tCCD_M*: 1ps
+//   - tRFC1/tRFC2/tRFCsb: 1ns
+//   - 每组的最后一个字节是 lower limit(计数, 非时间)
+const (
+	ddr5OffTCKMin    = 20
+	ddr5OffTCKMax    = 22
+	ddr5OffCL        = 24 // 5 字节位图: CL 20..98 偶数
+	ddr5OffTAA       = 30
+	ddr5OffTRCD      = 32
+	ddr5OffTRP       = 34
+	ddr5OffTRAS      = 36
+	ddr5OffTRC       = 38
+	ddr5OffTWR       = 40
+	ddr5OffTRFC1SLR  = 42
+	ddr5OffTRFC2SLR  = 44
+	ddr5OffTRFCSbSLR = 46
+	ddr5OffTRFC1DLR  = 48
+	ddr5OffTRFC2DLR  = 50
+	ddr5OffTRFCSbDLR = 52
+	ddr5OffTRRDL     = 70
+	ddr5OffTCCDL     = 73
+	ddr5OffTCCDLWR   = 76
+	ddr5OffTCCDLWR2  = 79
+	ddr5OffTFAW      = 82
+	ddr5OffTCCDLWTR  = 85
+	ddr5OffTCCDSWTR  = 88
+	ddr5OffTRTP      = 91
+	ddr5OffTCCDM     = 94
+	ddr5OffTCCDMWR   = 97
+	ddr5OffTCCDMWTR  = 100
+)
+
+// DDR5Timings 是 DDR5 JEDEC 标准时序(单位: 除 RFC* 为 ns 外均为 ps)。
+type DDR5Timings struct {
+	TCKMinPS int
+	TCKMaxPS int
+	CL       []int
+	TAA      int
+	TRCD     int
+	TRP      int
+	TRAS     int
+	TRC      int
+	TWR      int
+	RFC1SLR  int // ns
+	RFC2SLR  int
+	RFCSbSLR int
+	RFC1DLR  int
+	RFC2DLR  int
+	RFCSbDLR int
+	TRRDL    int
+	TCCDL    int
+	TCCDLWR  int
+	TCCDLWR2 int
+	TFAW     int
+	TCCDLWTR int
+	TCCDSWTR int
+	TRTP     int
+	Limits   map[string]int // 各组 lower limit(tRRD_L/tCCD_L/... 的计数下限)
+}
+
+func (d *DDR5SPD) u16(off int) int { return int(d.raw[off]) | int(d.raw[off+1])<<8 }
+
+// Timings 解析 DDR5 JEDEC 时序(byte 20-102)。
+func (d *DDR5SPD) Timings() DDR5Timings {
+	t := DDR5Timings{
+		TCKMinPS: d.u16(ddr5OffTCKMin),
+		TCKMaxPS: d.u16(ddr5OffTCKMax),
+		TAA:      d.u16(ddr5OffTAA),
+		TRCD:     d.u16(ddr5OffTRCD),
+		TRP:      d.u16(ddr5OffTRP),
+		TRAS:     d.u16(ddr5OffTRAS),
+		TRC:      d.u16(ddr5OffTRC),
+		TWR:      d.u16(ddr5OffTWR),
+		RFC1SLR:  d.u16(ddr5OffTRFC1SLR),
+		RFC2SLR:  d.u16(ddr5OffTRFC2SLR),
+		RFCSbSLR: d.u16(ddr5OffTRFCSbSLR),
+		RFC1DLR:  d.u16(ddr5OffTRFC1DLR),
+		RFC2DLR:  d.u16(ddr5OffTRFC2DLR),
+		RFCSbDLR: d.u16(ddr5OffTRFCSbDLR),
+		TRRDL:    d.u16(ddr5OffTRRDL),
+		TCCDL:    d.u16(ddr5OffTCCDL),
+		TCCDLWR:  d.u16(ddr5OffTCCDLWR),
+		TCCDLWR2: d.u16(ddr5OffTCCDLWR2),
+		TFAW:     d.u16(ddr5OffTFAW),
+		TCCDLWTR: d.u16(ddr5OffTCCDLWTR),
+		TCCDSWTR: d.u16(ddr5OffTCCDSWTR),
+		TRTP:     d.u16(ddr5OffTRTP),
+	}
+	// CL 掩码: 5 字节, 位 i → CL = 20 + 2i(20..98 偶数)
+	for byteIdx := 0; byteIdx < 5; byteIdx++ {
+		v := d.raw[ddr5OffCL+byteIdx]
+		for bit := 0; bit < 8; bit++ {
+			if v&(1<<bit) != 0 {
+				t.CL = append(t.CL, 20+2*(byteIdx*8+bit))
+			}
+		}
+	}
+	limits := map[string]int{}
+	for name, off := range map[string]int{
+		"tRRD_L": ddr5OffTRRDL + 2, "tCCD_L": ddr5OffTCCDL + 2,
+		"tCCD_L_WR": ddr5OffTCCDLWR + 2, "tCCD_L_WR2": ddr5OffTCCDLWR2 + 2,
+		"tFAW": ddr5OffTFAW + 2, "tCCD_L_WTR": ddr5OffTCCDLWTR + 2,
+		"tCCD_S_WTR": ddr5OffTCCDSWTR + 2, "tRTP": ddr5OffTRTP + 2,
+		"tCCD_M": ddr5OffTCCDM + 2, "tCCD_M_WR": ddr5OffTCCDMWR + 2,
+		"tCCD_M_WTR": ddr5OffTCCDMWTR + 2,
+	} {
+		limits[name] = int(d.raw[off])
+	}
+	t.Limits = limits
+	return t
+}
+
 // CRCOK 校验基础段 CRC(bytes 0-509, CRC 在 510-511)、XMP 3.0 header 与各存在的
 // profile 槽 CRC、EXPO 段 CRC。空白槽位跳过(未使用的槽常为 0x00/0xFF)。
 func (d *DDR5SPD) CRCOK() bool {

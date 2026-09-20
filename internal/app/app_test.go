@@ -364,7 +364,7 @@ func TestWriteDryRunNoBusDataWrites(t *testing.T) {
 	}
 	// 只统计干跑写入阶段(预检里的 DDR4 块首写测试本身会写字节, 不属干跑范围)
 	rec.Reset()
-	res, err := a.writeWithPreflight(pf, false, true)
+	res, err := a.writeWithPreflight(pf, want, false, true)
 	if err != nil {
 		t.Fatalf("干跑写入: %v", err)
 	}
@@ -468,4 +468,177 @@ func TestCloseDevice(t *testing.T) {
 		t.Fatal("CloseDevice 后 Dump 应报错")
 	}
 	a.Close()
+}
+
+// ---------------- 编辑器服务层 ----------------
+
+func TestEditorFlow(t *testing.T) {
+	a, _ := newWriteTestApp(t)
+
+	st, err := a.EditLoadFromDevice()
+	if err != nil {
+		t.Fatalf("EditLoadFromDevice: %v", err)
+	}
+	if st.Generation != "DDR4" || st.Size != 512 || !st.CanWrite || st.Dirty {
+		t.Fatalf("初始状态: %+v", st)
+	}
+	if !st.CRCOK {
+		t.Fatal("初始 CRC 应通过")
+	}
+
+	fields, err := a.EditFields()
+	if err != nil || len(fields) < 10 {
+		t.Fatalf("EditFields: %v len=%d", err, len(fields))
+	}
+
+	// 改部件号 + 序列号
+	if _, err := a.EditSetField("partNumber", "EDITED-PN"); err != nil {
+		t.Fatalf("EditSetField: %v", err)
+	}
+	if _, err := a.EditSetField("serial", "AABBCCDD"); err != nil {
+		t.Fatalf("EditSetField(serial): %v", err)
+	}
+	st, _ = a.EditState()
+	if !st.Dirty || st.ChangeCount == 0 {
+		t.Fatalf("应有变更: %+v", st)
+	}
+
+	d, err := a.EditDiff()
+	if err != nil {
+		t.Fatalf("EditDiff: %v", err)
+	}
+	if d.ChangeCount == 0 || len(d.Changes) == 0 {
+		t.Fatalf("diff 为空: %+v", d)
+	}
+	// 序列号在 bytes 325-328, 改 4 字节 → 变更数 >= 4
+	if d.ChangeCount < 4 {
+		t.Fatalf("变更数偏少: %d", d.ChangeCount)
+	}
+	for _, fl := range d.Fields {
+		if fl.Region == "序列号" && fl.Count != 4 {
+			t.Fatalf("序列号区域字节数应为 4: %+v", fl)
+		}
+	}
+
+	// 原始 hex 编辑
+	if _, err := a.EditSetByte(500, 0x5A); err != nil {
+		t.Fatalf("EditSetByte: %v", err)
+	}
+	if _, err := a.EditSetByte(500, 300); err == nil {
+		t.Fatal("越界字节值应被拒")
+	}
+
+	// 导出到文件
+	dir := t.TempDir()
+	out := filepath.Join(dir, "edited.bin")
+	a.SaveDialog = func(title, def string) (string, error) { return out, nil }
+	a.OpenDialog = func(title string) (string, error) { return out, nil }
+	path, err := a.EditExportDialog()
+	if err != nil {
+		t.Fatalf("EditExportDialog: %v", err)
+	}
+	if path != out {
+		t.Fatalf("导出路径: %s", path)
+	}
+	saved, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("读取导出文件: %v", err)
+	}
+	got, _ := a.EditBytes()
+	for i := range saved {
+		if saved[i] != got[i] {
+			t.Fatalf("导出内容不一致 @%#x", i)
+		}
+	}
+
+	// 放弃修改
+	st, err = a.EditReset()
+	if err != nil {
+		t.Fatalf("EditReset: %v", err)
+	}
+	if st.Dirty || st.ChangeCount != 0 {
+		t.Fatalf("Reset 后应无变更: %+v", st)
+	}
+}
+
+func TestEditorApplyToDevice(t *testing.T) {
+	a, f := newWriteTestApp(t)
+	if _, err := a.EditLoadFromDevice(); err != nil {
+		t.Fatal(err)
+	}
+	// 改序列号并重算 CRC(第 3 段不参与 CRC, 所以还要改一个 base 区字节)
+	if _, err := a.EditSetField("serial", "11223344"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.EditSetField("ddr4.tAA", "15.0"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.EditFixCRC(); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := a.EditState(); !st.CRCOK {
+		t.Fatalf("重算后 CRC 应通过: %+v", st)
+	}
+
+	// 确认串错误 → 拒绝
+	if _, err := a.EditApplyToDevice(false, false, "nope"); err == nil {
+		t.Fatal("确认串错误应被拒")
+	}
+	// 干跑: 不写总线数据
+	res, err := a.EditApplyToDevice(false, true, "DRYRUN")
+	if err != nil {
+		t.Fatalf("干跑: %v", err)
+	}
+	if !res.DryRun || res.Written == 0 {
+		t.Fatalf("干跑结果: %+v", res)
+	}
+	// 真实写入
+	res, err = a.EditApplyToDevice(false, false, "WRITE")
+	if err != nil {
+		t.Fatalf("写入: %v", err)
+	}
+	if !res.Verified || res.BackupPath == "" {
+		t.Fatalf("写入结果: %+v", res)
+	}
+	// 设备内容 = 编辑器内容
+	cur, _ := a.Dump()
+	want, _ := a.EditBytes()
+	for i := range cur {
+		if cur[i] != want[i] {
+			t.Fatalf("设备内容未同步 @%#x", i)
+		}
+	}
+	// 设备内容 CRC 通过
+	ok, err := spd.CRCOK(cur)
+	if err != nil || !ok {
+		t.Fatalf("写入后 CRC 应通过: %v %v", ok, err)
+	}
+	_ = f
+}
+
+func TestEditorBlocksWriteWhenFileStale(t *testing.T) {
+	a, _ := newWriteTestApp(t)
+	// 未载入编辑器就写
+	if _, err := a.EditApplyToDevice(false, false, "WRITE"); err == nil {
+		t.Fatal("未载入编辑器应拒绝")
+	}
+	// 从文件载入 → 不允许写设备
+	dump := ddr4Fixture()
+	path := writeTempFile(t, dump)
+	if _, err := a.EditLoadPath(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.EditApplyToDevice(false, false, "WRITE"); err == nil {
+		t.Fatal("来自文件的内容不应允许写设备")
+	}
+	// 换设备后编辑器失效
+	if _, err := a.EditLoadFromDevice(); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Select(0x50); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.EditState(); err == nil {
+		t.Fatal("重新 Select 后编辑器应失效")
+	}
 }
