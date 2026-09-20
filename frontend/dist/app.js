@@ -640,7 +640,7 @@ function renderEditFields() {
     }
     html += `</table>`;
   }
-  html += `<datalist id="mfg-list"></datalist>`;
+  // datalist 是静态元素(在 index.html 里), 这里只填选项
   box.innerHTML = html;
   box.querySelectorAll("button[data-apply]").forEach((b) => {
     b.onclick = () => applyEditField(b.getAttribute("data-apply"), box);
