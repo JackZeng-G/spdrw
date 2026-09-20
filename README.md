@@ -70,6 +70,16 @@ go test ./...
 
 > ⚠️ **写 SPD 有变砖风险**: 错误内容(尤其 DDR5 PMIC/内存相关字段)可能导致无法开机。修改前务必备份 dump, 并确认校验通过。BIOS 设置里若开启了 "SPD Write Disable", 需先关闭才能写入。
 
+## 仓库布局说明
+
+本仓库**自带全部可复现材料**, 不内嵌任何参考项目:
+
+- 上游 SPD-Reader-Writer 只作为出处引用(见下)。JEP106 厂商表已提取为
+  `internal/spd/data/idcodes.json`, 出处与重建流程记在 `internal/spd/data/README.md`
+  (上游 URL + 取用 commit + 为什么必须拆成 15 个银行 + 三步重建命令)。
+- 第三方二进制(PawnIO 模块与 DLL)出处与许可证见 `third_party/pawnio/README.md`。
+- 真实 dump 语料(67 份)与其来源清单见 `testdata/spd/MANIFEST.md`。
+
 ## 文档
 
 - **[docs/实现文档.md](docs/实现文档.md)** — 实现细节:分层架构、SMBus/DDR4/DDR5 协议语义、Wails 绑定要点、测试体系、真机调试经验(踩坑实录)
