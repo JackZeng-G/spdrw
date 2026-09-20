@@ -312,5 +312,18 @@ $("btn-wp-clear").onclick = async () => {
 onEvent("dump:done", (n) => addLog(`读取完成 ${n} 字节`));
 onEvent("write:progress", (n) => { /* 进度可在此更新 */ });
 
-// 初始化
-checkEnv();
+// ---------- 启动 ----------
+// Wails v2 的绑定在 DOM ready 后由后端异步注入, 页面脚本先于其执行,
+// 因此轮询等待 window.go.main.App 就绪再初始化。
+function whenBindingsReady(cb, timeoutMs = 15000) {
+  const start = Date.now();
+  (function poll() {
+    if (window.go && window.go.main && window.go.main.App) return cb();
+    if (Date.now() - start > timeoutMs) {
+      setWarn("Wails 绑定未就绪——请用 build.ps1(或 -tags desktop,production)构建本程序。");
+      return;
+    }
+    setTimeout(poll, 50);
+  })();
+}
+whenBindingsReady(checkEnv);
