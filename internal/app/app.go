@@ -257,6 +257,8 @@ func (a *App) Dump() ([]byte, error) {
 }
 
 // dumpDiagnostics 只读诊断: HUB 型号/页寄存器/写保护状态/NVM 窗口。
+// 关键实验: 分别在 MR11=0..7 下读两个窗口(0x00-0x07 与 0x80-0x87)的首字节,
+// 对比哪种映射能读到非零 NVM —— 定位这台 HUB 的实际访问方式。
 func (a *App) dumpDiagnostics() {
 	t := a.active
 	addr := a.dev.Addr()
@@ -268,16 +270,31 @@ func (a *App) dumpDiagnostics() {
 		}
 	}
 	rd("MR0 DeviceType", 0x00)
+	rd("MR3 Config", 0x03)
 	rd("MR11 PageReg", 0x0B)
 	rd("MR29 I2CWriteProt", 0x1D)
-	rd("MR3 LegacyMode", 0x03)
 	rd("MR48 Status", 0x30)
-	for _, c := range []byte{0x80, 0x81, 0x82, 0xFF} {
-		if b, err := t.ReadByteData(addr, c); err == nil {
-			a.logf("  NVM[%#x] = %#x", c, b)
-		} else {
-			a.logf("  NVM[%#x] 读取失败: %v", c, err)
+
+	// 页扫描: 写 MR11=p → 读两个窗口各取 4 字节。
+	// 页 0 的 NVM 头部是 51 00 ?? 12..., 任何窗口出现该特征即 NVM 映射所在。
+	for p := 0; p <= 7; p++ {
+		if err := t.WriteByteData(addr, 0x0B, byte(p)); err != nil {
+			a.logf("  页 %d 设置失败: %v", p, err)
+			continue
 		}
+		var lo, hi []byte
+		for c := byte(0x00); c <= 0x03; c++ {
+			if b, err := t.ReadByteData(addr, c); err == nil {
+				lo = append(lo, b)
+			}
+		}
+		for c := byte(0x80); c <= 0x83; c++ {
+			if b, err := t.ReadByteData(addr, c); err == nil {
+				hi = append(hi, b)
+			}
+		}
+		a.logf("  页 %d: 窗口0x00=% x | 窗口0x80=% x", p, lo, hi)
+		time.Sleep(2 * time.Millisecond)
 	}
 }
 
