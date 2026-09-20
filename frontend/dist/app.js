@@ -200,8 +200,9 @@ $("btn-scan").onclick = async () => {
     if (isNaN(idx) || idx < 0) throw new Error("未枚举到控制器");
     await call("Connect", idx); // 重复连接无害, 保证状态就绪
     const dimms = (await call("Scan")) || [];
+    selectedAddr = null; // 重扫后回到空白, 等待用户手动选择
     fillDimmSelect(dimms);
-    addLog("", `重扫完成: ${dimms.length} 个 SPD 设备(选择设备后才会读取)`);
+    addLog("", `重扫完成: ${dimms.length} 个 SPD 设备, 请选择要读取的 DIMM`);
   } catch (e) { addLog("", "扫描失败: " + e); }
 };
 
