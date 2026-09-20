@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"spdrw/internal/smbus"
 	"spdrw/internal/spd"
 )
 
@@ -101,4 +102,156 @@ func manufacturerCodeByte(dump []byte) byte {
 		return dump[513]
 	}
 	return 0
+}
+
+// TestCorpusEditPreflightDryRun 把"编辑 → 预检 → 干跑"整条写入前置链路在全部真实 dump
+// 上跑一遍。真机写入前, 这些步骤是我们能离线验证的全部内容 —— 语料覆盖 DDR3/DDR4/DDR5
+// 三代, 能发现跨世代的 CRC 偏移、分页、保护探测问题。
+func TestCorpusEditPreflightDryRun(t *testing.T) {
+	dir := filepath.Join("..", "..", "testdata", "spd")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Skipf("无语料目录(%v)", err)
+	}
+	ran := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), "ddr") {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".bin") && !strings.HasSuffix(name, ".spd") {
+			continue
+		}
+		dump, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		rt, size, err := spd.Identify(dump)
+		if err != nil || len(dump) != size {
+			continue
+		}
+
+		// 用 Fake 装一份"设备内容 = 语料"的镜像
+		f := smbus.NewFake()
+		if rt == spd.DDR5 || rt == spd.LPDDR5 || rt == spd.DDR5NVDIMMP || rt == spd.LPDDR5X {
+			f.SetDDR5(true)
+		}
+		copy(f.EEProm, dump)
+		a := New()
+		a.transports = []smbus.Transport{f}
+		if err := a.Connect(0); err != nil {
+			t.Fatalf("%s: Connect: %v", name, err)
+		}
+		if err := a.Select(0x50); err != nil {
+			t.Fatalf("%s: Select: %v", name, err)
+		}
+
+		// 1) 未修改的 dump 干跑: 不应有变更
+		pf, err := a.buildPreflight(name, dump, false)
+		if err != nil {
+			t.Errorf("%s: 预检失败: %v", name, err)
+			continue
+		}
+		if pf.Blocked {
+			t.Errorf("%s: 未修改的合法 dump 不应被阻断: %s", name, pf.BlockReason)
+			continue
+		}
+		if pf.ChangeCount != 0 {
+			t.Errorf("%s: 与设备内容相同却算出 %d 个变更", name, pf.ChangeCount)
+		}
+
+		// 2) 改一个字段 + 重算 CRC → 预检必须放行, 且 CRC 字节排在计划最后
+		ed, err := spd.NewEditor(dump)
+		if err != nil {
+			continue
+		}
+		changed := false
+		for _, key := range []string{"serial", "partNumber"} {
+			if err := ed.SetField(key, "EDITED01"); err == nil {
+				changed = true
+				break
+			}
+		}
+		if !changed {
+			continue
+		}
+		if _, err := ed.FixCRC(); err != nil {
+			t.Errorf("%s: FixCRC: %v", name, err)
+			continue
+		}
+		target := append([]byte{}, ed.Bytes()...)
+
+		// 2a) 故意不修 CRC 时必须被 CRC 门拦住(至少对带 CRC 的世代)
+		if rt != spd.DDR2 && rt != spd.DDR2FBDIMM && rt != spd.DDR2FBDIMMP {
+			raw := append([]byte{}, ed.Bytes()...)
+			// 直接改一个数据字节, 不动 CRC
+			raw[10] ^= 0x01
+			badPf, err := a.buildPreflight(name, raw, false)
+			if err != nil {
+				t.Errorf("%s: 预检(坏 CRC)失败: %v", name, err)
+			} else if !badPf.Blocked || badPf.BlockKind != "crc" {
+				t.Errorf("%s: CRC 不通过时必须按 crc 门阻断, got blocked=%v kind=%q",
+					name, badPf.Blocked, badPf.BlockKind)
+			}
+		}
+
+		pf, err = a.buildPreflight(name, target, false)
+		if err != nil {
+			t.Errorf("%s: 预检(改后)失败: %v", name, err)
+			continue
+		}
+		if pf.Blocked {
+			t.Errorf("%s: 改一个字段+重算 CRC 后不应被阻断: %s(%s)", name, pf.BlockReason, pf.BlockKind)
+			continue
+		}
+		if pf.ChangeCount == 0 {
+			t.Errorf("%s: 应有变更", name)
+		}
+		sawCRC := false
+		for i, c := range pf.Changes {
+			if c.IsCRC {
+				sawCRC = true
+				continue
+			}
+			if sawCRC {
+				t.Errorf("%s: 第 %d 个非 CRC 变更出现在 CRC 之后", name, i)
+				break
+			}
+		}
+
+		// 3) 干跑: 一个 NVM 字节都不能写
+		st, err := a.EditLoadFromDevice()
+		if err != nil {
+			t.Errorf("%s: EditLoadFromDevice: %v", name, err)
+			continue
+		}
+		if st.Generation == "" || st.Size != size {
+			t.Errorf("%s: 编辑器状态异常: %+v", name, st)
+		}
+		if _, err := a.SetDryRun(true); err != nil {
+			t.Errorf("%s: SetDryRun: %v", name, err)
+			continue
+		}
+		res, err := a.writeWithPreflight(pf, target, false, true)
+		if err != nil {
+			t.Errorf("%s: 干跑失败: %v", name, err)
+			_, _ = a.SetDryRun(false)
+			continue
+		}
+		if res.Written == 0 || !res.DryRun {
+			t.Errorf("%s: 干跑结果异常: %+v", name, res)
+		}
+		// 设备(Eeprom)必须原封不动
+		for i := 0; i < size; i++ {
+			if f.EEProm[i] != dump[i] {
+				t.Fatalf("%s: 干跑改动了设备内容 @%#x", name, i)
+			}
+		}
+		_, _ = a.SetDryRun(false)
+		ran++
+	}
+	if ran == 0 {
+		t.Skip("语料为空")
+	}
+	t.Logf("编辑→预检→干跑 全链路: %d 份真实 dump 全部通过", ran)
 }

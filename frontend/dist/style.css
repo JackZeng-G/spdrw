@@ -183,7 +183,8 @@ table.timing th { background: var(--bg3); color: var(--muted); text-align: left;
   background: var(--bg3); color: inherit; border: 1px solid var(--border);
   border-radius: 3px; padding: 1px 4px; width: 100%; font: 11px Consolas, monospace;
 }
-.edit-fields td.act { width: 52px; }
+.edit-fields td.act { width: 64px; }
+.edit-fields td.act button { white-space: nowrap; width: 100%; }
 .edit-fields .risk-high { color: var(--danger); }
 .edit-fields .risk-medium { color: #ffd479; }
 .ops.hexedit { flex-direction: row !important; flex-wrap: wrap; align-items: center; gap: 6px !important; font-size: 12px; }

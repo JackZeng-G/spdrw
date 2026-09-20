@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<!--
+  UI 冒烟测试页(真实浏览器执行 app.js + style.css)。
+  用法(agent 浏览器):
+    1) 打开 file://<repo>/frontend/test/smoke.html
+    2) 读 window.__SMOKE:{steps:[{name,ok}], jsErrors:[]}
+    3) 全部 ok 且 jsErrors 为空即通过
+  注意: 该文件放在 dist/ 之外, 不会被 go:embed 打进 exe。
+-->
+<meta charset="UTF-8">
+<title>SPDRW UI 冒烟测试(真实浏览器)</title>
+<link rel="stylesheet" href="../dist/style.css">
+</head>
+<body>
+  <!-- 与 dist/index.html 同构的最小骨架: 直接复用真实 id, 由 app.js 驱动 -->
+  <header id="topbar">
+    <div class="brand">SPD 读写 <span class="sub">smoke</span></div>
+    <div class="bar-controls">
+      <label>控制器
+        <select id="ctl-select"><option value="-1">— 未枚举 —</option></select>
+        <button id="btn-refresh-ctl">⟳</button>
+      </label>
+      <button id="btn-scan">重扫设备</button>
+      <label>设备
+        <select id="dimm-select"><option value="-1">— 未扫描 —</option></select>
+      </label>
+    </div>
+    <div id="env-status" class="env-unknown">检测环境…</div>
+  </header>
+  <div id="warn-bar" class="hidden"></div>
+  <main id="layout">
+    <section id="hex-panel">
+      <div class="panel-title">SPD 内容 <span id="hex-meta" class="muted"></span></div>
+      <div id="hexgrid" class="hexgrid"><div class="placeholder">先连接控制器并扫描设备</div></div>
+    </section>
+    <aside id="info-panel">
+      <div class="tabs">
+        <button id="tab-info" class="tab active">SPD 信息</button>
+        <button id="tab-edit" class="tab">编辑器</button>
+      </div>
+      <div id="view-info" class="tabview">
+        <div class="panel-title">SPD 信息</div>
+        <div id="info-body" class="info-body"><div class="placeholder">读取后显示</div></div>
+        <div class="panel-title ops-title">操作</div>
+        <div class="ops">
+          <button id="btn-save" disabled>保存 dump…</button>
+          <button id="btn-load-decode" disabled>打开文件解析…</button>
+          <button id="btn-verify" disabled>校验文件…</button>
+          <button id="btn-write" disabled class="danger">写入文件…</button>
+          <input type="file" id="file-input" class="hidden">
+        </div>
+        <div class="panel-title ops-title">写保护</div>
+        <div class="ops wp">
+          <div id="wp-blocks" class="wp-blocks muted">—</div>
+          <div id="wp-summary" class="wp-summary"></div>
+          <button id="btn-wp-status" disabled>查询保护状态</button>
+          <button id="btn-wp-set" disabled class="danger">RSWP 加保护…</button>
+          <button id="btn-wp-clear" disabled>RSWP 清除</button>
+        </div>
+      </div>
+      <div id="view-edit" class="tabview hidden">
+        <div class="panel-title">编辑器 <span id="edit-state" class="muted small"></span></div>
+        <div class="ops edit-load">
+          <button id="btn-edit-load-dev" disabled>从设备载入</button>
+          <button id="btn-edit-load-file" disabled>打开 dump 文件…</button>
+          <button id="btn-edit-reset" disabled>放弃修改</button>
+          <button id="btn-edit-fixcrc" disabled>重算 CRC</button>
+          <button id="btn-edit-export" disabled>另存为…</button>
+        </div>
+        <div id="edit-fields" class="edit-fields"><div class="placeholder">先载入数据</div></div>
+        <div class="panel-title ops-title">原始 hex 编辑</div>
+        <div class="ops hexedit">
+          <label>偏移 <input id="hex-off" type="text" placeholder="0x1F0" size="6"></label>
+          <label>值 <input id="hex-val" type="text" placeholder="0x5A" size="5"></label>
+          <button id="btn-hex-apply" disabled>写入该字节</button>
+        </div>
+        <div class="panel-title ops-title">变更与写入</div>
+        <div class="ops edit-apply">
+          <div id="edit-diff" class="edit-diff muted">—</div>
+          <label class="chk"><input type="checkbox" id="chk-edit-backup"> 我已另有备份</label>
+          <label class="chk"><input type="checkbox" id="chk-edit-dryrun"> 干跑(不写入)</label>
+          <label class="chk">确认串 <input id="inp-edit-ack" type="text" placeholder="WRITE" size="10" autocomplete="off"></label>
+          <button id="btn-edit-write" class="danger" disabled>预览并写入设备…</button>
+        </div>
+      </div>
+    </aside>
+  </main>
+  <footer id="log-panel">
+    <div class="panel-title">日志</div>
+    <div id="log" class="log"></div>
+  </footer>
+  <div id="write-modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-title">写入前确认 <span id="write-target" class="muted"></span></div>
+      <div id="write-summary" class="write-summary"></div>
+      <div id="write-fields" class="write-fields"></div>
+      <details id="write-changes-wrap"><summary>逐字节 diff</summary><div id="write-changes" class="write-changes"></div></details>
+      <label class="chk"><input type="checkbox" id="chk-backup"> 我已另有备份</label>
+      <label class="chk"><input type="checkbox" id="chk-force"> 强制模式</label>
+      <label class="chk"><input type="checkbox" id="chk-dryrun"> 干跑模式</label>
+      <label class="chk">确认串 <input id="inp-ack" type="text" placeholder="WRITE" autocomplete="off"></label>
+      <div class="modal-actions">
+        <button id="btn-write-cancel">取消</button>
+        <button id="btn-write-go" class="danger" disabled>执行写入</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+  // ---- Wails 绑定桩(必须在 app.js 之前定义) ----
+  window.__CALLS = [];
+  window.__ERRORS = [];
+  window.addEventListener("error", (e) => window.__ERRORS.push("error: " + e.message));
+  window.addEventListener("unhandledrejection", (e) => window.__ERRORS.push("reject: " + (e.reason && e.reason.message || e.reason)));
+  const rec = (name, ret) => (...args) => {
+    window.__CALLS.push({ name, args });
+    return Promise.resolve(typeof ret === "function" ? ret(...args) : ret);
+  };
+  const dumpB64 = (() => {
+    const d = new Uint8Array(512);
+    d[2] = 0x0c;
+    let s = "";
+    for (const b of d) s += String.fromCharCode(b);
+    return btoa(s);
+  })();
+  const ddr4Status = {
+    ddr5: false, generation: "DDR4", blocks: 4, blockSize: 128,
+    protected: [true, false, false, false], known: [true, true, true, true],
+    mr11: 0, mr12: 0, mr13: 0, mr29: 0, mr48: 0, mr52: 0,
+    protectionHit: false, offline: false, pswpApplicable: true, pswp: false,
+    warnings: ["DDR4 无写保护状态寄存器: 状态由块首写测试得出"],
+  };
+  const editState = { source: "设备 0x50", generation: "DDR4", size: 512, dirty: true, changeCount: 3, crcOk: true, canWrite: true };
+  const editFields = [
+    { key: "partNumber", name: "部件号", group: "常用信息", kind: "string", value: "TEST-PN", offset: "0x149-20B", risk: "low" },
+    { key: "serial", name: "序列号(hex)", group: "常用信息", kind: "hex", value: "DEADBEEF", offset: "0x145-4B", risk: "low" },
+    { key: "ddr4.tAA", name: "tAA", group: "JEDEC 时序", kind: "float", unit: "ns", value: "1.5", offset: "0x18/0x7B", risk: "medium" },
+  ];
+  const editDiff = {
+    changes: [{ offset: 325, old: 0xde, new: 0x11, field: "序列号", risk: "low" }],
+    fields: [{ region: "序列号", risk: "low", count: 4, ranges: "0x145-0x148" }],
+    highRisk: 0, crcFields: 2, changeCount: 3, crcOk: true, truncated: false,
+  };
+  const preflight = {
+    path: "/tmp/dump.bin", addr: 0x50, generation: "DDR4", deviceSize: 512, fileSize: 512, sizeOk: true,
+    changeCount: 3, crcBytes: 2, changes: [
+      { offset: 325, old: 1, new: 0xab, block: 2, isCRC: false },
+      { offset: 126, old: 0x11, new: 0x40, block: 0, isCRC: true },
+    ],
+    changesTruncated: false, fields: [{ region: "序列号", risk: "low", count: 1, ranges: "0x145" }],
+    highRiskCount: 0, protectedBlocks: [], unknownBlocks: [], pswp: false,
+    targetCrcValid: true, currentCrcValid: true, dryRun: false, warnings: [], blocked: false, blockReason: "", blockKind: "",
+  };
+  window.go = { app: { App: {
+    ListControllers: rec("ListControllers", [{ index: 0, name: "Intel PCH SMBus (I801)", kind: "i801", noSpdWp: true, wpKnown: true }]),
+    AutoConnectAll: rec("AutoConnectAll", { ctlIndex: 0, dimms: [{ addr: 0x50, isDdr5: false, ramType: "DDR4", size: 512 }] }),
+    Connect: rec("Connect", null),
+    Scan: rec("Scan", [{ addr: 0x50, isDdr5: false, ramType: "DDR4", size: 512 }]),
+    Select: rec("Select", null),
+    Dump: rec("Dump", dumpB64),
+    Decode: rec("Decode", { valid: true, ramType: "DDR4", moduleType: "UDIMM", totalMib: 8192, totalHuman: "8 GiB", ranks: 2, deviceWidth: 8, busWidth: 64, manufacturer: "Micron Technology", partNumber: "TEST-PN", dateYear: 2024, dateWeek: 15, serialHex: "DEADBEEF", crcOk: true, hasTimings: true, tck: { ns: 0.75, cycles: 0 }, casLatencies: "17,18,19,20" }),
+    ReadFileBytes: rec("ReadFileBytes", dumpB64),
+    SaveDumpDialog: rec("SaveDumpDialog", null),
+    DecodeFileDialog: rec("DecodeFileDialog", null),
+    VerifyFileDialog: rec("VerifyFileDialog", "/tmp/x.bin"),
+    PickWriteFile: rec("PickWriteFile", "/tmp/dump.bin"),
+    PreflightWrite: rec("PreflightWrite", preflight),
+    WriteConfirmed: rec("WriteConfirmed", { dryRun: false, written: 3, total: 3, backupPath: "/root/.spdrw/backups/x.bin", verified: true, message: "写入并校验通过" }),
+    WPStatus: rec("WPStatus", ddr4Status),
+    WPSet: rec("WPSet", null),
+    WPClear: rec("WPClear", null),
+    EditLoadFromDevice: rec("EditLoadFromDevice", editState),
+    EditLoadFileDialog: rec("EditLoadFileDialog", editState),
+    EditFields: rec("EditFields", editFields),
+    EditSetField: rec("EditSetField", editState),
+    EditSetByte: rec("EditSetByte", editState),
+    EditFixCRC: rec("EditFixCRC", editState),
+    EditReset: rec("EditReset", { ...editState, dirty: false, changeCount: 0 }),
+    EditDiff: rec("EditDiff", editDiff),
+    EditBytes: rec("EditBytes", dumpB64),
+    EditExportDialog: rec("EditExportDialog", "/tmp/edited.bin"),
+    EditApplyToDevice: rec("EditApplyToDevice", { dryRun: false, written: 3, total: 3, backupPath: "/root/.spdrw/backups/e.bin", verified: true, message: "写入并校验通过" }),
+    EditState: rec("EditState", editState),
+    MfgSearch: rec("MfgSearch", [{ name: "Micron Technology", cont: 0x80, code: 0x2c }]),
+  } } };
+  window.runtime = { EventsOn: () => {} };
+  </script>
+  <script src="../dist/app.js"></script>
+  <script>
+  // ---- 驱动脚本: 按真实用户顺序点一遍, 结果写入 window.__SMOKE ----
+  (async () => {
+    const $ = (id) => document.getElementById(id);
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const out = { steps: [], errors: window.__ERRORS, calls: () => window.__CALLS.map((c) => c.name) };
+    const step = (name, v) => out.steps.push({ name, ok: !!v, detail: v === undefined ? "" : String(v) });
+    await wait(120); // 等绑定轮询与 checkEnv/autoConnectAll
+
+    step("启动后环境状态", $("env-status").textContent.includes("控制器"));
+    step("设备下拉有 DDR4 条目", $("dimm-select").textContent.includes("DDR4"));
+
+    // 选择设备 → 读 dump → 信息面板
+    $("dimm-select").value = "80";
+    await $("dimm-select").onchange();
+    await wait(60);
+    step("hex 视图渲染", $("hexgrid").querySelector(".row") !== null);
+    step("hex 行数 > 10", $("hexgrid").querySelectorAll(".row").length > 10);
+    step("信息面板显示厂商", $("info-body").textContent.includes("Micron"));
+    step("信息面板显示容量", $("info-body").textContent.includes("8 GiB"));
+    step("时序表出现", $("info-body").textContent.includes("tCK"));
+
+    // 写保护
+    await $("btn-wp-status").onclick();
+    await wait(60);
+    step("保护块渲染 4 个", $("wp-blocks").children.length === 4);
+    step("块显示字节范围", $("wp-blocks").textContent.includes("0x000-0x07F"));
+    step("B0 显示锁定", $("wp-blocks").children[0].className.includes("on"));
+    step("PSWP 文案(DDR4 适用)", $("wp-summary").textContent.includes("PSWP 未设置"));
+
+    // 编辑器标签页
+    $("tab-edit").onclick();
+    step("编辑器页可见", !$("view-edit").classList.contains("hidden"));
+    await $("btn-edit-load-dev").onclick();
+    await wait(60);
+    step("编辑器显示来源", $("edit-state").textContent.includes("设备 0x50"));
+    step("字段表单渲染输入框", $("edit-fields").querySelectorAll("input").length >= 3);
+    step("字段含 JEDEC 时序分组", $("edit-fields").textContent.includes("JEDEC 时序"));
+    step("变更面板显示 CRC 通过", $("edit-diff").textContent.includes("CRC 校验通过"));
+
+    // 应用一个字段
+    const btn = $("edit-fields").querySelectorAll("button")[0];
+    btn.click();
+    await wait(60);
+    step("应用字段调用了 EditSetField", window.__CALLS.some((c) => c.name === "EditSetField"));
+
+    // 编辑器写入: 未勾备份应被拦
+    let alerted = null;
+    window.alert = (m) => { alerted = m; };
+    $("chk-edit-backup").checked = false;
+    $("inp-edit-ack").value = "WRITE";
+    await $("btn-edit-write").onclick();
+    await wait(40);
+    step("未勾备份被拦", alerted !== null);
+    step("未勾备份未调用后端", !window.__CALLS.some((c) => c.name === "EditApplyToDevice"));
+
+    // 勾上备份 + 确认串 → 应调用
+    $("chk-edit-backup").checked = true;
+    await $("btn-edit-write").onclick();
+    await wait(60);
+    step("勾选后执行写入", window.__CALLS.some((c) => c.name === "EditApplyToDevice"));
+
+    // 文件写入面板
+    $("tab-info").onclick();
+    await $("btn-write").onclick();
+    await wait(60);
+    step("写入确认面板弹出", !$("write-modal").classList.contains("hidden"));
+    step("面板显示变更数", $("write-summary").textContent.includes("变更"));
+    step("面板显示 diff", $("write-changes").textContent.includes("0x145"));
+    $("btn-write-cancel").onclick();
+    step("取消后关闭", $("write-modal").classList.contains("hidden"));
+
+    // 干跑提示
+    $("tab-edit").onclick();
+    $("chk-edit-dryrun").checked = true;
+    $("chk-edit-dryrun").onchange();
+    step("干跑提示确认串 DRYRUN", $("inp-edit-ack").placeholder === "DRYRUN");
+
+    out.jsErrors = window.__ERRORS;
+    window.__SMOKE = out;
+  })();
+  </script>
+</body>
+</html>
