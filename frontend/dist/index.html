@@ -64,6 +64,27 @@
     <div id="log" class="log"></div>
   </footer>
 
+  <!-- 写入前确认面板: 必须看过 diff/风险并输入确认串才会执行 -->
+  <div id="write-modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-title">写入前确认 <span id="write-target" class="muted"></span></div>
+      <div id="write-summary" class="write-summary"></div>
+      <div id="write-fields" class="write-fields"></div>
+      <details id="write-changes-wrap">
+        <summary>逐字节 diff</summary>
+        <div id="write-changes" class="write-changes"></div>
+      </details>
+      <label class="chk"><input type="checkbox" id="chk-backup"> 我已另有备份(写入前程序还会自动备份一份到 ~/.spdrw/backups)</label>
+      <label class="chk"><input type="checkbox" id="chk-force"> 强制模式(写入全部字节, 含相同值)</label>
+      <label class="chk"><input type="checkbox" id="chk-dryrun"> 干跑模式(只做计划与校验, 一个字节都不写)</label>
+      <label class="chk">确认串 <input id="inp-ack" type="text" placeholder="WRITE" autocomplete="off"></label>
+      <div class="modal-actions">
+        <button id="btn-write-cancel">取消</button>
+        <button id="btn-write-go" class="danger" disabled>执行写入</button>
+      </div>
+    </div>
+  </div>
+
   <script src="app.js"></script>
 </body>
 </html>

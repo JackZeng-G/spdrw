@@ -1,10 +1,12 @@
 package eeprom
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	"spdrw/internal/smbus"
+	"spdrw/internal/spd"
 )
 
 // newDDR4 返回已连接的 DDR4 设备(EEPROM 预填 0x11)。
@@ -217,13 +219,204 @@ func TestWriteRejectsOversizeAndProtected(t *testing.T) {
 	if err := d.Write(make([]byte, 513), false, nil); err == nil {
 		t.Fatal("超尺寸应报错")
 	}
+	// 长度不足也必须报错(旧实现 dump[:size] 会切片越界 panic)
+	if err := d.Write(make([]byte, 256), false, nil); err == nil {
+		t.Fatal("长度不足应报错(不能截断/补齐)")
+	}
+	if err := d.Write(nil, false, nil); err == nil {
+		t.Fatal("空数据应报错")
+	}
 	// 模拟页 0 受保护(前 128 字节 NACK)
 	ft.ProtectedFrom = 0
 	dump := make([]byte, 512)
 	dump[0] = 0x77
 	err := d.Write(dump, false, nil)
-	if err == nil || !strings.Contains(err.Error(), "0x00") {
+	if err == nil || !strings.Contains(err.Error(), "0x000") {
 		t.Fatalf("受保护写入应报错并带偏移, got %v", err)
+	}
+	var we *WriteError
+	if !errors.As(err, &we) {
+		t.Fatalf("应返回 WriteError(带已写/未写计数), got %T", err)
+	}
+	if we.Written != 0 || we.Total == 0 {
+		t.Fatalf("WriteError 计数不对: %+v", we)
+	}
+	if !strings.Contains(we.Error(), "未写") {
+		t.Fatalf("错误应说明未写字节数: %v", we)
+	}
+}
+
+func TestPlanWriteCRCLastAndDiffOnly(t *testing.T) {
+	// CRC 字节必须排在计划最后: 写中断时留下的是"CRC 与数据不符"的 SPD
+	d, ft := newDDR4(t)
+	cur := make([]byte, 512)
+	for i := range cur {
+		cur[i] = 0x11
+	}
+	copy(ft.EEProm, cur)
+	target := make([]byte, 512)
+	copy(target, cur)
+	target[325] = 0xAB // 序列号
+	crc := spd.Crc16(target[:126])
+	target[126], target[127] = byte(crc), byte(crc>>8)
+
+	changes, err := d.PlanWrite(target, false)
+	if err != nil {
+		t.Fatalf("PlanWrite: %v", err)
+	}
+	if len(changes) != 3 {
+		t.Fatalf("应只有 3 个变更(数据 1 + CRC 2), got %d: %+v", len(changes), changes)
+	}
+	last := changes[len(changes)-1]
+	if !last.IsCRC {
+		t.Fatalf("最后一个变更必须是 CRC 字节: %+v", changes)
+	}
+	// 所有 CRC 变更必须排在所有非 CRC 变更之后
+	seenCRC := false
+	for i, c := range changes {
+		if c.IsCRC {
+			seenCRC = true
+			continue
+		}
+		if seenCRC {
+			t.Fatalf("第 %d 个非 CRC 变更出现在 CRC 之后: %+v", i, changes)
+		}
+	}
+	// 计划本身不写任何字节
+	if len(ft.WriteLog) != 0 {
+		t.Fatalf("PlanWrite 不应写字节: %+v", ft.WriteLog)
+	}
+	// 执行后内容与目标一致
+	if err := d.ApplyWrite(target, changes, nil); err != nil {
+		t.Fatalf("ApplyWrite: %v", err)
+	}
+	got, _ := d.ReadAll()
+	for i := range got {
+		if got[i] != target[i] {
+			t.Fatalf("写入后不一致 @%#x: %#x != %#x", i, got[i], target[i])
+		}
+	}
+}
+
+func TestApplyWriteAbortsWithCounts(t *testing.T) {
+	// 第 3 次写起持续失败(模拟总线故障/写保护): 必须报"已写/未写"并中止
+	rec, ft := smbus.NewRecordingFake()
+	ft.EEProm[2] = 0x0C
+	ft.Fill(0x11)
+	rec.FailWriteFrom = 3
+	d, err := New(rec, 0x50)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	target := make([]byte, 512)
+	for i := range target {
+		target[i] = 0x11
+	}
+	target[0x10], target[0x20], target[0x30], target[0x40] = 0xAA, 0xBB, 0xCC, 0xDD
+	changes, err := d.PlanWrite(target, false)
+	if err != nil {
+		t.Fatalf("PlanWrite: %v", err)
+	}
+	if len(changes) < 4 {
+		t.Fatalf("计划过短: %d", len(changes))
+	}
+	err = d.ApplyWrite(target, changes, nil)
+	var we *WriteError
+	if !errors.As(err, &we) {
+		t.Fatalf("应返回 WriteError, got %v", err)
+	}
+	if we.Written != 2 {
+		t.Fatalf("应已写 2 字节, got %d", we.Written)
+	}
+	if we.Offset != changes[2].Offset {
+		t.Fatalf("中止偏移应为 %#x, got %#x", changes[2].Offset, we.Offset)
+	}
+	if !strings.Contains(err.Error(), "已写 2") {
+		t.Fatalf("错误应带已写计数: %v", err)
+	}
+}
+
+func TestDryRunWritesNothingToBus(t *testing.T) {
+	rec, ft := smbus.NewRecordingFake()
+	ft.EEProm[2] = 0x0C
+	ft.Fill(0x11)
+	d, err := New(rec, 0x50)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := d.SetDryRun(true); err != nil {
+		t.Fatalf("SetDryRun: %v", err)
+	}
+	target := make([]byte, 512)
+	for i := range target {
+		target[i] = 0x22
+	}
+	rec.Reset() // 只统计干跑写入阶段
+	changes, err := d.PlanWrite(target, true)
+	if err != nil {
+		t.Fatalf("PlanWrite: %v", err)
+	}
+	if err := d.ApplyWrite(target, changes, nil); err != nil {
+		t.Fatalf("ApplyWrite(干跑): %v", err)
+	}
+	if n := len(rec.DataWrites()); n != 0 {
+		t.Fatalf("干跑模式不得产生数据写事务, got %d: %s", n, rec)
+	}
+	// 影子反映目标内容
+	img := d.ShadowImage()
+	if len(img) != 512 || img[0] != 0x22 {
+		t.Fatalf("影子镜像不对: len=%d", len(img))
+	}
+	// 设备真实内容未变
+	real, _ := ft.ReadByteData(0x50, 0x00)
+	if real != 0x11 {
+		t.Fatalf("干跑不得改动真实内容, got %#x", real)
+	}
+	// 关闭干跑后真实写入生效
+	if err := d.SetDryRun(false); err != nil {
+		t.Fatalf("SetDryRun(false): %v", err)
+	}
+	if err := d.Write(target, true, nil); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if !ft.Closed && ft.EEProm[0] != 0x22 {
+		t.Fatalf("真实写入未生效: %#x", ft.EEProm[0])
+	}
+}
+
+func TestCRCOffsetsTargets(t *testing.T) {
+	d4, _ := newDDR4(t)
+	dump := make([]byte, 512)
+	for i := range dump {
+		dump[i] = 0x11
+	}
+	got := d4.CRCOffsets(dump)
+	if len(got) != 4 {
+		t.Fatalf("DDR4 应有 4 个 CRC 字节, got %v", got)
+	}
+	// 空白(全 0xFF)扩展区不产生 CRC 目标
+	d5 := &Device{size: 1024, ddr5: true}
+	blank := make([]byte, 1024)
+	for i := range blank {
+		blank[i] = 0xFF
+	}
+	if got := d5.CRCOffsets(blank); len(got) != 2 {
+		t.Fatalf("空白 DDR5 只应有基础段 2 个 CRC, got %v", got)
+	}
+	// 有 XMP header 时补 header CRC
+	blank[0x280], blank[0x281] = 0x0C, 0x4A
+	got = d5.CRCOffsets(blank)
+	if len(got) != 4 {
+		t.Fatalf("DDR5 + XMP header 应有 4 个 CRC, got %v", got)
+	}
+	found := false
+	for _, o := range got {
+		if o == 0x2BE {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("应包含 XMP header CRC 0x2BE: %v", got)
 	}
 }
 

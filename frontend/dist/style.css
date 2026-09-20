@@ -133,3 +133,33 @@ table.timing th { background: var(--bg3); color: var(--muted); text-align: left;
 #log-panel { height: 130px; display: flex; flex-direction: column; border-top: 1px solid var(--border); }
 .log { flex: 1; overflow-y: auto; padding: 6px 12px; font: 11px/1.6 Consolas, monospace; user-select: text; }
 .log .t { color: var(--muted); margin-right: 8px; }
+
+/* 写入确认面板 */
+.modal {
+  position: fixed; inset: 0; background: rgba(0, 0, 0, .55);
+  display: flex; align-items: center; justify-content: center; z-index: 50;
+}
+.modal.hidden { display: none; }
+.modal-card {
+  width: min(760px, 92vw); max-height: 86vh; overflow-y: auto;
+  background: var(--bg2, #1b1e26); border: 1px solid var(--border); border-radius: 8px;
+  padding: 14px 16px; box-shadow: 0 12px 40px rgba(0, 0, 0, .5);
+}
+.modal-title { font-weight: 600; margin-bottom: 8px; }
+.write-summary { font-size: 12px; line-height: 1.8; margin-bottom: 8px; }
+.write-summary .danger, .write-fields .danger { color: var(--danger); }
+.write-summary .warn, .write-fields .warn { color: #ffd479; }
+.write-fields table { width: 100%; border-collapse: collapse; font-size: 12px; margin-bottom: 8px; }
+.write-fields th, .write-fields td { border: 1px solid var(--border); padding: 2px 8px; text-align: left; }
+.write-fields th { background: var(--bg3); color: var(--muted); }
+.write-changes {
+  max-height: 180px; overflow-y: auto; font: 11px/1.5 Consolas, monospace;
+  padding: 6px 8px; border: 1px solid var(--border); border-radius: 4px; margin: 6px 0;
+}
+.modal-card details summary { cursor: pointer; font-size: 12px; color: var(--muted); }
+.modal-card .chk { display: block; font-size: 12px; margin: 6px 0; }
+.modal-card .chk input[type="text"] {
+  background: var(--bg3); color: inherit; border: 1px solid var(--border);
+  border-radius: 4px; padding: 3px 6px; width: 140px;
+}
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 10px; }

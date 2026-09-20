@@ -89,6 +89,18 @@ func (r *RecordingTransport) Writes() []Op {
 // WriteCount 返回写事务总数。
 func (r *RecordingTransport) WriteCount() int { return len(r.Writes()) }
 
+// DataWrites 返回数据写事务(排除 quick 命令: 页选择/写保护命令不算数据写入)。
+// 干跑模式断言"零数据写"时用这个。
+func (r *RecordingTransport) DataWrites() []Op {
+	var out []Op
+	for _, op := range r.Writes() {
+		if op.Kind != OpQuick {
+			out = append(out, op)
+		}
+	}
+	return out
+}
+
 // WritesAtCmd 返回对指定 cmd 的全部 byte-data 写事务。
 func (r *RecordingTransport) WritesAtCmd(cmd byte) []Op {
 	var out []Op
