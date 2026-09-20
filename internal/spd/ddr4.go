@@ -19,7 +19,7 @@ var DDR4ModuleTypeNames = map[byte]string{
 	0x0D: "32b-SO-DIMM",
 }
 
-// DDR4 是解析后的 DDR4 SPD(512 字节)。
+// DDR4SPD 是解析后的 DDR4 SPD(512 字节)。
 type DDR4SPD struct{ raw []byte }
 
 // NewDDR4 构造; dump 必须 512 字节且类型为 DDR4 系。
@@ -36,9 +36,6 @@ func NewDDR4(dump []byte) (*DDR4SPD, error) {
 	}
 	return &DDR4SPD{raw: dump}, nil
 }
-
-// Raw 返回原始数据(修复 CRC 时可写)。
-func (d *DDR4SPD) Raw() []byte { return d.raw }
 
 // Timebase 返回时间基准(byte 15)。
 func (d *DDR4SPD) Timebase() Timebase { return DDR4Timebase(d.raw) }
@@ -117,10 +114,10 @@ func (d *DDR4SPD) timing(mediumOffset, fineOffset int) Timing {
 
 func (d *DDR4SPD) timingLong(medium int) Timing { return Timing{Medium: medium} }
 
-// tCKAVGmin 最小周期时间(byte 18 / fine 125)。
+// TCKAVGmin 最小周期时间(byte 18 / fine 125)。
 func (d *DDR4SPD) TCKAVGmin() Timing { return d.timing(18, 125) }
 
-// tCKAVGmax 最大周期时间(byte 19 / fine 124)。
+// TCKAVGmax 最大周期时间(byte 19 / fine 124)。
 func (d *DDR4SPD) TCKAVGmax() Timing { return d.timing(19, 124) }
 
 // CasLatencies CAS 掩码(byte 20-23)。

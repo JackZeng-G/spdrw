@@ -143,7 +143,7 @@ func (a *App) editStateLocked() (*EditState, error) {
 	}
 	return &EditState{
 		Source:      a.editSource,
-		Generation:  a.editor.RamType().String(),
+		Generation:  a.editor.RAMType().String(),
 		Size:        a.editor.Size(),
 		Dirty:       a.editor.IsDirty(),
 		ChangeCount: len(a.editor.Changes()),

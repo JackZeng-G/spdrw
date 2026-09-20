@@ -97,8 +97,8 @@ func TestDecodeDumpDDR4(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeDump: %v", err)
 	}
-	if r.RamType != "DDR4" || r.ModuleType != "UDIMM" {
-		t.Fatalf("type = %s/%s", r.RamType, r.ModuleType)
+	if r.RAMType != "DDR4" || r.ModuleType != "UDIMM" {
+		t.Fatalf("type = %s/%s", r.RAMType, r.ModuleType)
 	}
 	if r.Manufacturer != "Micron Technology" {
 		t.Fatalf("mfg = %q", r.Manufacturer)
@@ -141,7 +141,7 @@ func TestDecodeDumpDDR3(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeDump: %v", err)
 	}
-	if r.RamType != "DDR3" || r.TotalMib != 2048 {
+	if r.RAMType != "DDR3" || r.TotalMib != 2048 {
 		t.Fatalf("res = %+v", r)
 	}
 	if r.Basic == nil || r.Basic.TCKminNS != 1.5 {

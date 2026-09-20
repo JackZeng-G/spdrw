@@ -83,6 +83,11 @@ class El {
 }
 
 // makeAppStub 生成常用绑定桩, 记录每次调用到 calls(含 overrides)。
+// EMPTY_VERIFY 是"没有改动"的复核结果(EditVerifyFile 返回形状); 多处桩与断言共用一份。
+export const EMPTY_DIFF = Object.freeze({
+  changes: [], fields: [], highRisk: 0, crcFields: 0, changeCount: 0, crcOk: true, truncated: false,
+});
+
 export function makeAppStub(overrides = {}) {
   const calls = [];
   const wrap = (name, ret) => (...args) => {
@@ -125,9 +130,9 @@ export function makeAppStub(overrides = {}) {
     EditSetByte: null,
     EditFixCRC: null,
     EditReset: null,
-    EditDiff: { changes: [], fields: [], highRisk: 0, crcFields: 0, changeCount: 0, crcOk: true, truncated: false },
+    EditDiff: EMPTY_DIFF,
     EditBytes: dumpB64,
-    EditVerifyFile: { changes: [], fields: [], highRisk: 0, crcFields: 0, changeCount: 0, crcOk: true, truncated: false },
+    EditVerifyFile: EMPTY_DIFF,
     EditExportDialog: null,
     EditApplyToDevice: null,
     EditState: {
@@ -184,6 +189,14 @@ export function loadApp({ appStub } = {}) {
 // flush 让挂起的 promise 链跑完。
 export const flush = () => new Promise((r) => setTimeout(r, 0));
 
+// readDevice 走一遍"选设备 → 触发 onchange → 等渲染"的真实用户动作。
+// 各测试文件的地址与需要等待的轮数略有不同(信息面板多一次渲染), 所以做成可调。
+export async function readDevice(el, { addr = "80", flushes = 1 } = {}) {
+  el("dimm-select").value = addr;
+  await el("dimm-select").onchange();
+  for (let i = 0; i < flushes; i++) await flush();
+}
+
 function matches(el, sel) {
   const m = /^([a-zA-Z]+)?\[([\w-]+)(?:="([^"]*)")?\]$/.exec(sel);
   if (m) {
@@ -223,7 +236,7 @@ function unescapeHtml(s) {
 }
 
 // seedFromHTML 依据 index.html 的静态 class 属性初始化元素(真实浏览器语义)。
-export function seedFromHTML(document, html) {
+function seedFromHTML(document, html) {
   const re = /<([a-zA-Z]+)\b([^>]*\bid="([^"]+)"[^>]*)>/g;
   let m;
   while ((m = re.exec(html)) !== null) {

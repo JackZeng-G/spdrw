@@ -1,7 +1,11 @@
 // 前端契约测试(编辑器): 标签页、字段渲染/应用、hex 编辑、写入护栏。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { loadApp, makeAppStub, flush } from "./harness.mjs";
+import fs from "node:fs";
+import { loadApp, makeAppStub, flush, readDevice, EMPTY_DIFF } from "./harness.mjs";
+
+// 真实发布页(静态文案的唯一来源, 例如确认串占位符)
+const html = fs.readFileSync(new URL("../dist/index.html", import.meta.url), "utf8");
 
 const state = {
   source: "设备 0x50", generation: "DDR4", size: 512,
@@ -21,12 +25,6 @@ const diffDirty = {
 };
 
 // 读取设备后编辑器会自动载入(界面已无"从设备载入"按钮), 测试统一走这条路径。
-async function readDevice(el) {
-  el("dimm-select").value = "80";
-  await el("dimm-select").onchange();
-  await flush();
-}
-
 function setup(overrides = {}) {
   const { stub, calls } = makeAppStub({
     EditState: () => state,
@@ -258,7 +256,7 @@ test("写入设备: 不再需要勾备份/干跑, 只需确认串(自动备份)"
   const call = calls.find((c) => c.name === "EditApplyToDevice");
   assert.ok(call, "应调用 EditApplyToDevice");
   assert.deepEqual([...call.args], [false, false, "WRITE"]);
-  assert.equal(el("inp-edit-ack").placeholder, "WRITE");
+  assert.match(html, /id="inp-edit-ack"[^>]*placeholder="WRITE"/, "确认串占位符应写在 index.html 里");
 });
 
 test("编辑器: 写入失败后自动重读设备(回滚结果只有重读才知道)", async () => {
@@ -285,7 +283,7 @@ test("写入成功后自动复核(不需要用户手点)", async () => {
   const { el, calls } = setup({
     EditVerifyFile: () => {
       verified = true;
-      return { changes: [], fields: [], highRisk: 0, crcFields: 0, changeCount: 0, crcOk: true, truncated: false };
+      return EMPTY_DIFF;
     },
   });
   await flush();

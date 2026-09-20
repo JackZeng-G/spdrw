@@ -16,24 +16,6 @@ func editorFor(t *testing.T, dump []byte) *Editor {
 	return e
 }
 
-// assertReversible 断言"改回原值后与原始 dump 逐字节相同"。
-func assertReversible(t *testing.T, e *Editor, key, orig string) {
-	t.Helper()
-	if err := e.SetField(key, "临时值-忽略"); err == nil {
-		// 值可行时再改回来
-		_ = e.SetField(key, orig)
-	}
-	if err := e.SetField(key, orig); err != nil {
-		t.Fatalf("恢复 %s=%q: %v", key, orig, err)
-	}
-	got := e.Bytes()
-	for i := range got {
-		if got[i] != e.original[i] {
-			t.Fatalf("恢复后 @0x%03X 仍不同: %02X != %02X", i, got[i], e.original[i])
-		}
-	}
-}
-
 func TestEditorIdentityRoundTripAllGenerations(t *testing.T) {
 	cases := []struct {
 		name string

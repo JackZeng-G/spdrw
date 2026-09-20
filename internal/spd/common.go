@@ -12,29 +12,29 @@ import (
 //go:embed data/idcodes.json
 var idcodesFS embed.FS
 
-// RamType 是 SPD byte2 的 DRAM 类型(值与 SPD 标准/原版一致)。
-type RamType byte
+// RAMType 是 SPD byte2 的 DRAM 类型(值与 SPD 标准/原版一致)。
+type RAMType byte
 
 const (
-	Unknown     RamType = 0x00
-	SDRAM       RamType = 0x04
-	DDR         RamType = 0x07
-	DDR2        RamType = 0x08
-	DDR2FBDIMM  RamType = 0x09
-	DDR2FBDIMMP RamType = 0x0A
-	DDR3        RamType = 0x0B
-	DDR4        RamType = 0x0C
-	LPDDR3      RamType = 0x0F
-	DDR4E       RamType = 0x0E
-	LPDDR4      RamType = 0x10
-	LPDDR4X     RamType = 0x11
-	DDR5        RamType = 0x12
-	LPDDR5      RamType = 0x13
-	DDR5NVDIMMP RamType = 0x14
-	LPDDR5X     RamType = 0x15
+	Unknown     RAMType = 0x00
+	SDRAM       RAMType = 0x04
+	DDR         RAMType = 0x07
+	DDR2        RAMType = 0x08
+	DDR2FBDIMM  RAMType = 0x09
+	DDR2FBDIMMP RAMType = 0x0A
+	DDR3        RAMType = 0x0B
+	DDR4        RAMType = 0x0C
+	LPDDR3      RAMType = 0x0F
+	DDR4E       RAMType = 0x0E
+	LPDDR4      RAMType = 0x10
+	LPDDR4X     RAMType = 0x11
+	DDR5        RAMType = 0x12
+	LPDDR5      RAMType = 0x13
+	DDR5NVDIMMP RAMType = 0x14
+	LPDDR5X     RAMType = 0x15
 )
 
-var ramTypeNames = map[RamType]string{
+var ramTypeNames = map[RAMType]string{
 	SDRAM: "SDRAM", DDR: "DDR", DDR2: "DDR2", DDR2FBDIMM: "DDR2 FB-DIMM",
 	DDR2FBDIMMP: "DDR2 FB-DIMM Probe", DDR3: "DDR3", DDR4: "DDR4", DDR4E: "DDR4E",
 	LPDDR3: "LPDDR3", LPDDR4: "LPDDR4", LPDDR4X: "LPDDR4X", DDR5: "DDR5",
@@ -42,7 +42,7 @@ var ramTypeNames = map[RamType]string{
 }
 
 // String 返回类型的中性英文名(UI 直接展示)。
-func (r RamType) String() string {
+func (r RAMType) String() string {
 	if n, ok := ramTypeNames[r]; ok {
 		return n
 	}
@@ -50,7 +50,7 @@ func (r RamType) String() string {
 }
 
 // SPDSize 返回该类型的 SPD 序列总大小。未知类型 256(原版同款保守值)。
-func (r RamType) SPDSize() int {
+func (r RAMType) SPDSize() int {
 	switch r {
 	case DDR4, DDR4E, LPDDR3, LPDDR4, LPDDR4X:
 		return 512
@@ -63,21 +63,21 @@ func (r RamType) SPDSize() int {
 
 // Identify 从 dump 识别 RAM 类型与 SPD 大小。
 // dump 至少 3 字节; 返回的类型字节无效时 Unknown。
-func Identify(dump []byte) (RamType, int, error) {
+func Identify(dump []byte) (RAMType, int, error) {
 	if len(dump) < 3 {
 		return Unknown, 0, fmt.Errorf("数据过短(%d 字节)", len(dump))
 	}
-	rt := RamType(dump[2])
+	rt := RAMType(dump[2])
 	if _, ok := ramTypeNames[rt]; !ok {
 		rt = Unknown
 	}
 	return rt, rt.SPDSize(), nil
 }
 
-// RamTypeFromByte 把 SPD byte2(器件类型) 映射成 RamType; 未知类型返回 Unknown。
+// RAMTypeFromByte 把 SPD byte2(器件类型) 映射成 RAMType; 未知类型返回 Unknown。
 // 设备侧只有这一个字节可用来判定世代, 写入前必须与待写内容的世代对照。
-func RamTypeFromByte(b byte) RamType {
-	rt := RamType(b)
+func RAMTypeFromByte(b byte) RAMType {
+	rt := RAMType(b)
 	if _, ok := ramTypeNames[rt]; !ok {
 		return Unknown
 	}
@@ -89,7 +89,7 @@ func ValidateSpd(dump []byte) bool {
 	if len(dump) < 256 {
 		return false
 	}
-	rt := RamType(dump[2])
+	rt := RAMType(dump[2])
 	switch rt {
 	case DDR4, DDR4E, LPDDR3, LPDDR4, LPDDR4X:
 		return len(dump) == 512

@@ -2,7 +2,11 @@
 // (原"写入文件…"面板与"干跑/我已另有备份"勾选已按用户反馈移除; 备份每次自动做。)
 import test from "node:test";
 import assert from "node:assert/strict";
-import { loadApp, makeAppStub, flush } from "./harness.mjs";
+import fs from "node:fs";
+import { loadApp, makeAppStub, flush, readDevice, EMPTY_DIFF } from "./harness.mjs";
+
+// 真实发布页(确认串占位符等静态文案的唯一来源; app.js 不再重复赋值)
+const html = fs.readFileSync(new URL("../dist/index.html", import.meta.url), "utf8");
 
 const state = {
   source: "设备 0x50", generation: "DDR4", size: 512,
@@ -23,17 +27,11 @@ function setup(overrides = {}) {
       dryRun: false, written: 3, total: 3, verified: true,
       backupPath: "/root/.spdrw/backups/x.bin", message: "写入并校验通过: 3 字节(备份 …)",
     }),
-    EditVerifyFile: () => ({ changes: [], fields: [], highRisk: 0, crcFields: 0, changeCount: 0, crcOk: true, truncated: false }),
+    EditVerifyFile: () => EMPTY_DIFF,
     ...overrides,
   });
   const h = loadApp({ appStub: stub });
   return { ...h, calls };
-}
-
-async function readDevice(el) {
-  el("dimm-select").value = "80";
-  await el("dimm-select").onchange();
-  await flush();
 }
 
 test("写入: 编辑器是唯一入口, 传 (force=false, dryRun=false, ack)", async () => {
@@ -59,7 +57,7 @@ test("写入: 界面不再有备份/干跑勾选(备份每次自动做)", async 
   for (const id of ["chk-edit-backup", "chk-edit-dryrun", "chk-backup", "chk-dryrun", "write-modal"]) {
     assert.equal(el(id).className, "", `${id} 应已从界面移除`);
   }
-  assert.equal(el("inp-edit-ack").placeholder, "WRITE");
+  assert.match(html, /id="inp-edit-ack"[^>]*placeholder="WRITE"/, "确认串占位符应写在 index.html 里");
 });
 
 test("写入: CRC 不通过或有未保存内容时按钮状态正确", async () => {

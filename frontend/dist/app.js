@@ -3,7 +3,6 @@
 
 const $ = (id) => document.getElementById(id);
 let currentDump = null;
-let selectedAddr = null;
 let editorLoaded = false;   // 编辑器已载入时, 左侧 hex 可直接点击修改
 
 // ---------- Wails 绑定桥 ----------
@@ -307,7 +306,6 @@ $("dimm-select").onchange = async () => {
   syncSelectTitle($("dimm-select"));
   if (isNaN(addr) || addr < 0) return;
   try {
-    selectedAddr = addr;
     // 换设备会清空后端的编辑器(避免把 A 条的改动写进 B 条): 前端必须同步复位,
     // 否则界面还留着上一根条的内容与改动, 用户会误以为在操作当前这根。
     if (editorLoaded) addLog("", "已切换设备: 编辑器内容已失效, 需要重新“从设备载入”");
@@ -333,7 +331,6 @@ function resetEditorState() {
   $("edit-groups").innerHTML = "";
   $("edit-diff").innerHTML = "—";
   $("edit-state").textContent = "";
-  setEditEnabled(false);
   setEditLoadedUI(false);
 }
 
@@ -915,7 +912,7 @@ function renderInfo(r) {
   if (r.serialHex) head += kv("序列号", `<span class="mono">0x${escapeHtml(r.serialHex)}</span>`);
   head += kv("校验", `<span class="badge ${r.crcOk ? "ok" : "bad"}">${r.crcOk ? "CRC 通过" : "CRC 不通过"}</span>`);
   head += `</div>`;
-  // 读取方式整行放(时钟/事务数/耗时/回退原因): 挤在"校验"那一行会折成两行, 很难看
+  // 读取方式由 refreshReadMode 渲染成紧凑一行, 附在"CRC"那一行后面(见 refreshReadMode)
   head += `<div class="read-line"><span id="read-mode" class="muted small"></span></div>`;
 
   let html = card("概要", head);
@@ -1017,8 +1014,6 @@ $("btn-verify").onclick = async () => {
 // 读加速(块读 → 字读 → 逐字节)与等待模式(忙等 → 折中)都不再需要手动开关:
 // 程序自己按"探测可用档位 + 失败自动降级"选路, 并把实际档位/降级原因写进日志。
 
-let busTuningCache = null;
-
 async function refreshReadMode() {
   try {
     const target = $("read-mode");
@@ -1028,7 +1023,6 @@ async function refreshReadMode() {
     let tune = "";
     try {
       const t = await call("BusTuning");
-      busTuningCache = t;
       if (t) {
         const clock = t.clockHz ? `${(t.clockHz / 1000).toFixed(1)}kHz` : "";
         tune = [clock, t.sleepModeName].filter(Boolean).join(" ");
@@ -1169,7 +1163,6 @@ $("btn-wp-clear").onclick = async () => {
 
 // ---------- 事件 ----------
 onEvent("dump:done", (n) => addLog("", `读取完成 ${n} 字节`));
-onEvent("write:progress", (n) => { /* 进度可在此更新 */ });
 
 // ---------- 启动 ----------
 // Wails v2 的绑定在 DOM ready 后由后端异步注入, 页面脚本先于其执行,
@@ -1216,12 +1209,6 @@ function switchTab(which) {
   $("view-edit").classList.toggle("hidden", info);
 }
 
-function setEditEnabled(on) {
-  // 操作类按钮(放弃修改/重算 CRC/另存/与设备比对)由 setEditLoadedUI 按"真载入了没有"控制;
-  // btn-edit-write 另由 refreshEditDiff 依据 CRC/变更数决定。
-  if (!on) setEditLoadedUI(false);
-}
-
 // 重新读取设备: 读取后会自动把内容接进编辑器(见 doDump/adoptDeviceEditor)
 $("btn-edit-reload").onclick = async () => {
   try { await doDump(); addLog("", "已重新读取设备并刷新编辑器"); }
@@ -1241,7 +1228,6 @@ async function loadEditor(method) {
   editFieldsCache = (await call("EditFields")) || [];
   renderEditFields();
   await refreshEditDiff();
-  setEditEnabled(true);
   editorLoaded = true;
   setEditLoadedUI(true);
   await refreshEditBytes();   // 让左侧 hex 进入"可直接点击修改"状态
@@ -1434,10 +1420,7 @@ async function refreshEditDiff() {
   if (d.truncated) lines.push("(变更过多, 列表已截断)");
   $("edit-diff").innerHTML = lines.join("<br>");
   $("btn-edit-write").disabled = !d.crcOk || d.changeCount === 0;
-  $("inp-edit-ack").placeholder = "WRITE";
 }
-
-
 
 // resyncAfterFailure 写入失败后重新读取设备并刷新视图与校验状态。
 // (回滚成功与否只有重读才知道; 左侧必须显示设备的真实内容。)
@@ -1498,10 +1481,4 @@ $("btn-edit-write").onclick = async () => {
     await resyncAfterFailure();
     addLog("", "编辑器里仍是你的目标内容(可修正后重试); 左侧显示的是设备当前实际内容");
   }
-};
-
-// 设备连接/选择后允许把设备内容载入编辑器
-const _origEnableOps = enableOps;
-enableOps = function (on) {
-  _origEnableOps(on);
 };

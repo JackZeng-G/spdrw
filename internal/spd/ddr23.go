@@ -6,7 +6,7 @@ import "fmt"
 
 // Basic 是旧世代(DDR2/DDR3)的基本信息。
 type Basic struct {
-	Type         RamType
+	Type         RAMType
 	ModuleType   string // UDIMM/SO-DIMM/...
 	BytesMib     uint64 // 模块总容量(MiB)
 	BusWidthBits byte
@@ -117,7 +117,7 @@ func parseDDR3(dump []byte) (*Basic, error) {
 // byte63 = 校验和(sum of bytes 0-62), byte64-71 = JEP106 厂商 ID(0x7F 为续延码),
 // byte72 = 生产地点, byte73-90 = 部件号, byte91-92 = 修订码,
 // byte93 = 年(自 2000), byte94 = 周, byte95-98 = 序列号。
-func parseDDR2(dump []byte, rt RamType) (*Basic, error) {
+func parseDDR2(dump []byte, rt RAMType) (*Basic, error) {
 	b := &Basic{Type: rt}
 	b.Ranks = subByteR(dump[5], 2, 3) + 1
 	b.BusWidthBits = dump[6] & 0xF0 // 屏蔽 ECC 扩展低 4 位

@@ -172,7 +172,7 @@ var ddr2Regions = []spdRegion{
 }
 
 // regionsFor 返回该世代的区域表。
-func regionsFor(rt spd.RamType, size int) []spdRegion {
+func regionsFor(rt spd.RAMType, size int) []spdRegion {
 	switch rt {
 	case spd.DDR4, spd.DDR4E, spd.LPDDR3, spd.LPDDR4, spd.LPDDR4X:
 		return ddr4Regions
@@ -320,7 +320,7 @@ func (a *App) buildPreflight(label string, dump []byte, force, probeProtection b
 	} else if rt, _, ierr := spd.Identify(dump); ierr != nil {
 		pf.Blocked, pf.BlockKind = true, "generation"
 		pf.BlockReason = fmt.Sprintf("无法识别目标内容的 SPD 世代: %v", ierr)
-	} else if drt := dev.RamType(); drt != rt {
+	} else if drt := dev.RAMType(); drt != rt {
 		pf.Blocked, pf.BlockKind = true, "generation"
 		pf.BlockReason = fmt.Sprintf(
 			"世代不一致: 目标是 %v, 设备是 %v —— 长度相同也不允许跨世代写入", rt, drt)
@@ -658,7 +658,7 @@ func gateDump(dev *eeprom.Device, dump []byte) error {
 	if !dev.TypeKnown() {
 		return fmt.Errorf("无法识别设备的 SPD 器件类型, 拒绝写入")
 	}
-	if drt := dev.RamType(); drt != rt {
+	if drt := dev.RAMType(); drt != rt {
 		return fmt.Errorf("世代不一致: 待写内容是 %v, 设备是 %v", rt, drt)
 	}
 	if ok, cerr := spd.CRCOK(dump); cerr != nil || !ok {

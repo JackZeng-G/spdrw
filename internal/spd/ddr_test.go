@@ -149,8 +149,8 @@ func makeDDR5(t *testing.T) []byte {
 	// byte4: die=1(0000→1), density=4Gb? 密度索引 2 = 8Gb
 	d[4] = 0<<4 | 2    // die码0(1片), density码2(8Gb)
 	d[7] = 1<<7 | 2<<2 // groups code 1→2组, banks code 2→4
-	// addressing byte5: rows 17(0001→16+1), cols 10(0000→10)
-	d[5] = (17-16)<<0 | (10-10)<<5 // rows码1, cols码0
+	// addressing byte5: 字段是"相对基址的码", rows = 16+码, cols = 10+码
+	d[5] = 1<<0 | 0<<5 // rows码1(→17), cols码0(→10)
 	// byte 6: IO width code 1 → 8bit
 	d[6] = 1 << 5 // io width 码1(x8)@bits5-7
 	// byte 234: 1 rank

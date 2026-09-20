@@ -37,7 +37,7 @@ func TestDecodeCorpus(t *testing.T) {
 			t.Errorf("%s: DecodeDump: %v", name, err)
 			continue
 		}
-		if r.RamType == "" || r.Size != len(dump) {
+		if r.RAMType == "" || r.Size != len(dump) {
 			t.Errorf("%s: 结果不完整: %+v", name, r)
 		}
 		// 少数样本(coreboot 官方模拟数据集、编辑器作者的示例文件)身份区就是空的,

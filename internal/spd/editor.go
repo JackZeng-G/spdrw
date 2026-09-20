@@ -47,7 +47,7 @@ type Field struct {
 type Editor struct {
 	original []byte
 	dump     []byte
-	rt       RamType
+	rt       RAMType
 	changes  map[int]EditChange // offset → 变更(保留首次的 Old)
 	order    []int
 }
@@ -69,8 +69,8 @@ func NewEditor(dump []byte) (*Editor, error) {
 	return &Editor{original: cp, dump: append([]byte{}, cp...), rt: rt, changes: map[int]EditChange{}}, nil
 }
 
-// RamType 返回 SPD 世代。
-func (e *Editor) RamType() RamType { return e.rt }
+// RAMType 返回 SPD 世代。
+func (e *Editor) RAMType() RAMType { return e.rt }
 
 // Size 返回 SPD 字节数。
 func (e *Editor) Size() int { return len(e.dump) }

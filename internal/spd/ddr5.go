@@ -35,7 +35,7 @@ const (
 // 把 header 当成第 1 个槽, 于是漏检最后一个槽 0x3C0 且 CRC 覆盖错位)。
 var XMP30ProfileOffsets = [5]int{0x2C0, 0x300, 0x340, 0x380, 0x3C0}
 
-// DDR5 是解析后的 DDR5 SPD(1024 字节)。
+// DDR5SPD 是解析后的 DDR5 SPD(1024 字节)。
 type DDR5SPD struct{ raw []byte }
 
 // NewDDR5 构造; dump 必须 1024 字节且类型为 DDR5 系。
@@ -52,9 +52,6 @@ func NewDDR5(dump []byte) (*DDR5SPD, error) {
 	}
 	return &DDR5SPD{raw: dump}, nil
 }
-
-// Raw 返回原始数据。
-func (d *DDR5SPD) Raw() []byte { return d.raw }
 
 // ModuleType 返回模块类型名。
 func (d *DDR5SPD) ModuleType() string {
@@ -84,15 +81,6 @@ func (d *DDR5SPD) DensityPackages() (dies [2]byte, densitiesGb [2]byte) {
 	return
 }
 
-// Addressing 返回两组 (行, 列)。
-func (d *DDR5SPD) Addressing() (rows, cols [2]byte) {
-	for i := 0; i < 2; i++ {
-		rows[i] = subByteR(d.raw[5+i*4], 4, 5) + 16
-		cols[i] = subByteR(d.raw[5+i*4], 7, 3) + 10
-	}
-	return
-}
-
 // IOWidths 返回两组 SDRAM IO 位宽编码相关值(原始字段值 3 位)。
 func (d *DDR5SPD) IOWidths() (w [2]byte) {
 	for i := 0; i < 2; i++ {
@@ -104,12 +92,6 @@ func (d *DDR5SPD) IOWidths() (w [2]byte) {
 // DeviceWidth 返回首组 SDRAM 器件位宽(JEDEC: 000=x4, 001=x8, 010=x16, 011=x32)。
 func (d *DDR5SPD) DeviceWidth() byte {
 	return 4 << subByteR(d.raw[6], 7, 3)
-}
-
-// Banks 返回 (bank group 数, 每组 bank 数)。
-func (d *DDR5SPD) Banks() (groups, perGroup byte) {
-	b := d.raw[7]
-	return 1 << subByteR(b, 7, 3), 1 << subByteR(b, 2, 3)
 }
 
 // Organization 返回 (非对称, rank 数)。

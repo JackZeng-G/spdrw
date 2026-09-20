@@ -5,7 +5,7 @@
 // tCK 换算成速率, 以及字段还没到手时会不会退回一行式简表。
 import test from "node:test";
 import assert from "node:assert/strict";
-import { loadApp, makeAppStub, flush } from "./harness.mjs";
+import { loadApp, makeAppStub, flush, readDevice } from "./harness.mjs";
 
 const ddr5Decode = {
   valid: true, ramType: "DDR5", moduleType: "UDIMM", size: 1024,
@@ -45,13 +45,6 @@ const editState = {
   dirty: false, changeCount: 0, crcOk: true, canWrite: true,
 };
 
-async function readDevice(el) {
-  el("dimm-select").value = "81";
-  await el("dimm-select").onchange();
-  await flush();
-  await flush();
-}
-
 function setup(overrides = {}) {
   const { stub, calls } = makeAppStub({
     Decode: () => ddr5Decode,
@@ -66,7 +59,7 @@ function setup(overrides = {}) {
 test("XMP 3.0: 5 个槽位卡片, 关键项带频率与速率换算", async () => {
   const { el } = setup();
   await flush();
-  await readDevice(el);
+  await readDevice(el, { addr: "81", flushes: 2 });
   const html = el("info-body").html();
 
   assert.match(html, /Intel XMP 3\.0/, "应出 XMP 3.0 专用卡片");
@@ -97,7 +90,7 @@ test("XMP 3.0: 5 个槽位卡片, 关键项带频率与速率换算", async () =
 test("XMP 3.0: EXPO 存在时槽 3 / User 1 标为被占用", async () => {
   const { el } = setup({ Decode: () => ({ ...ddr5Decode, hasExpo: true }) });
   await flush();
-  await readDevice(el);
+  await readDevice(el, { addr: "81", flushes: 2 });
   const html = el("info-body").html();
   const expo = html.match(/class="slot expo"/g) || [];
   assert.equal(expo.length, 2, "EXPO 占两个槽(0x340/0x380)");
@@ -114,7 +107,7 @@ test("XMP 3.0: 字段未到手时退回一行式简表(不能空白)", async () 
     }),
   });
   await flush();
-  await readDevice(el);
+  await readDevice(el, { addr: "81", flushes: 2 });
   const html = el("info-body").html();
   assert.match(html, /Intel XMP/, "回退也要有 XMP 信息");
   assert.match(html, /6000 MT\/s · 1\.35V/, "简表显示后端给的 summary");

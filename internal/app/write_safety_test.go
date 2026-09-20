@@ -395,7 +395,7 @@ func TestIncrementalWriteOnlyChangedBytes(t *testing.T) {
 	if d.ChangeCount != 1 {
 		t.Fatalf("只改 1 个字节时计划应恰好 1 个变更, got %d", d.ChangeCount)
 	}
-	if d.DirtyInCRC != nil && len(d.DirtyInCRC) != 0 {
+	if len(d.DirtyInCRC) != 0 {
 		t.Fatalf("序列号不在校验范围, 不应产生 CRC 变更: %v", d.DirtyInCRC)
 	}
 	rec.Reset()

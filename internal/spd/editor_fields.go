@@ -26,7 +26,7 @@ type idLayout struct {
 	DDR2Mfg              bool // 厂商码是 0x7F 续延串
 }
 
-func idLayoutFor(rt RamType) (idLayout, error) {
+func idLayoutFor(rt RAMType) (idLayout, error) {
 	switch rt {
 	case DDR4, DDR4E:
 		return idLayout{320, 321, 322, 323, 324, 325, 4, 329, 20, 349, 1, 350, 351, 352, true, false}, nil

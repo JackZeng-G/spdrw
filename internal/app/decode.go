@@ -16,7 +16,7 @@ type TimingView struct {
 // DecodeResult 是信息面板的完整载荷(JSON 直出)。
 type DecodeResult struct {
 	Valid      bool   `json:"valid"`
-	RamType    string `json:"ramType"`
+	RAMType    string `json:"ramType"`
 	Size       int    `json:"size"`
 	ModuleType string `json:"moduleType"`
 
@@ -95,7 +95,7 @@ func DecodeDump(dump []byte) (*DecodeResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	r := &DecodeResult{Valid: spd.ValidateSpd(dump), RamType: rt.String(), Size: size}
+	r := &DecodeResult{Valid: spd.ValidateSpd(dump), RAMType: rt.String(), Size: size}
 
 	switch {
 	case rt == spd.DDR4 || rt == spd.DDR4E || rt == spd.LPDDR3 || rt == spd.LPDDR4 || rt == spd.LPDDR4X:

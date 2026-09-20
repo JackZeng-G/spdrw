@@ -190,7 +190,7 @@ type Area struct {
 // IdentityAreas 返回该世代身份区各字段的偏移区间(厂商/生产位置/日期/序列号/
 // 部件号/修订)。这些字段里哪些真正参与校验随世代而不同 —— DDR3 的厂商与序列号
 // 在 126 字节覆盖范围内, DDR4/DDR5 的身份区(0x140+/0x200+)则完全不在校验范围内。
-func IdentityAreas(rt RamType) []Area {
+func IdentityAreas(rt RAMType) []Area {
 	l, err := idLayoutFor(rt)
 	if err != nil {
 		return nil
@@ -216,7 +216,7 @@ func IdentityAreas(rt RamType) []Area {
 
 // UnprotectedIdentityAreas 返回身份区里**不参与校验**的字段(编辑器据此提示
 // "这些改动不用重算 CRC")。
-func UnprotectedIdentityAreas(rt RamType, ranges []CRCRange) []Area {
+func UnprotectedIdentityAreas(rt RAMType, ranges []CRCRange) []Area {
 	var out []Area
 	for _, a := range IdentityAreas(rt) {
 		covered := false

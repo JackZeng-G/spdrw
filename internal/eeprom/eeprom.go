@@ -120,8 +120,8 @@ func New(t smbus.Transport, addr byte) (*Device, error) {
 			return nil, fmt.Errorf("读取 DRAM 类型失败(地址 %#x): %w", addr, err)
 		}
 		d.ramType = ramType
-		d.size = sizeByRamType(ramType)
-		d.typeKnown = spd.RamTypeFromByte(ramType) != spd.Unknown
+		d.size = sizeByRAMType(ramType)
+		d.typeKnown = spd.RAMTypeFromByte(ramType) != spd.Unknown
 		// 非 DDR5 却按类型表判成 1024 字节: DDR4 的 EE1004 只有 0x36/0x37 两个 SPA,
 		// 第 3/4 页会用到 0x38/0x39(0111b 设备类型, 完全不同的器件)。这种情况直接
 		// 标成不可用, 不去猜也不去写那些地址(审计复现过 0x38 的写事务)。
@@ -149,7 +149,7 @@ func New(t smbus.Transport, addr byte) (*Device, error) {
 	return d, nil
 }
 
-func sizeByRamType(ramType byte) int {
+func sizeByRAMType(ramType byte) int {
 	switch ramType {
 	case 0x0C, 0x0E, 0x0F, 0x10, 0x11: // DDR4, DDR4E, LPDDR3, LPDDR4, LPDDR4X
 		return 512
@@ -169,16 +169,16 @@ func (d *Device) Addr() byte { return d.addr }
 // IsDDR5 报告是否为 DDR5(SPD5 hub)。
 func (d *Device) IsDDR5() bool { return d.ddr5 }
 
-// RamType 返回设备自己识别出的 SPD 世代。
+// RAMType 返回设备自己识别出的 SPD 世代。
 //
 // DDR5 系由探测得出(器件类型字节在 MR 区, 读不到), 其余按 byte2 映射。
 // 写入前必须用它和待写内容的世代对照: 长度相同的世代不止一个(256/512/1024 各有多个),
 // 光比长度会把 DDR3 的镜像写进 DDR2 条里。
-func (d *Device) RamType() spd.RamType {
+func (d *Device) RAMType() spd.RAMType {
 	if d.ddr5 {
 		return spd.DDR5
 	}
-	return spd.RamTypeFromByte(d.ramType)
+	return spd.RAMTypeFromByte(d.ramType)
 }
 
 // WPBlockCount 返回写保护块数(DDR5 16×64B / DDR4 4×128B / DDR3 1×128B)。

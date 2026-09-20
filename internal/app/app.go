@@ -29,7 +29,7 @@ type ControllerInfo struct {
 type DimmInfo struct {
 	Addr    byte   `json:"addr"`
 	IsDDR5  bool   `json:"isDdr5"`
-	RamType string `json:"ramType"`
+	RAMType string `json:"ramType"`
 	Size    int    `json:"size"`
 }
 
@@ -269,9 +269,9 @@ func (a *App) Scan() ([]DimmInfo, error) {
 			info := DimmInfo{Addr: addr, IsDDR5: dev.IsDDR5(), Size: dev.Size()}
 			if data, err := dev.Read(0, 3); err == nil {
 				if rt, _, _ := spd.Identify(append([]byte{}, data...)); rt != spd.Unknown {
-					info.RamType = rt.String()
+					info.RAMType = rt.String()
 				} else {
-					info.RamType = "未知"
+					info.RAMType = "未知"
 				}
 			}
 			out = append(out, info)

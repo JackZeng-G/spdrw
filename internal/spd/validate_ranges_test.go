@@ -251,7 +251,7 @@ func corpusDumps(t *testing.T) map[string][]byte {
 	return out
 }
 
-func mustType(t *testing.T, dump []byte) RamType {
+func mustType(t *testing.T, dump []byte) RAMType {
 	t.Helper()
 	rt, _, err := Identify(dump)
 	if err != nil {

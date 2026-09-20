@@ -137,7 +137,7 @@ func probeTarget(dev *eeprom.Device, img []byte) (int, byte, error) {
 	if len(img) != dev.Size() {
 		return 0, 0, fmt.Errorf("镜像长度 %d 与设备 %d 不一致", len(img), dev.Size())
 	}
-	rt := dev.RamType()
+	rt := dev.RAMType()
 	ranges := spd.CRCRanges(img)
 	regions := regionsFor(rt, len(img))
 	empty := func(b byte) bool { return b == 0x00 || b == 0xFF }
