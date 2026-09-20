@@ -116,6 +116,7 @@ function fillCtlSelect(list) {
     opt.textContent = "未发现控制器";
     sel.appendChild(opt);
   }
+  if (typeof syncSelectTitle === "function") syncSelectTitle(sel);
 }
 
 // ---------- 日志 ----------
@@ -159,7 +160,36 @@ $("btn-log-clear").onclick = () => {
 // 键盘也要能调(WCAG): 把手可聚焦, ↑/↓ 步进, Shift 加速, Home 复位。
 const LOG_H_KEY = "spdrw.logHeight";
 const LOG_H_MIN = 56;
-const LOG_H_DEFAULT = 150;
+const LOG_ROWS_DEFAULT = 10;   // 默认高度 = 标题栏 + 10 行日志(用户要求: 一屏能看够)
+
+// measureDefaultLogHeight 实测"标题栏 + 内边距 + 10 行"的高度。
+// 用实测而不是写死像素: 字号/行距改了这里不用跟着改, 也不会出现"差半行"的难看不齐。
+function measureDefaultLogHeight() {
+  const panel = $("log-panel");
+  const title = panel.querySelector ? panel.querySelector(".panel-title") : null;
+  const titleH = title && title.getBoundingClientRect
+    ? (title.getBoundingClientRect().height || 36) : 36;
+  const log = $("log");
+  let rowH = 20;
+  if (log && log.appendChild) {
+    const probe = document.createElement("div");
+    probe.className = "line m";
+    probe.textContent = "0";
+    log.appendChild(probe);
+    const r = probe.getBoundingClientRect ? probe.getBoundingClientRect() : null;
+    if (r && r.height) rowH = r.height;
+    if (probe.remove) probe.remove();
+  }
+  let pad = 16;   // .log 的上下内边距兜底
+  if (typeof getComputedStyle === "function") {
+    const cs = getComputedStyle(log);
+    if (cs) pad = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+  }
+  return Math.round(titleH + pad + LOG_ROWS_DEFAULT * rowH) + 2;
+}
+
+let LOG_H_DEFAULT = 226;   // CSS 里的兜底值; 启动时会被实测值覆盖
+try { LOG_H_DEFAULT = measureDefaultLogHeight(); } catch (e) { /* 用兜底值 */ }
 // 记住"展开时"的高度: 折叠后 CSS 高度只有 34px, 从折叠态开始拖要用记忆值做基准,
 // 否则一按下去就把面板拖成一个很矮的尺寸。
 let logHeightExpanded = LOG_H_DEFAULT;
@@ -184,8 +214,9 @@ function setLogHeight(px, persist = true) {
 }
 try {
   const saved = parseInt(localStorage.getItem(LOG_H_KEY) || "", 10);
-  if (saved > 0) setLogHeight(saved, false);
-} catch (e) { /* 没有 localStorage 就用默认高度 */ }
+  // 没存过(第一次运行)就用"10 行"的默认值, 而不是 CSS 里的兜底像素
+  setLogHeight(saved > 0 ? saved : LOG_H_DEFAULT, false);
+} catch (e) { /* 没有 localStorage(测试夹具)就用 CSS 兜底高度 */ }
 
 let logDragFrom = null;
 const logResizer = $("log-resizer");
@@ -227,8 +258,15 @@ function escapeHtml(s) {
 
 // ---------- 控制器/扫描/设备 ----------
 
+// 下拉框在窄窗口里必然被截断(控制器名很长), 把完整文本挂在 title 上, 悬停可看全
+function syncSelectTitle(sel) {
+  const opt = sel.options && sel.options[sel.selectedIndex];
+  if (opt) sel.title = opt.textContent || "";
+}
+
 $("ctl-select").onchange = async () => {
   const idx = parseInt($("ctl-select").value, 10);
+  syncSelectTitle($("ctl-select"));
   if (isNaN(idx) || idx < 0) return;
   try {
     await call("Connect", idx);
@@ -259,10 +297,12 @@ function fillDimmSelect(dimms) {
     opt.textContent = "未发现 SPD";
     sel.appendChild(opt);
   }
+  syncSelectTitle(sel);
 }
 
 $("dimm-select").onchange = async () => {
   const addr = parseInt($("dimm-select").value, 10);
+  syncSelectTitle($("dimm-select"));
   if (isNaN(addr) || addr < 0) return;
   try {
     selectedAddr = addr;
@@ -786,16 +826,13 @@ function renderXmp3SlotGrid(r, x3) {
       if (cr && cr !== "0") key += `<span><b>CR</b> ${escapeHtml(cr)}N</span>`;
       key += `</div>`;
 
-      // 主时序 + 其余时序两列排布
+      // 主时序 + 其余时序(列数按面板宽度自适应)
       const rest = XMP3_TIMINGS.filter((k) => xmp3Val(slot, k) !== "");
       let tbl = "";
       if (rest.length) {
-        tbl = `<table class="timing two-col">`;
-        for (let i = 0; i < rest.length; i += 2) {
-          const cell = (k) => `<th>${k}</th>${xmp3TimingCell(k, slot)}`;
-          tbl += `<tr>${cell(rest[i])}` + (rest[i + 1] ? cell(rest[i + 1]) : `<th></th><td></td>`) + `</tr>`;
-        }
-        tbl += `</table>`;
+        tbl = `<table class="timing two-col">` +
+          timingRowsHTML(rest, (k) => `<th>${k}</th>${xmp3TimingCell(k, slot)}`) +
+          `</table>`;
       }
 
       const volts = XMP3_VOLT_FIELDS
@@ -818,6 +855,44 @@ function renderXmp3SlotGrid(r, x3) {
     </article>`;
   }
   return `<div class="slot-grid">${out}</div>`;
+}
+
+// ---------- 时序表的列数自适应 ----------
+// 一组"名称 + 值"(如 tCCD_L_WR2 / 9.500 ns (下限 6.5))大约要 300px。
+// 硬按两列排: 面板不够宽时长名称会撑破卡片, 用户看到的就是"表格被缩小 + 横向滚动"。
+// 所以按信息面板的实际宽度决定列数(≥640px 才两列), 放不下就一行一组。
+function timingCols() {
+  const panel = $("info-panel");
+  const w = panel && panel.getBoundingClientRect ? panel.getBoundingClientRect().width : 0;
+  return w >= 640 ? 2 : 1;
+}
+
+function timingRowsHTML(items, cellFn, cols) {
+  const c = cols || timingCols();
+  let out = "";
+  for (let i = 0; i < items.length; i += c) {
+    let row = "<tr>", filled = 0;
+    for (let k = 0; k < c; k++) {
+      const it = items[i + k];
+      if (it !== undefined) { row += cellFn(it); filled++; }
+      else if (c > 1) row += `<th></th><td></td>`;   // 两列时补齐空位, 保持表格对齐
+    }
+    if (filled) out += row + "</tr>";
+  }
+  return out;
+}
+
+let lastTimingCols = timingCols();
+let timingResizeTimer = null;
+if (window.addEventListener) {
+  // 窗口宽度变了(拖大/拖小), 列数可能跟着变 → 用缓存的结果重画信息面板
+  window.addEventListener("resize", () => {
+    clearTimeout(timingResizeTimer);
+    timingResizeTimer = setTimeout(() => {
+      const now = timingCols();
+      if (now !== lastTimingCols) { lastTimingCols = now; rerenderInfo(); }
+    }, 200);
+  });
 }
 
 function renderInfo(r) {
@@ -854,11 +929,8 @@ function renderInfo(r) {
     if (r.casLatencies) t += `<tr><th>CL</th><td>${escapeHtml(r.casLatencies)}</td></tr>`;
     const rows = [["tAA", r.taa], ["tRCD", r.trcd], ["tRP", r.trp], ["tRAS", r.tras], ["tRC", r.trc], ["tRFC1", r.trfc1], ["tRFC2", r.trfc2], ["tRFC4", r.trfc4], ["tFAW", r.tfaw], ["tRRD_S", r.trrdS], ["tRRD_L", r.trrdL], ["tCCD_L", r.tccdL], ["tWR", r.twr]]
       .filter(([, t2]) => t2 && t2.ns);
-    for (let i = 0; i < rows.length; i += 2) {
-      const cell = ([name, t2]) =>
-        `<th>${name}</th><td>${t2.cycles ? t2.cycles + " clk · " : ""}${t2.ns.toFixed(3)} ns</td>`;
-      t += `<tr>${cell(rows[i])}` + (rows[i + 1] ? cell(rows[i + 1]) : "<th></th><td></td>") + `</tr>`;
-    }
+    t += timingRowsHTML(rows, ([name, t2]) =>
+      `<th>${name}</th><td>${t2.cycles ? t2.cycles + " clk · " : ""}${t2.ns.toFixed(3)} ns</td>`);
     t += `</table>`;
     html += card("时序", t);
   }
@@ -872,10 +944,7 @@ function renderInfo(r) {
       const low = x.lower ? ` <span class="muted">(下限 ${x.lower})</span>` : "";
       return `<th>${escapeHtml(x.name)}</th><td>${ns}${cyc}${low}</td>`;
     };
-    for (let i = 0; i < r.ddr5Timings.length; i += 2) {
-      t += `<tr>${cellsOf(r.ddr5Timings[i])}` +
-        (r.ddr5Timings[i + 1] ? cellsOf(r.ddr5Timings[i + 1]) : `<th></th><td></td>`) + `</tr>`;
-    }
+    t += timingRowsHTML(r.ddr5Timings, cellsOf);
     t += `</table>`;
     if (r.casLatencies) t += `<div class="kv" style="margin-top:6px"><div class="k">CL 支持</div><div class="v mono">${escapeHtml(r.casLatencies)}</div></div>`;
     html += card("JEDEC 时序(DDR5)", t, `共 ${r.ddr5Timings.length} 项`);
