@@ -153,6 +153,18 @@ func (c *CountingTransport) ReadBlockData(addr byte, cmd byte) ([]byte, error) {
 	return c.Inner.ReadBlockData(addr, cmd)
 }
 
+// WriteBlockData 计入字节写事务(块写一次顶多次字节写, 计数上仍算 1 次)。
+func (c *CountingTransport) WriteBlockData(addr byte, cmd byte, data []byte) error {
+	c.mu.Lock()
+	c.byteData++
+	c.mu.Unlock()
+	c.logWrite(addr, cmd, byte(len(data)))
+	if addr >= 0x50 && addr <= 0x57 {
+		c.noteNVM(cmd)
+	}
+	return c.Inner.WriteBlockData(addr, cmd, data)
+}
+
 func (c *CountingTransport) ReadWordData(addr byte, cmd byte) (uint16, error) {
 	c.mu.Lock()
 	c.reads++

@@ -16,6 +16,7 @@ const (
 	OpWriteByte     OpKind = "write-byte-nodata"
 	OpReadWordData  OpKind = "read-word"
 	OpReadBlock     OpKind = "read-block"
+	OpWriteBlock    OpKind = "write-block"
 )
 
 // Op 是一次 SMBus 事务的记录(Err 非空表示该事务失败)。
@@ -114,7 +115,7 @@ func (r *RecordingTransport) DataWrites() []Op {
 func (r *RecordingTransport) NVMWrites() []Op {
 	var out []Op
 	for _, op := range r.Writes() {
-		if op.Kind == OpWriteByteData && op.Cmd&0x80 != 0 {
+		if (op.Kind == OpWriteByteData || op.Kind == OpWriteBlock) && op.Cmd&0x80 != 0 {
 			out = append(out, op)
 		}
 	}
@@ -269,6 +270,28 @@ func (r *RecordingTransport) ReadBlockData(addr byte, cmd byte) ([]byte, error) 
 	}
 	r.record(op)
 	return b, err
+}
+
+// WriteBlockData 记录并转发 SMBus Block Write(协议 5)。
+func (r *RecordingTransport) WriteBlockData(addr byte, cmd byte, data []byte) error {
+	op := Op{Kind: OpWriteBlock, Addr: addr, Cmd: cmd}
+	// 故障注入(与逐字节写共用同一套计数/过滤): 块写的"值"取数据首字节便于日志阅读
+	n, werr := r.writeGuard(cmd)
+	err := werr
+	if err == nil {
+		for i, b := range data {
+			if i == 0 {
+				op.Val = b
+			}
+		}
+		err = r.Inner.WriteBlockData(addr, cmd, data)
+	}
+	if err != nil {
+		op.Err = err.Error()
+	}
+	_ = n
+	r.record(op)
+	return err
 }
 
 func (r *RecordingTransport) ReadWordData(addr byte, cmd byte) (uint16, error) {

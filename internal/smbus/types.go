@@ -47,6 +47,9 @@ type Transport interface {
 	// ReadBlockData 是 SMBus Block Read(协议 5): 一次最多 32 字节。
 	// 设备/控制器若不支持会返回错误, 调用方应回退到逐字节读。
 	ReadBlockData(addr byte, cmd byte) ([]byte, error)
+	// WriteBlockData 是 SMBus Block Write(协议 5): 一次写入 1..32 字节。
+	// 有些 SPD5 hub 对 NVM 的写只认块写(逐字节写会被忽略), 所以写入档位也要能自适应。
+	WriteBlockData(addr byte, cmd byte, data []byte) error
 	ReadWordData(addr byte, cmd byte) (uint16, error)
 	Close() error
 }

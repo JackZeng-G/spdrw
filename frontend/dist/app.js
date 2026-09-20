@@ -774,6 +774,7 @@ $("btn-write-probe").onclick = async () => {
     $("probe-result").innerHTML = `<b class="${cls}">写入能力: ` +
       `${r.verdict === "ok" ? "可写" : r.verdict === "ignored" ? "被忽略(写不进去)" : "被拒绝"}</b>` +
       ` · ${escapeHtml(r.offsetText)} ${hex(r.old, 2)}→${hex(r.new, 2)} 回读 ${hex(r.readBack, 2)}` +
+      (r.mode ? ` · 档位 ${escapeHtml(r.mode)}` : "") +
       ` · 已还原 ${r.restored ? "是" : "否"} · 整片复核 ${r.verified ? "通过" : "不通过"}<br>` +
       `<span class="muted">${escapeHtml(r.note)}</span>`;
     addLog("", "写入能力探测: " + r.note);

@@ -74,6 +74,8 @@ type Device struct {
 	blockBytes    int    // 走块读读到的字节数
 	readTx        int    // 读事务计数(字节读=1, 块读=1)
 	blockNote     string // 块读失败原因(诊断)
+	blockWrite    bool   // 逐字节写被忽略后自动切换到块写(协议 5)
+	writeNote     string // 写入档位切换/降级说明(日志用)
 	wordRead      bool   // 是否允许字读(默认开)
 	wordOK        *bool  // 字读(2 字节/事务)是否可用
 	wordBytes     int
@@ -482,6 +484,34 @@ func (d *Device) readBlockChunk(off uint16, max int) ([]byte, error) {
 	return got, nil
 }
 
+// WriteMode 返回当前写入档位(日志/界面显示用)。
+func (d *Device) WriteMode() string {
+	if d.blockWrite {
+		return "块写(协议 5, 每事务最多 32 字节)"
+	}
+	return "单字节(协议 2)"
+}
+
+// WriteModeNote 返回档位切换说明(没有切换过则为空)。
+func (d *Device) WriteModeNote() string { return d.writeNote }
+
+// WriteBlockAt 用 SMBus Block Write 写一段连续字节(不得跨页)。
+func (d *Device) WriteBlockAt(off uint16, data []byte) error {
+	if len(data) == 0 || len(data) > 32 {
+		return fmt.Errorf("块写长度 %d 非法(1..32)", len(data))
+	}
+	ps := d.pageSize()
+	if int(off)%ps+len(data) > ps {
+		return fmt.Errorf("块写会跨页(offset %#x, len %d, 页大小 %d)", off, len(data), ps)
+	}
+	if _, phys, err := d.physOffset(off); err != nil {
+		return err
+	} else if err := d.t.WriteBlockData(d.addr, phys, data); err != nil {
+		return fmt.Errorf("块写 %#x 失败: %w", off, err)
+	}
+	return nil
+}
+
 // ReadOneByte 对外暴露"逐字节读一个字节"(强制走字节读, 不经过块读/字读)。
 // 探测与单字节校验用它, 避免"写进去的位置"和"读回来的位置"经过不同的读路径。
 func (d *Device) ReadOneByte(off uint16) (byte, error) { return d.readOne(off) }
@@ -691,9 +721,25 @@ func (d *Device) ApplyWrite(dump []byte, changes []ByteChange, progress Progress
 			return &WriteError{Offset: ch.Offset, Written: i + 1, Total: total, Err: err, Stage: "read"}
 		}
 		if back != ch.New {
+			// 逐字节写没生效: 在判定"写被忽略"之前, 先试一次块写(协议 5) ——
+			// 有些 SPD5 hub 对 NVM 的写只认块写, 而接口/工具默认都是逐字节写。
+			if !d.blockWrite && !d.dryRun {
+				if berr := d.WriteBlockAt(uint16(ch.Offset), []byte{ch.New}); berr == nil {
+					if b2, rerr := d.readBack(uint16(ch.Offset)); rerr == nil && b2 == ch.New {
+						d.blockWrite = true
+						d.writeNote = fmt.Sprintf(
+							"逐字节写在 0x%03X 未生效, 已自动切换到块写(协议 5)并成功", ch.Offset)
+						if progress != nil {
+							progress(i+1, total)
+						}
+						continue
+					}
+				}
+			}
 			return &WriteError{
 				Offset: ch.Offset, Written: i + 1, Total: total, Stage: "verify",
-				Err: fmt.Errorf("回读 %#x 与目标 %#x 不一致(该块可能受写保护, 写被忽略)", back, ch.New),
+				Err: fmt.Errorf("回读 %#x 与目标 %#x 不一致(逐字节写与块写都试过; 该块可能受写保护或平台拒绝写入)",
+					back, ch.New),
 			}
 		}
 		if progress != nil {
@@ -715,6 +761,9 @@ func (d *Device) writeOne(off uint16, val byte) error {
 		d.shadow[off] = val
 		return nil
 	}
+	if d.blockWrite {
+		return d.WriteBlockAt(off, []byte{val})
+	}
 	return d.WriteByteAt(off, val)
 }
 
@@ -726,11 +775,9 @@ func (d *Device) readBack(off uint16) (byte, error) {
 		}
 		return d.shadow[off], nil
 	}
-	b, err := d.Read(off, 1)
-	if err != nil {
-		return 0, err
-	}
-	return b[0], nil
+	// 回读固定走**最原始的逐字节读**: 若走块读/字读, 一旦该路径有缓存或偏差,
+	// 就会把"写成功"误判成"写被忽略"(反之亦然), 而这里正是判断写没写进去的地方。
+	return d.readOne(off)
 }
 
 // Write 将 dump 写入 EEPROM: PlanWrite + ApplyWrite(update 模式跳过相同字节)。

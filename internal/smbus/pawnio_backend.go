@@ -307,6 +307,22 @@ func (p *pawnioTransport) ReadBlockData(addr byte, cmd byte) ([]byte, error) {
 	return UnmarshalBlockRead(out)
 }
 
+// WriteBlockData 走 SMBus Block Write(协议 5): 一次最多 32 字节。
+// 模块侧 piix4_access_block 要求 in[0]=长度(1..32) + 数据字节。
+func (p *pawnioTransport) WriteBlockData(addr byte, cmd byte, data []byte) error {
+	if len(data) == 0 || len(data) > BlockMaxPayload {
+		return fmt.Errorf("块写长度 %d 非法(1..%d)", len(data), BlockMaxPayload)
+	}
+	payload := make([]byte, 0, len(data)+1)
+	payload = append(payload, byte(len(data)))
+	payload = append(payload, data...)
+	_, err := p.xfer(addr, true, cmd, ProtoBlockData, payload, false)
+	if err == nil && isEepromAddr(addr) {
+		time.Sleep(eepromWriteDelay)
+	}
+	return err
+}
+
 func (p *pawnioTransport) ReadWordData(addr byte, cmd byte) (uint16, error) {
 	out, err := p.xfer(addr, false, cmd, ProtoWordData, nil, true)
 	if err != nil {

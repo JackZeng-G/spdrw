@@ -19,6 +19,9 @@ type FakeTransport struct {
 	ProtectedFrom int
 	// IgnoreFrom >= 0 时模拟"写了但不生效"(不报错也不落值): 用来触发回读校验失败。
 	IgnoreFrom int
+	// IgnoreByteDataFrom >= 0 时, 只让**逐字节写(协议 2)**在该偏移及以上"写了不生效",
+	// 块写(协议 5)照常生效 —— 用来验证写入档位能自动切到块写。
+	IgnoreByteDataFrom int
 	// FailReads 为 true 时所有读事务报错(模拟总线读不出来)。
 	FailReads bool
 	// BlockReadOverride 非 nil 时, 块读返回这份镜像的内容而不是 EEProm 里的真实值 ——
@@ -55,13 +58,14 @@ type WriteOp struct {
 
 func NewFake() *FakeTransport {
 	return &FakeTransport{
-		MR:            map[byte]byte{},
-		ProtectedFrom: -1,
-		IgnoreFrom:    -1,
-		Ctrl:          Controller{Kind: KindI801, Index: 0, IOBase: 0xEFA0, Name: "Fake"},
-		EEProm:        make([]byte, 1024),
-		page:          0,
-		pageSpan:      256,
+		MR:                 map[byte]byte{},
+		ProtectedFrom:      -1,
+		IgnoreFrom:         -1,
+		IgnoreByteDataFrom: -1,
+		Ctrl:               Controller{Kind: KindI801, Index: 0, IOBase: 0xEFA0, Name: "Fake"},
+		EEProm:             make([]byte, 1024),
+		page:               0,
+		pageSpan:           256,
 	}
 }
 
@@ -183,7 +187,40 @@ func (f *FakeTransport) WriteByteData(addr byte, cmd byte, val byte) error {
 	if f.IgnoreFrom >= 0 && i >= f.IgnoreFrom {
 		return nil // 模拟"写被忽略": 不落值也不报错 → 回读校验必须发现
 	}
+	if f.IgnoreByteDataFrom >= 0 && i >= f.IgnoreByteDataFrom {
+		return nil // 只忽略逐字节写: 块写仍可生效(用于测写入档位自动切换)
+	}
 	f.EEProm[i] = val
+	return nil
+}
+
+// WriteBlockData 模拟 SMBus Block Write(协议 5): 从 cmd 起写 len 个字节, 页内自增不跨页。
+func (f *FakeTransport) WriteBlockData(addr byte, cmd byte, data []byte) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.Present != nil && !f.Present[addr] {
+		return fmt.Errorf("设备无响应 NACK(0xC000000E)")
+	}
+	if len(data) == 0 || len(data) > BlockMaxPayload {
+		return fmt.Errorf("块写长度 %d 非法(1..%d)", len(data), BlockMaxPayload)
+	}
+	start, err := f.idx(cmd)
+	if err != nil {
+		return err
+	}
+	e := f.page * f.pageSpan
+	end := e + f.pageSpan
+	if start+len(data) > end {
+		return fmt.Errorf("块写跨页 cmd=%#x len=%d", cmd, len(data))
+	}
+	if f.ProtectedFrom >= 0 && start >= f.ProtectedFrom {
+		return fmt.Errorf("设备无响应 NACK(0xC000000E)")
+	}
+	f.WriteLog = append(f.WriteLog, WriteOp{Addr: addr, Cmd: cmd, Val: byte(len(data))})
+	if f.IgnoreFrom >= 0 && start >= f.IgnoreFrom {
+		return nil
+	}
+	copy(f.EEProm[start:start+len(data)], data)
 	return nil
 }
 

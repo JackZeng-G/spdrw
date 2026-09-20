@@ -110,3 +110,83 @@ func TestWriteFailureIncludesScene(t *testing.T) {
 		}
 	}
 }
+
+// 写入档位自适应: 有些 SPD5 hub 对 NVM 的写只认块写(协议 5), 逐字节写会被忽略。
+// 这时程序必须自己切到块写并成功, 而不是报"写被忽略"。
+func TestWriteModeFallsBackToBlockWrite(t *testing.T) {
+	f := smbus.NewFake()
+	f.SetDDR5(true)
+	copy(f.EEProm, ddr5WriteFixture())
+	rec := smbus.NewRecording(f)
+	a := New()
+	a.transports = []smbus.Transport{rec}
+	if err := a.Connect(0); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Select(0x50); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.EditLoadFromDevice(); err != nil {
+		t.Fatal(err)
+	}
+	orig := append([]byte{}, f.EEProm...)
+	if _, err := a.EditSetByte(0x208, int(orig[0x208]^0x01)); err != nil {
+		t.Fatal(err)
+	}
+	// 逐字节写全部"写了不生效", 块写照常
+	f.IgnoreByteDataFrom = 0
+	rec.Reset()
+
+	res, err := a.EditApplyToDevice(false, false, "WRITE")
+	if err != nil {
+		t.Fatalf("应自动切到块写并成功: %v", err)
+	}
+	if !res.Verified {
+		t.Fatalf("应校验通过: %+v", res)
+	}
+	if !strings.Contains(res.Message, "块写") {
+		t.Fatalf("结果里应写明已切到块写: %q", res.Message)
+	}
+	if f.EEProm[0x208] != orig[0x208]^0x01 {
+		t.Fatalf("目标字节应已写入: %02X", f.EEProm[0x208])
+	}
+	// 最后复核: 写入档位记录必须留下说明(日志体现)
+	a.mu.Lock()
+	dev := a.dev
+	a.mu.Unlock()
+	if dev.WriteModeNote() == "" {
+		t.Fatal("档位切换必须留下说明(日志里要看得见)")
+	}
+}
+
+// 探测必须能区分"只有块写能生效"这种情况 —— 这正是 DDR5 hub 可能的行为差异。
+func TestWriteProbeDetectsBlockWriteOnly(t *testing.T) {
+	f := smbus.NewFake()
+	f.SetDDR5(true)
+	img := ddr5WriteFixture()
+	for i := 555; i < 640; i++ {
+		img[i] = 0x00
+	}
+	copy(f.EEProm, img)
+	f.IgnoreByteDataFrom = 0 // 逐字节写全部不生效, 块写照常
+	a := New()
+	a.transports = []smbus.Transport{f}
+	if err := a.Connect(0); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Select(0x50); err != nil {
+		t.Fatal(err)
+	}
+	res, err := a.WriteProbe()
+	if err != nil {
+		t.Fatalf("WriteProbe: %v", err)
+	}
+	if res.Verdict != "ok" || res.Mode != "块写(协议 5)" {
+		t.Fatalf("应识别出「只有块写生效」: %+v", res)
+	}
+	for i := range img {
+		if f.EEProm[i] != img[i] {
+			t.Fatalf("探测改动了设备内容 @%#x", i)
+		}
+	}
+}

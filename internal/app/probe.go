@@ -29,6 +29,7 @@ type WriteProbeResult struct {
 	New      byte   `json:"new"`
 	ReadBack byte   `json:"readBack"`
 	Verdict  string `json:"verdict"` // ok / ignored / rejected
+	Mode     string `json:"mode"`    // 生效的写入档位: 单字节(协议 2) / 块写(协议 5)
 	Note     string `json:"note"`
 	Restored bool   `json:"restored"`
 	Verified bool   `json:"verified"`
@@ -63,31 +64,46 @@ func (a *App) WriteProbe() (*WriteProbeResult, error) {
 	a.logf("写入能力探测: 先备份当前内容(%s), 然后对 %s 写反值 %#02x 再还原(该字节不在 CRC 覆盖范围内)",
 		backup, res.OffsetIn, res.New)
 
-	// 1) 写反值
+	// 1) 先按默认档位写反值: 逐字节写(协议 2)
+	useBlock := false
+	readBack := func() (byte, error) { return dev.ReadOneByte(uint16(off)) }
 	if werr := dev.WriteByteAt(uint16(off), res.New); werr != nil {
 		res.Verdict = "rejected"
-		res.Note = fmt.Sprintf("写入被控制器/器件拒绝: %v —— 该平台或该条不允许写入 SPD(如 BIOS 的 SPD 写保护、硬件 WP 引脚)", werr)
-	} else if back, rerr := dev.ReadOneByte(uint16(off)); rerr != nil {
+		res.Note = fmt.Sprintf("逐字节写被控制器/器件拒绝: %v —— 该平台或该条不允许写入 SPD(如 BIOS 的 SPD 写保护、硬件 WP 引脚)", werr)
+	} else if back, rerr := readBack(); rerr != nil {
 		res.Verdict = "rejected"
 		res.Note = fmt.Sprintf("写入后回读失败: %v", rerr)
+	} else if back == res.New {
+		res.ReadBack, res.Verdict, res.Mode = back, "ok", "单字节(协议 2)"
+		res.Note = fmt.Sprintf("逐字节写生效: %s 从 %#02x 变成 %#02x(该条可写)", res.OffsetIn, old, back)
+		useBlock = false
 	} else {
-		res.ReadBack = back
-		if back == res.New {
-			res.Verdict = "ok"
-			res.Note = fmt.Sprintf("写入生效: %s 从 %#02x 变成 %#02x(该条可写)", res.OffsetIn, old, back)
-		} else if back == old {
+		// 2) 逐字节写没生效 → 再试块写(协议 5): 有些 SPD5 hub 对 NVM 的写只认块写
+		a.logf("写入能力探测: 逐字节写在 %s 未生效(回读 %#02x), 改试块写(协议 5)…", res.OffsetIn, back)
+		if berr := dev.WriteBlockAt(uint16(off), []byte{res.New}); berr == nil {
+			if b2, rerr := readBack(); rerr == nil && b2 == res.New {
+				res.ReadBack, res.Verdict, res.Mode, useBlock = b2, "ok", "块写(协议 5)", true
+				res.Note = fmt.Sprintf("逐字节写被忽略, 但**块写(协议 5)生效**: %s 从 %#02x 变成 %#02x"+
+					" —— 写入必须用块写档位(本工具写入时会自动切换)", res.OffsetIn, old, b2)
+			}
+		}
+		if res.Verdict == "" {
+			res.ReadBack = back
 			res.Verdict = "ignored"
-			res.Note = fmt.Sprintf("写入被忽略: 目标值 %#02x 发出后, 回读仍是 %#02x —— "+
-				"器件接受了事务但没有改内容。常见原因: 平台级 SPD 写保护(BIOS 里 SPD Write Protect)、"+
+			res.Note = fmt.Sprintf("逐字节写与块写都被忽略: 目标值 %#02x 发出后, 回读仍是 %#02x —— "+
+				"器件接受了事务但没有改内容。常见原因: 平台级 SPD 写保护(BIOS 里的 SPD Write Protect)、"+
 				"该块已被 RSWP/PSWP 保护、或 WP# 引脚被拉低", res.New, back)
-		} else {
-			res.Verdict = "ignored"
-			res.Note = fmt.Sprintf("回读既不是目标 %#02x 也不是原值 %#02x, 而是 %#02x(读回不稳定?)", res.New, old, back)
 		}
 	}
 
-	// 2) 还原(无论上面结果如何都要把原值写回去)
-	if rerr := dev.WriteByteAt(uint16(off), old); rerr != nil {
+	// 3) 还原(无论上面结果如何都要把原值写回去; 用刚才生效的档位)
+	restore := func(v byte) error {
+		if useBlock {
+			return dev.WriteBlockAt(uint16(off), []byte{v})
+		}
+		return dev.WriteByteAt(uint16(off), v)
+	}
+	if rerr := restore(old); rerr != nil {
 		res.Note += fmt.Sprintf("; 还原写入失败: %v —— 请用备份 %s 重写该条", rerr, backup)
 		a.logf("写入能力探测: 还原失败(%v), 正在用备份整片回滚…", rerr)
 		if n, ferr := a.restoreImage(dev, img); ferr != nil {
@@ -99,7 +115,7 @@ func (a *App) WriteProbe() (*WriteProbeResult, error) {
 		res.Restored = true
 	}
 
-	// 3) 整片复核: 设备必须与探测前逐字节一致
+	// 4) 整片复核: 设备必须与探测前逐字节一致
 	if verr := dev.Verify(img); verr != nil {
 		res.Verified = false
 		res.Note += fmt.Sprintf("; 探测后设备内容与备份不一致(%v), 正在回滚…", verr)

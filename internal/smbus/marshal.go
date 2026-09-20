@@ -21,8 +21,13 @@ const (
 )
 
 // MarshalXfer 构造 ioctl_smbus_xfer 的输入 cells。
-// data 仅在写协议(ProtoByteData/ProtoWordData)时取值: ByteData 取 data[0],
-// WordData 取 data[0](低字节)+data[1](高字节)——与 i2c_smbus_data 联合体布局一致。
+//
+// data 的语义随协议而变(与 i2c_smbus_data 联合体一致):
+//   - ByteData: data[0]
+//   - WordData: data[0](低字节) + data[1](高字节)
+//   - BlockData(写): data[0] = 长度(1..32), data[1..len] = 数据 —— 模块用
+//     unpack_bytes_le(in, in_data, 33, 4*8, 0) 从第 4 个 cell 起解出这 33 字节
+//   - BlockData(读): 无输入数据
 func MarshalXfer(addr byte, write bool, cmd byte, proto byte, data []byte) []uint64 {
 	in := make([]uint64, XferInSize)
 	in[0] = uint64(addr)
@@ -45,9 +50,20 @@ func MarshalXfer(addr byte, write bool, cmd byte, proto byte, data []byte) []uin
 		if len(data) > 1 {
 			in[4] |= uint64(data[1]) << 8
 		}
+	case ProtoBlockData:
+		// 长度字节 + 最多 32 字节数据, 小端按字节铺在 in[4..8](5 个 cell = 40 字节)
+		for i, b := range data {
+			if i >= 33 {
+				break
+			}
+			in[4+i/8] |= uint64(b) << (8 * uint(i%8))
+		}
 	}
 	return in
 }
+
+// BlockMaxPayload 是 SMBus Block Write 单次最多携带的数据字节数。
+const BlockMaxPayload = 32
 
 // UnmarshalOut 从 ioctl_smbus_xfer 输出 cells 提取读取的数据。
 // Byte 协议: out[0] bits0-7; Word: out[0] bits0-15。
