@@ -124,6 +124,7 @@ export function makeAppStub(overrides = {}) {
     EditReset: null,
     EditDiff: { changes: [], fields: [], highRisk: 0, crcFields: 0, changeCount: 0, crcOk: true, truncated: false },
     EditBytes: dumpB64,
+    EditVerifyFile: { changes: [], fields: [], highRisk: 0, crcFields: 0, changeCount: 0, crcOk: true, truncated: false },
     EditExportDialog: null,
     EditApplyToDevice: null,
     EditState: null,

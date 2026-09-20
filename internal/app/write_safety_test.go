@@ -368,3 +368,74 @@ func ddr2Sum(d []byte) byte {
 	}
 	return sum
 }
+
+// TestIncrementalWriteOnlyChangedBytes —— "写入能只写很小字段吗?"
+//
+// 能。默认(增量)写入只把**与设备当前内容不同**的字节下到总线, 其余字节一个写事务都不发;
+// 这正是"拿不重要的位置做写入测试"的依据: 改 1 个字节就只写 1 个字节。
+// 只有强制模式(force)才会写全部字节(用于修复), 编辑器路径固定 force=false。
+func TestIncrementalWriteOnlyChangedBytes(t *testing.T) {
+	a, rec, ft := newDDR5WriteApp(t)
+	orig := append([]byte{}, ft.EEProm...)
+	if _, err := a.EditLoadFromDevice(); err != nil {
+		t.Fatal(err)
+	}
+	// 只改序列号的最后一个字节(0x208, 不在任何 CRC 覆盖范围内 → 计划里连 CRC 字节都没有)
+	if _, err := a.EditSetByte(0x208, int(orig[0x208]^0x01)); err != nil {
+		t.Fatal(err)
+	}
+	target, err := a.EditBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := a.EditDiff()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.ChangeCount != 1 {
+		t.Fatalf("只改 1 个字节时计划应恰好 1 个变更, got %d", d.ChangeCount)
+	}
+	if d.DirtyInCRC != nil && len(d.DirtyInCRC) != 0 {
+		t.Fatalf("序列号不在校验范围, 不应产生 CRC 变更: %v", d.DirtyInCRC)
+	}
+	rec.Reset()
+	if counter, ok := a.activeTransport().(*smbus.CountingTransport); ok {
+		counter.Reset()
+	}
+	res, err := a.EditApplyToDevice(false, false, "WRITE")
+	if err != nil {
+		t.Fatalf("写入: %v", err)
+	}
+	if res.Written != 1 || res.Total != 1 {
+		t.Fatalf("应只写 1 个字节: %+v", res)
+	}
+	// 总线上恰好 1 次 NVM 数据写 —— 就是"只写一个字节"的硬证据
+	if res.NVMWrites != 1 {
+		t.Fatalf("NVM 写 = %d, 应为 1", res.NVMWrites)
+	}
+	if n := len(rec.NVMWrites()); n != 1 {
+		t.Fatalf("记录到的 NVM 写 = %d, 应为 1", n)
+	}
+	if !res.Verified {
+		t.Fatal("写入后必须校验通过")
+	}
+	// 除目标字节外全部原样
+	for i := range orig {
+		want := target[i]
+		if ft.EEProm[i] != want {
+			t.Fatalf("@%#x = %02X, 目标 %02X", i, ft.EEProm[i], want)
+		}
+	}
+	// 反向确认: 强制模式才会写全部
+	if counter, ok := a.activeTransport().(*smbus.CountingTransport); ok {
+		counter.Reset()
+	}
+	rec.Reset()
+	resForce, err := a.writeWithPreflight(&WritePreflight{}, target, true, true, nil, "") // force 干跑: 只算计划
+	if err != nil {
+		t.Fatalf("force 干跑: %v", err)
+	}
+	if resForce.Total != 1024 {
+		t.Fatalf("force 模式应计划全部 1024 字节, got %d", resForce.Total)
+	}
+}

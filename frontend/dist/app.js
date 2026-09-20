@@ -536,7 +536,16 @@ function renderPreflight(pf) {
   rows.push(pf.sizeOk
     ? `大小校验通过(${pf.fileSize} 字节)`
     : `<span class="danger">大小不符: 文件 ${pf.fileSize} 字节 / SPD ${pf.deviceSize} 字节</span>`);
+  // 增量写入: 只把"与设备不同"的字节下到总线。这是"只改一个小字段做写入测试"的依据 ——
+  // 改一个字节就只写一个字节(勾了"强制模式"才会写全部)。
   rows.push(`变更 <b>${pf.changeCount}</b> 字节(其中 CRC <b>${pf.crcBytes}</b> 字节, 按计划最后写入)`);
+  rows.push(pf.changeCount > 0
+    ? `本次**只会**写上面这 ${pf.changeCount} 个字节: 其余 ${Math.max(0, pf.deviceSize - pf.changeCount)} 个字节不发送任何写事务` +
+      `(增量模式; 只有勾"强制模式"才会写全部 ${pf.deviceSize} 字节)`
+    : `设备内容与目标一致: 不会写入任何字节`);
+  if (pf.targetGeneration) rows.push(`世代对照: 目标 ${esc(pf.targetGeneration)} = 设备 ${esc(pf.generation)} ✓`);
+  rows.push(`写入后自动校验: ① 每个字节写完立即回读 ② 整片 ${pf.deviceSize} 字节逐字节比对 ` +
+    `③ 改动字节再用逐字节读法复核(绕过块读) —— 任一不符立即自动回滚`);
   rows.push(pf.targetCrcValid
     ? `目标文件 CRC 校验通过`
     : `<span class="danger">目标文件 CRC 校验不通过</span>`);
@@ -794,7 +803,7 @@ function switchTab(which) {
 
 function setEditEnabled(on) {
   // 注意: btn-edit-write 由 refreshEditDiff 依据 CRC/变更数决定, 不在这里放开
-  ["btn-edit-reset", "btn-edit-fixcrc", "btn-edit-export"].forEach(
+  ["btn-edit-reset", "btn-edit-fixcrc", "btn-edit-export", "btn-edit-verify-dev"].forEach(
     (id) => ($(id).disabled = !on));
 }
 
@@ -939,6 +948,35 @@ $("btn-edit-fixcrc").onclick = async () => {
   } catch (e) { addLog("", "重算 CRC 失败: " + e); }
 };
 
+// 与设备比对: 重新整片读取设备, 与编辑器内容逐字节比较(写入后的独立复核)。
+// 注意: 这会在真机上重读整片(本机 DDR5 约 16s), 是"写入到底成没成"的独立证据。
+$("btn-edit-verify-dev").onclick = async () => {
+  try {
+    addLog("", "正在重新读取设备并与编辑器内容比对…");
+    const d = await call("EditVerifyFile");
+    renderEditState(await call("EditState"));
+    const lines = [];
+    if (!d.changeCount) {
+      lines.push('<span class="ok">设备内容与编辑器内容逐字节一致(校验通过)</span>');
+      addLog("", "与设备比对: 逐字节一致(校验通过)");
+    } else {
+      lines.push(`<span class="danger">与设备不一致 ${d.changeCount} 处</span>`);
+      let n = 0;
+      for (const c of (d.changes || [])) {
+        if (n++ >= 8) break;
+        lines.push(`<span class="danger">0x${Number(c.offset).toString(16).toUpperCase().padStart(3, "0")}: ` +
+          `设备 ${Number(c.old).toString(16).padStart(2, "0")} ≠ 编辑器 ${Number(c.new).toString(16).padStart(2, "0")}</span>`);
+      }
+      if (d.changeCount > 8) lines.push("…");
+      addLog("", `与设备比对: 有 ${d.changeCount} 处不一致(见变更面板)`);
+    }
+    lines.push(d.crcOk ? "CRC 校验通过" : '<span class="danger">CRC 不通过</span>');
+    $("edit-diff").innerHTML = lines.join("<br>");
+  } catch (e) {
+    addLog("", "与设备比对失败: " + e);
+  }
+};
+
 $("btn-edit-export").onclick = async () => {
   try {
     const path = await call("EditExportDialog");
@@ -1002,6 +1040,9 @@ $("btn-edit-write").onclick = async () => {
     const res = await call("EditApplyToDevice", false, dryRun, $("inp-edit-ack").value);
     addLog("", (res && res.message) || "写入完成");
     if (res && res.backupPath) addLog("", "备份: " + res.backupPath);
+    if (res && res.verified && !dryRun) {
+      addLog("", '已校验通过;要再独立确认一次可点"与设备比对(重新读取校验)"');
+    }
     if (!dryRun) {
       await doDump();
       const st = await call("EditState");

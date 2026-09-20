@@ -844,7 +844,9 @@ func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun 
 	}
 
 	res.Written, res.Verified = len(changes), true
-	res.Message = fmt.Sprintf("写入并校验通过: %d 字节(备份 %s)", len(changes), backup)
+	res.Message = fmt.Sprintf(
+		"写入并校验通过: %d 字节(备份 %s); 校验: 每个字节写完即回读 %d/%d + 整片 %d 字节逐字节比对 + 改动字节逐字节复核(绕过块读)",
+		len(changes), backup, len(changes), len(changes), dev.Size())
 	a.attachBusStats(res, dev, counter)
 	a.logf("%s", res.Message)
 	return res, nil

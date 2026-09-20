@@ -90,6 +90,7 @@
     EditReset: rec("EditReset", { ...editState, dirty: false, changeCount: 0 }),
     EditDiff: rec("EditDiff", editDiff),
     EditBytes: rec("EditBytes", dumpB64),
+    EditVerifyFile: rec("EditVerifyFile", { changes: [], fields: [], highRisk: 0, crcFields: 0, changeCount: 0, crcOk: true, truncated: false }),
     EditExportDialog: rec("EditExportDialog", "/tmp/edited.bin"),
     EditApplyToDevice: rec("EditApplyToDevice", { dryRun: false, written: 3, total: 3, backupPath: "/root/.spdrw/backups/e.bin", verified: true, message: "写入并校验通过" }),
     EditState: rec("EditState", editState),

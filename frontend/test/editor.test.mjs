@@ -284,3 +284,27 @@ test("编辑器: 写入失败后自动重读设备(回滚结果只有重读才�
   assert.match(el("log").text(), /已自动回滚/, "回滚结果要出现在日志里");
   assert.match(el("log").text(), /设备当前实际内容/, "要说明左侧现在显示的是设备内容");
 });
+
+test("与设备比对: 重新读取并逐字节比较(写入后的独立校验)", async () => {
+  let same = false;
+  const { el, calls } = setup({
+    EditVerifyFile: () => same
+      ? { changes: [], fields: [], highRisk: 0, crcFields: 0, changeCount: 0, crcOk: true, truncated: false }
+      : { changes: [{ offset: 325, old: 0x01, new: 0xAB, field: "与设备不一致", risk: "medium" }], fields: [], highRisk: 0, crcFields: 0, changeCount: 1, crcOk: true, truncated: false },
+  });
+  await flush();
+  el("tab-edit").onclick();
+  await el("btn-edit-load-dev").onclick();
+  await flush();
+
+  await el("btn-edit-verify-dev").onclick();
+  await flush();
+  assert.ok(calls.some((c) => c.name === "EditVerifyFile"), "应调用 EditVerifyFile");
+  assert.match(el("edit-diff").innerHTML, /0x145/, "不一致的偏移要显示出来");
+  assert.match(el("log").text(), /比对/);
+
+  same = true;
+  await el("btn-edit-verify-dev").onclick();
+  await flush();
+  assert.match(el("edit-diff").innerHTML, /逐字节一致/);
+});
