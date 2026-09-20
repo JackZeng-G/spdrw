@@ -21,7 +21,8 @@ type timingSpec struct {
 func medFine(medOff, fineOff int) (func(*Editor) (float64, bool), func(*Editor, float64) error) {
 	get := func(e *Editor) (float64, bool) {
 		tb := DDR4Timebase(e.dump)
-		return timingNS(int(e.dump[medOff]), int(int8(e.dump[fineOff])), tb), true
+		v := timingNS(int(e.dump[medOff]), int(int8(e.dump[fineOff])), tb)
+		return v, v > 0
 	}
 	set := func(e *Editor, ns float64) error {
 		tb := DDR4Timebase(e.dump)
@@ -42,16 +43,13 @@ func med12(loOff, nibOff int, pos int) (func(*Editor) (float64, bool), func(*Edi
 	get := func(e *Editor) (float64, bool) {
 		tb := DDR4Timebase(e.dump)
 		med := int(e.dump[loOff]) | int(subByteR(e.dump[nibOff], pos, 4))<<8
-		return timingNS(med, 0, tb), true
+		return timingNS(med, 0, tb), med > 0
 	}
 	set := func(e *Editor, ns float64) error {
 		tb := DDR4Timebase(e.dump)
-		m, _, err := encodeTiming(ns, tb)
+		m, _, err := encodeTimingMax(ns, tb, 0xFFF) // 12 位 medium
 		if err != nil {
 			return err
-		}
-		if m > 0xFFF {
-			return fmt.Errorf("%.3f ns 超出 12 位范围", ns)
 		}
 		if err := e.set(loOff, byte(m&0xFF), "tCK/timing", "medium"); err != nil {
 			return err
@@ -66,7 +64,7 @@ func med16(loOff int) (func(*Editor) (float64, bool), func(*Editor, float64) err
 	get := func(e *Editor) (float64, bool) {
 		tb := DDR4Timebase(e.dump)
 		med := int(e.dump[loOff]) | int(e.dump[loOff+1])<<8
-		return timingNS(med, 0, tb), true
+		return timingNS(med, 0, tb), med > 0
 	}
 	set := func(e *Editor, ns float64) error {
 		tb := DDR4Timebase(e.dump)
@@ -106,16 +104,14 @@ func ddr4TimingSpecs() []timingSpec {
 	out[len(out)-1].Get = func(e *Editor) (float64, bool) {
 		tb := DDR4Timebase(e.dump)
 		med := int(e.dump[29]) | int(subByteR(e.dump[27], 7, 4))<<8
-		return timingNS(med, int(int8(e.dump[120])), tb), true
+		v := timingNS(med, int(int8(e.dump[120])), tb)
+		return v, v > 0
 	}
 	out[len(out)-1].Set = func(e *Editor, ns float64) error {
 		tb := DDR4Timebase(e.dump)
-		m, f, err := encodeTiming(ns, tb)
+		m, f, err := encodeTimingMax(ns, tb, 0xFFF)
 		if err != nil {
 			return err
-		}
-		if m > 0xFFF {
-			return fmt.Errorf("%.3f ns 超出 12 位范围", ns)
 		}
 		if err := e.set(29, byte(m&0xFF), "tRC", "medium"); err != nil {
 			return err
@@ -158,7 +154,8 @@ func ddr3TimingSpecs() []timingSpec {
 	medFine3 := func(medOff, fineOff int) (func(*Editor) (float64, bool), func(*Editor, float64) error) {
 		get := func(e *Editor) (float64, bool) {
 			tb := ddr3Timebase(e.dump)
-			return timingNS(int(e.dump[medOff]), int(int8(e.dump[fineOff])), tb), true
+			v := timingNS(int(e.dump[medOff]), int(int8(e.dump[fineOff])), tb)
+			return v, v > 0
 		}
 		set := func(e *Editor, ns float64) error {
 			tb := ddr3Timebase(e.dump)
@@ -187,16 +184,14 @@ func ddr3TimingSpecs() []timingSpec {
 		Get: func(e *Editor) (float64, bool) {
 			tb := ddr3Timebase(e.dump)
 			med := int(e.dump[23]) | int(subByteR(e.dump[21], 3, 4))<<8
-			return timingNS(med, int(int8(e.dump[38])), tb), true
+			v := timingNS(med, int(int8(e.dump[38])), tb)
+			return v, v > 0
 		},
 		Set: func(e *Editor, ns float64) error {
 			tb := ddr3Timebase(e.dump)
-			m, f, err := encodeTiming(ns, tb)
+			m, f, err := encodeTimingMax(ns, tb, 0xFFF)
 			if err != nil {
 				return err
-			}
-			if m > 0xFFF {
-				return fmt.Errorf("%.3f ns 超出 12 位范围", ns)
 			}
 			if err := e.set(23, byte(m&0xFF), "ddr3.tRC", "medium"); err != nil {
 				return err
@@ -213,16 +208,13 @@ func ddr3TimingSpecs() []timingSpec {
 		Get: func(e *Editor) (float64, bool) {
 			tb := ddr3Timebase(e.dump)
 			med := int(e.dump[22]) | int(subByteR(e.dump[21], 7, 4))<<8
-			return timingNS(med, 0, tb), true
+			return timingNS(med, 0, tb), med > 0
 		},
 		Set: func(e *Editor, ns float64) error {
 			tb := ddr3Timebase(e.dump)
-			m, _, err := encodeTiming(ns, tb)
+			m, _, err := encodeTimingMax(ns, tb, 0xFFF)
 			if err != nil {
 				return err
-			}
-			if m > 0xFFF {
-				return fmt.Errorf("%.3f ns 超出 12 位范围", ns)
 			}
 			if err := e.set(22, byte(m&0xFF), "ddr3.tRAS", "medium"); err != nil {
 				return err
@@ -257,7 +249,8 @@ func ddr3TimingSpecs() []timingSpec {
 		out = append(out, timingSpec{
 			Key: key, Name: name, Offset: fmt.Sprintf("0x%02X", off),
 			Get: func(e *Editor) (float64, bool) {
-				return timingNS(int(e.dump[off]), 0, ddr3Timebase(e.dump)), true
+				v := timingNS(int(e.dump[off]), 0, ddr3Timebase(e.dump))
+				return v, v > 0
 			},
 			Set: func(e *Editor, ns float64) error {
 				m, _, err := encodeTiming(ns, ddr3Timebase(e.dump))

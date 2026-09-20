@@ -167,7 +167,10 @@ func encodeTimingMax(ns float64, tb Timebase, maxMedium int) (medium, fine int, 
 		return 0, 0, fmt.Errorf("时间基准 MTB 无效")
 	}
 	totalPS := ns * 1000
-	medium = int(totalPS) / tb.Medium
+	// JEDEC 约定: medium 向上取整, 修正量(FTB)多为负值或 0
+	// ("the medium time base number is usually rounded up and the correction is negative")
+	// 用向下取整会得到 (medium-1, 正 fine) 的等价但不同的字节, 破坏"设回原值不变"。
+	medium = int(math.Ceil(totalPS / float64(tb.Medium)))
 	rem := totalPS - float64(medium*tb.Medium)
 	if tb.Fine > 0 {
 		fine = int(math.Round(rem / float64(tb.Fine)))

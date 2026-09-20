@@ -30,8 +30,9 @@ func makeDDR4(t *testing.T) []byte {
 	binary.LittleEndian.PutUint16(d[28:30], 32) // tRAS = 4ns? 32×125=4ns
 	binary.LittleEndian.PutUint16(d[30:32], 256)
 	binary.LittleEndian.PutUint16(d[32:34], 128)
-	// 厂商区: 320 cont=0 code=0x2C(Micron)
-	d[320] = 0
+	// 厂商区: 320 = continuation(计数 0 + 奇校验位 → 0x80), 321 = code|parity
+	// (实测 Micron/Samsung/Hynix 的 dump 都是这个形态)
+	d[320] = 0x80
 	d[321] = 0x2C
 	d[323] = 0x24 // 2024
 	d[324] = 0x15 // 15 周
@@ -156,8 +157,8 @@ func makeDDR5(t *testing.T) []byte {
 	d[234] = 0<<6 | 0<<5
 	// byte 235: 2 channels, ext 8? primary per channel 16bit: code 0 → 1<<3=8? (1<<(0+3))&0xF8=8
 	d[235] = 1<<5 | 0<<3 | 0<<0 // 通道码1(2通道)@bits5-6, ext码0, primary码0(8bit)
-	d[512] = 0                  // continuation
-	d[513] = 0xCE               // Samsung? bank0 code 0xCE? name[0xCD]
+	d[512] = 0x80               // continuation(计数 0 + 奇校验位, 与真实 dump 一致)
+	d[513] = 0xCE               // 厂商码(含奇校验位)
 	d[515] = 0x25               // 2025
 	d[516] = 0x30               // 30 周
 	copy(d[517:521], []byte{0x11, 0x22, 0x33, 0x44})
@@ -245,9 +246,9 @@ func makeDDR3(t *testing.T) []byte {
 	d[9] = 1<<7 | 1<<3           // MTB 1/8ns? dividend=1 divisor=8: byte10=1 byte11=8
 	d[10] = 1
 	d[11] = 8
-	d[12] = 12 // tCK = 12×(1/8) = 1.5ns
-	d[117] = 0
-	d[118] = 0x2C
+	d[12] = 12    // tCK = 12×(1/8) = 1.5ns
+	d[117] = 0x80 // continuation(计数 0 + 奇校验位)
+	d[118] = 0x2C // 厂商码(含奇校验位)
 	copy(d[128:146], []byte("DDR3-TEST-8GB      "))
 	crc := Crc16(d[:126])
 	d[126], d[127] = byte(crc), byte(crc>>8)
@@ -298,8 +299,9 @@ func makeDDR2(t *testing.T) []byte {
 	d[13] = 8   // x8 芯片
 	d[17] = 4   // banks
 	// 身份区
-	d[64], d[65] = 0x00, 0x2C // JEP106: cont=0, code=0x2C
-	d[72] = 0x03              // 生产地点
+	// DDR2 厂商 ID 按小端存放: 续延码(0x7F×bank)在前, 随后是含奇校验位的厂商码, 其余补 0
+	d[64], d[65] = 0x2C, 0x00
+	d[72] = 0x03 // 生产地点
 	copy(d[73:91], []byte("DDR2-TEST-1GB     "))
 	d[91], d[92] = 0x12, 0x34 // 修订码
 	d[93], d[94] = 24, 15     // 2024 年第 15 周(非 BCD)

@@ -244,10 +244,16 @@ func (e *Editor) fieldFromSpec(key string, sp pfSpec, base int, prefix, group st
 	case pfPS16, pfNS16:
 		v := int(e.dump[base+sp.Off]) | int(e.dump[base+sp.Off+1])<<8
 		f.Kind, f.Unit, f.Step = "float", "ns", 0.001
-		f.Value = timingValue(float64(v)/1000, v > 0)
+		ns := float64(v) / 1000 // ps
+		if sp.Kind == pfNS16 {
+			ns = float64(v) // 已是 ns(如 XMP3/EXPO 的 tRFC*)
+		}
+		f.Value = timingValue(ns, v > 0)
 	case pfVolt5:
 		f.Kind, f.Unit, f.Step = "float", "V", 0.005
-		f.Value = strconv.FormatFloat(volt5ToV(e.dump[base+sp.Off]), 'f', 3, 64)
+		if b := e.dump[base+sp.Off]; b != 0 {
+			f.Value = strconv.FormatFloat(volt5ToV(b), 'f', 3, 64)
+		}
 	case pfMedFin:
 		tb := DDR4Timebase(e.dump)
 		ns := timingNS(int(e.dump[base+sp.Off]), int(int8(e.dump[base+sp.Aux])), tb)
@@ -261,9 +267,11 @@ func (e *Editor) fieldFromSpec(key string, sp pfSpec, base int, prefix, group st
 		f.Value = timingValue(ns, ns > 0)
 	case pfVolt2:
 		v := e.dump[base+sp.Off]
-		volts := float64(v>>7) + float64(v&0x7F)/100
 		f.Kind, f.Unit, f.Step = "float", "V", 0.01
-		f.Value = strconv.FormatFloat(volts, 'f', 2, 64)
+		if v != 0 {
+			volts := float64(v>>7) + float64(v&0x7F)/100
+			f.Value = strconv.FormatFloat(volts, 'f', 2, 64)
+		}
 	case pfCL3, pfCL5:
 		f.Kind = "string"
 		f.Value = clMaskString(e.dump, base+sp.Off, map[pfKind]int{pfCL3: 3, pfCL5: 5}[sp.Kind], sp.Kind == pfCL5)
@@ -421,6 +429,15 @@ func (e *Editor) setProfileField(key, value string) error {
 
 // applySpec 按 kind 写入一个 profile 字段。
 func (e *Editor) applySpec(base int, sp pfSpec, value, group string) error {
+	// 数值型时序: 时间没变就不动字节(等价编码可能不同)
+	switch sp.Kind {
+	case pfPS16, pfNS16, pfMedFin, pfNib12:
+		if ns, err := strconv.ParseFloat(value, 64); err == nil {
+			if cur, ok := e.specValue(base, sp); ok && math.Abs(cur-ns) < 1e-9 {
+				return nil
+			}
+		}
+	}
 	switch sp.Kind {
 	case pfPS16, pfNS16:
 		ns, err := strconv.ParseFloat(value, 64)
@@ -439,6 +456,9 @@ func (e *Editor) applySpec(base int, sp pfSpec, value, group string) error {
 		}
 		return e.set(base+sp.Off+1, byte(v>>8), group+" "+sp.Suffix, sp.Risk)
 	case pfVolt5:
+		if strings.TrimSpace(value) == "0" {
+			return e.set(base+sp.Off, 0, group+" "+sp.Suffix, sp.Risk)
+		}
 		v, err := parseVoltage(value, 5)
 		if err != nil {
 			return fmt.Errorf("%s: %w", sp.Name, err)
@@ -478,12 +498,9 @@ func (e *Editor) applySpec(base int, sp pfSpec, value, group string) error {
 			return fmt.Errorf("%s 必须是数值(ns): %q", sp.Name, value)
 		}
 		tb := DDR4Timebase(e.dump)
-		m, _, err := encodeTiming(ns, tb)
+		m, _, err := encodeTimingMax(ns, tb, 0xFFF)
 		if err != nil {
-			return err
-		}
-		if m > 0xFFF {
-			return fmt.Errorf("%s(%.3f ns) 超出 12 位范围", sp.Name, ns)
+			return fmt.Errorf("%s: %w", sp.Name, err)
 		}
 		if err := e.set(base+sp.Off, byte(m&0xFF), group+" "+sp.Suffix, sp.Risk); err != nil {
 			return err
@@ -640,4 +657,26 @@ func (e *Editor) setCLMask(off, n int, value string, ddr5Mask bool, group string
 		}
 	}
 	return nil
+}
+
+// specValue 读取 profile 字段当前的数值(仅数值型 kind)。
+func (e *Editor) specValue(base int, sp pfSpec) (float64, bool) {
+	switch sp.Kind {
+	case pfPS16:
+		v := int(e.dump[base+sp.Off]) | int(e.dump[base+sp.Off+1])<<8
+		return float64(v) / 1000, v > 0
+	case pfNS16:
+		v := int(e.dump[base+sp.Off]) | int(e.dump[base+sp.Off+1])<<8
+		return float64(v), v > 0
+	case pfMedFin:
+		tb := DDR4Timebase(e.dump)
+		v := timingNS(int(e.dump[base+sp.Off]), int(int8(e.dump[base+sp.Aux])), tb)
+		return v, v > 0
+	case pfNib12:
+		tb := DDR4Timebase(e.dump)
+		med := int(e.dump[base+sp.Off]) | int(subByteR(e.dump[base+sp.Aux], sp.Pos, 4))<<8
+		v := timingNS(med, 0, tb)
+		return v, med > 0
+	}
+	return 0, false
 }

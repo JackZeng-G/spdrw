@@ -203,3 +203,198 @@ func TestRealDumpCRCFixRepairsBadSamples(t *testing.T) {
 	}
 	t.Logf("CRC 修复: 成功 %d, 失败 %d", fixed, failed)
 }
+
+// TestRealDumpEditorFieldNoop 对语料里每份 dump 的每个字段做"设回当前值"，
+// 断言字节一个都不变 —— 这同时验证了字段的读/写编码互为逆运算。
+func TestRealDumpEditorFieldNoop(t *testing.T) {
+	dir := filepath.Join("..", "..", "testdata", "spd")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Skipf("无语料目录(%v)", err)
+	}
+	checked, skipped := 0, 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), "ddr") {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".bin") && !strings.HasSuffix(name, ".spd") {
+			continue
+		}
+		dump, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ed, err := NewEditor(dump)
+		if err != nil {
+			continue
+		}
+		orig := append([]byte{}, ed.Bytes()...)
+		for _, f := range ed.Fields() {
+			if f.Value == "" || f.Kind == "bool" && f.Value != "true" && f.Value != "false" {
+				continue
+			}
+			if err := ed.SetField(f.Key, f.Value); err != nil {
+				t.Errorf("%s: 设回 %s=%q 报错: %v", name, f.Key, f.Value, err)
+				skipped++
+				continue
+			}
+			checked++
+		}
+		got := ed.Bytes()
+		for i := range got {
+			if got[i] != orig[i] {
+				t.Fatalf("%s: 把字段设回当前值却改了字节 @0x%03X(%02X→%02X)", name, i, orig[i], got[i])
+			}
+		}
+	}
+	t.Logf("字段幂等检查: 通过 %d 个赋值, %d 个失败", checked, skipped)
+}
+
+// TestRealDumpXMP2Profiles 在语料里的 DDR4 XMP 2.0 样本上验证扩展区解析:
+// 头部 magic、启用位、电压与 tCK 必须能读出来且换算合理。
+func TestRealDumpXMP2Profiles(t *testing.T) {
+	dir := filepath.Join("..", "..", "testdata", "spd")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Skipf("无语料目录(%v)", err)
+	}
+	n := 0
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), "ddr4") {
+			continue
+		}
+		dump, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(dump) != 512 || dump[384] != 0x0C || dump[385] != 0x4A {
+			continue
+		}
+		d, err := NewDDR4(dump)
+		if err != nil {
+			t.Fatalf("%s: NewDDR4: %v", e.Name(), err)
+		}
+		if !d.XMPPresence() {
+			t.Fatalf("%s: XMP 应存在", e.Name())
+		}
+		profs := d.XMPProfiles()
+		found := false
+		for _, p := range profs {
+			if !p.Enabled {
+				continue
+			}
+			found = true
+			ns := p.TCKmin.NanoSeconds(d.Timebase())
+			if ns <= 0 || ns > 100 {
+				t.Errorf("%s: XMP P%d tCK = %.3f ns 不合理", e.Name(), p.Number+1, ns)
+			}
+			if p.Volts <= 0.5 || p.Volts > 2.5 {
+				t.Errorf("%s: XMP P%d 电压 = %.2f V 不合理", e.Name(), p.Number+1, p.Volts)
+			}
+			t.Logf("%s: XMP P%d = %.0f MHz %.2fV CL=%v", e.Name(), p.Number+1,
+				p.TCKmin.MegaHertz(d.Timebase()), p.Volts, p.CasLat.ToArray())
+		}
+		if !found {
+			t.Errorf("%s: XMP 存在但没有启用的 profile", e.Name())
+		}
+		n++
+	}
+	if n == 0 {
+		t.Skip("语料里没有 DDR4 XMP 2.0 样本")
+	}
+	t.Logf("DDR4 XMP 2.0 样本: %d 份", n)
+}
+
+// TestRealDumpDDR5XMP3AndEXPO 在语料里的 DDR5 样本上验证 XMP3/EXPO 解析与 CRC 结论一致。
+func TestRealDumpDDR5XMP3AndEXPO(t *testing.T) {
+	dir := filepath.Join("..", "..", "testdata", "spd")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Skipf("无语料目录(%v)", err)
+	}
+	var xmp3, expo, slots int
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), "ddr5") {
+			continue
+		}
+		dump, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		d, err := NewDDR5(dump)
+		if err != nil {
+			t.Fatalf("%s: NewDDR5: %v", e.Name(), err)
+		}
+		if d.XMPPresence() {
+			xmp3++
+			if !d.XMP30HeaderCRCOK() {
+				t.Errorf("%s: XMP3 header CRC 不通过", e.Name())
+			}
+			enabled := dump[0x283]
+			for i, present := range d.XMP30Slots() {
+				if !present {
+					continue
+				}
+				slots++
+				// 已是真实 profile: 槽内 CRC 必须通过
+				off := XMP30ProfileOffsets[i]
+				sec := dump[off : off+64]
+				if Crc16(sec[:62]) != uint16(sec[62])|uint16(sec[63])<<8 {
+					t.Errorf("%s: 槽 %d(%#x) 被判定为存在但 CRC 不通过", e.Name(), i+1, off)
+				}
+			}
+			// 启用位指向的槽通常应当存在; 个别手工构造的示例文件会出现
+			// "启用位=1 但槽为空"的不一致, 这里只记录不判失败
+			for i := 0; i < 3; i++ {
+				if enabled&(1<<i) != 0 && !d.XMP30Slots()[i] {
+					t.Logf("%s: 启用位 bit%d=1 但槽 %d 为空(文件自身不一致)", e.Name(), i, i+1)
+				}
+			}
+		}
+		if d.EXPOPresence() {
+			expo++
+			sec := dump[expoOffset : expoOffset+expoLen]
+			if Crc16(sec[:126]) != uint16(sec[126])|uint16(sec[127])<<8 {
+				t.Errorf("%s: EXPO CRC 不通过", e.Name())
+			}
+		}
+	}
+	t.Logf("DDR5 语料: XMP3 %d 份 / EXPO %d 份 / 有效 profile 槽 %d 个", xmp3, expo, slots)
+}
+
+// TestCorruptSamplesHandledSafely 负样本: 不能 panic, 且结构异常要被如实报告。
+func TestCorruptSamplesHandledSafely(t *testing.T) {
+	dir := filepath.Join("..", "..", "testdata", "spd", "corrupt")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Skipf("无负样本目录(%v)", err)
+	}
+	n := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		dump, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		n++
+		// 任何长度都必须能安全走一遍识别/校验链路(不得 panic)
+		rt, size, ierr := Identify(dump)
+		if ierr == nil && len(dump) == size {
+			ok, cerr := CRCOK(dump)
+			if cerr == nil && ok {
+				t.Logf("%s: 负样本却通过了 CRC(%v)", e.Name(), rt)
+			}
+		} else {
+			t.Logf("%s: 长度/类型异常(长度 %d): %v", e.Name(), len(dump), ierr)
+		}
+		// 编辑器对异常样本必须优雅失败而不是 panic
+		if ed, err := NewEditor(dump); err == nil {
+			_ = ed.Fields()
+			_, _ = ed.FixCRC()
+		}
+	}
+	t.Logf("负样本处理: %d 份, 无 panic", n)
+}

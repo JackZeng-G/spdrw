@@ -268,8 +268,10 @@ func (d *DDR4SPD) XMPProfiles() []XMPProfile {
 		base := 384 + off
 		p.TCKmin = d.timing(base+0x0C, base+0x2F)
 		p.TAAmin = d.timing(base+0x11, base+0x2E)
+		// CL 掩码: +0x0D 起的 24 位小端, bit i → CL i+7(实测: G.Skill 3200 的 0x80 = CL14,
+		// 原实现按大端读会把 CL 表整体读错)
 		p.CasLat = CasLatencies{
-			Bitmask: uint32(d.raw[base+0x0F]) | uint32(d.raw[base+0x0E])<<8 | uint32(d.raw[base+0x0D])<<16,
+			Bitmask: uint32(d.raw[base+0x0D]) | uint32(d.raw[base+0x0E])<<8 | uint32(d.raw[base+0x0F])<<16,
 		}
 		p.TRCD = d.timing(base+0x12, base+0x2D)
 		p.TRP = d.timing(base+0x13, base+0x2C)

@@ -144,17 +144,22 @@ func syncOnce() func() {
 }
 
 // ManufacturerName 由 continuation code + 厂商码查询厂商名。
-// 忽略 MSB 奇偶位; 码 0 或越界返回空串。
+//
+// 两个字节的 bit7 都是 **奇校验位**(JEP106): 实测 Micron/Samsung/SK Hynix 的
+// continuation 字节是 0x80(计数 0 + 校验位)、Kingston 是 0x01(计数 1)、
+// Crucial 0x85(计数 5)、Corsair 0x02(计数 2) —— 全都是"计数 | 校验位"。
+// 不屏蔽 bit7 会把这些厂商全部查不到名字(旧实现就把 cont=0x80 当越界直接返回空串)。
 func ManufacturerName(cont, code byte) string {
 	idcodesOnce()
-	if idcodesErr != nil || cont >= byte(len(idcodesTable)) {
+	bank := cont & 0x7F
+	if idcodesErr != nil || bank >= byte(len(idcodesTable)) {
 		return ""
 	}
 	idx := int(code & 0x7F)
 	if idx == 0 {
 		return ""
 	}
-	names := idcodesTable[cont]
+	names := idcodesTable[bank]
 	if idx <= len(names) {
 		return names[idx-1]
 	}
@@ -171,11 +176,15 @@ func FindManufacturer(name string) (cont, code byte, ok bool) {
 		for j, n := range names {
 			if strings.EqualFold(n, name) {
 				cc := byte(j + 1)
-				// 原版: code | (奇校验 << 7)
+				// 厂商码与 continuation 字节都带奇校验位(实测数据一致)
 				if parityOdd(cc) {
 					cc |= 0x80
 				}
-				return byte(i), cc, true
+				cont := byte(i)
+				if parityOdd(cont) {
+					cont |= 0x80
+				}
+				return cont, cc, true
 			}
 		}
 	}
