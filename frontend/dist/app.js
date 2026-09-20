@@ -3,6 +3,7 @@
 
 const $ = (id) => document.getElementById(id);
 let currentDump = null;
+let selectedAddr = null;
 
 // ---------- Wails 绑定桥 ----------
 // Wails v2 绑定键 = 绑定结构体的包名.结构体名(官方模板是 main.App;
@@ -48,6 +49,8 @@ async function checkEnv() {
     el.className = "ok";
     fillCtlSelect(list);
     setWarn("");
+    // 单控制器时自动 连接+扫描+读取
+    if (list.length === 1) await autoConnectFirst();
   } catch (e) {
     const msg = String(e || "");
     if (msg.includes("管理员") || msg.includes("0x80070005")) {
@@ -68,6 +71,21 @@ async function checkEnv() {
       setWarn(`后端初始化失败: ${msg}`);
     }
   }
+}
+
+async function autoConnectFirst() {
+  try {
+    $("ctl-select").value = "0";
+    await call("Connect", 0);
+    const dimms = await call("Scan");
+    fillDimmSelect(dimms);
+    if (dimms.length) {
+      selectedAddr = dimms[0].addr;
+      $("dimm-select").value = String(selectedAddr);
+      await call("Select", selectedAddr);
+      await doDump();
+    }
+  } catch (e) { addLog("", "自动连接失败: " + e); }
 }
 
 function setWarn(html) {
@@ -94,12 +112,16 @@ function fillCtlSelect(list) {
 }
 
 // ---------- 日志 ----------
-onEvent("log", (entry) => addLog(`[${entry.Time}] ${entry.Text}`));
-function addLog(text) {
+// 注意: Go 侧 LogEntry 的 JSON tag 是小写 time/text
+onEvent("log", (entry) => addLog(entry.time, entry.text));
+function addLog(time, text) {
   const log = $("log");
   const div = document.createElement("div");
-  div.innerHTML = `<span class="t"></span>${escapeHtml(text)}`;
-  div.querySelector(".t").textContent = (div.textContent.match(/^\[[\d:]+\]/) || [""])[0];
+  const t = document.createElement("span");
+  t.className = "t";
+  t.textContent = `[${time ?? ""}] `;
+  div.appendChild(t);
+  div.appendChild(document.createTextNode(text ?? ""));
   log.appendChild(div);
   log.scrollTop = log.scrollHeight;
 }
@@ -117,7 +139,7 @@ $("ctl-select").onchange = async () => {
     await call("Connect", idx);
     const dimms = await call("Scan");
     fillDimmSelect(dimms);
-  } catch (e) { addLog("连接/扫描失败: " + e); }
+  } catch (e) { addLog("", "连接/扫描失败: " + e); }
 };
 
 function fillDimmSelect(dimms) {
@@ -141,9 +163,10 @@ $("dimm-select").onchange = async () => {
   const addr = parseInt($("dimm-select").value, 10);
   if (isNaN(addr) || addr < 0) return;
   try {
+    selectedAddr = addr;
     await call("Select", addr);
     await doDump();
-  } catch (e) { addLog("选择设备失败: " + e); }
+  } catch (e) { addLog("", "选择设备失败: " + e); }
 };
 
 async function doDump() {
@@ -156,13 +179,21 @@ async function doDump() {
 
 $("btn-scan").onclick = async () => {
   try {
+    const idx = parseInt($("ctl-select").value, 10);
+    if (isNaN(idx) || idx < 0) throw new Error("未枚举到控制器");
+    await call("Connect", idx); // 重复连接无害, 保证状态就绪
     const dimms = await call("Scan");
     fillDimmSelect(dimms);
-    addLog(`发现 ${dimms.length} 个 SPD 设备`);
-  } catch (e) { addLog("扫描失败: " + e); }
+    addLog("", `发现 ${dimms.length} 个 SPD 设备`);
+    // 若之前选中的设备仍在, 自动恢复选择并读取
+    if (selectedAddr != null && dimms.some((d) => d.addr === selectedAddr)) {
+      $("dimm-select").value = String(selectedAddr);
+      $("dimm-select").onchange();
+    }
+  } catch (e) { addLog("", "扫描失败: " + e); }
 };
 
-$("btn-dump").onclick = () => doDump().catch((e) => addLog("读取失败: " + e));
+$("btn-dump").onclick = () => doDump().catch((e) => addLog("", "读取失败: " + e));
 
 // ---------- 十六进制视图 ----------
 function renderHex(dump) {
@@ -253,8 +284,8 @@ $("btn-save").onclick = async () => {
   // 先存临时路径由后端读取: 直接传 dump 数组写文件
   try {
     await call("SaveDumpData", path, currentDump);
-    addLog("已保存 " + path);
-  } catch (e) { addLog("保存失败: " + e); }
+    addLog("", "已保存 " + path);
+  } catch (e) { addLog("", "保存失败: " + e); }
 };
 
 $("btn-load-decode").onclick = () => pickFile(async (path) => {
@@ -264,24 +295,24 @@ $("btn-load-decode").onclick = () => pickFile(async (path) => {
     const dump = await call("ReadFileBytes", path);
     currentDump = Array.from(dump);
     renderHex(currentDump);
-    addLog("已解析 " + path);
-  } catch (e) { addLog("解析失败: " + e); }
+    addLog("", "已解析 " + path);
+  } catch (e) { addLog("", "解析失败: " + e); }
 });
 
 $("btn-verify").onclick = () => pickFile(async (path) => {
   try {
     await call("VerifyFile", path);
-    addLog("校验通过: " + path);
-  } catch (e) { addLog("校验失败: " + e); }
+    addLog("", "校验通过: " + path);
+  } catch (e) { addLog("", "校验失败: " + e); }
 });
 
 $("btn-write").onclick = () => pickFile(async (path) => {
   if (!confirm(`确定把 ${path} 写入 SPD?\n写错内容可能导致主板无法启动!`)) return;
   try {
     await call("WriteFromFile", path, false);
-    addLog("写入完成: " + path);
+    addLog("", "写入完成: " + path);
     await doDump();
-  } catch (e) { addLog("写入失败: " + e); }
+  } catch (e) { addLog("", "写入失败: " + e); }
 });
 
 function pickFile(cb) {
@@ -304,8 +335,8 @@ $("btn-wp-status").onclick = async () => {
     let extra = [];
     if (pswp) extra.push("⚠ PSWP 永久保护已生效");
     if (offline) extra.push("DDR5 离线模式(可清 RSWP)");
-    addLog("保护状态: " + (extra.join("; ") || blocks.map((b, i) => `B${i}=${b ? "保护" : "开放"}`).join(", ")));
-  } catch (e) { addLog("查询保护状态失败: " + e); }
+    addLog("", "保护状态: " + (extra.join("; ") || blocks.map((b, i) => `B${i}=${b ? "保护" : "开放"}`).join(", ")));
+  } catch (e) { addLog("", "查询保护状态失败: " + e); }
 };
 
 $("btn-wp-set").onclick = async () => {
@@ -314,20 +345,20 @@ $("btn-wp-set").onclick = async () => {
   const blocks = inp.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
   try {
     await call("WPSet", blocks);
-    addLog("RSWP 已设置: " + blocks.join(","));
-  } catch (e) { addLog("RSWP 设置失败: " + e); }
+    addLog("", "RSWP 已设置: " + blocks.join(","));
+  } catch (e) { addLog("", "RSWP 设置失败: " + e); }
 };
 
 $("btn-wp-clear").onclick = async () => {
   if (!confirm("确定清除全部可逆写保护 (RSWP)?")) return;
   try {
     await call("WPClear");
-    addLog("RSWP 已清除");
-  } catch (e) { addLog("RSWP 清除失败: " + e); }
+    addLog("", "RSWP 已清除");
+  } catch (e) { addLog("", "RSWP 清除失败: " + e); }
 };
 
 // ---------- 事件 ----------
-onEvent("dump:done", (n) => addLog(`读取完成 ${n} 字节`));
+onEvent("dump:done", (n) => addLog("", `读取完成 ${n} 字节`));
 onEvent("write:progress", (n) => { /* 进度可在此更新 */ });
 
 // ---------- 启动 ----------
