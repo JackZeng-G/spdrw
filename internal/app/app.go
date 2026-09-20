@@ -2,6 +2,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -44,6 +45,9 @@ func (a *App) LogVersion() {
 	a.logf("SPD Reader Writer (Go) build %s", BuildHash)
 }
 
+// SetContext 由 main.go 在 OnStartup 注入 Wails 运行时上下文。
+func (a *App) SetContext(ctx context.Context) { a.wctx = ctx }
+
 // App 持有全部状态; 方法绑定到前端(Wails)。
 type App struct {
 	mu sync.Mutex
@@ -62,8 +66,16 @@ type App struct {
 	lastDumpAddr byte
 	lastDump     []byte
 
+	// wctx 是 Wails 运行时上下文(OnStartup 注入), 对话框等运行时能力用。
+	wctx context.Context
+
 	// Emit 由 main.go 注入(wailsjs runtime events); tests 置 nil。
 	Emit func(event string, data ...interface{})
+
+	// dialogs 由 main.go 注入(封装 wails runtime 对话框, 需要 ctx);
+	// 返回空路径 = 用户取消。tests 置 nil 时对话框方法直接报"不可用"。
+	SaveDialog  func(title, defaultName string) (string, error)
+	OpenDialog  func(title string) (string, error)
 
 	// now 便于测试注入。
 	now func() time.Time
@@ -360,6 +372,85 @@ func (a *App) WriteFromFile(path string, force bool) error {
 	}
 	a.logf("写入完成: %s (%d 字节)", path, size)
 	return nil
+}
+
+// dialogGuard 返回对话框函数是否可用(测试环境未注入时给出明确错误)。
+func (a *App) dialogGuard() error {
+	if a.SaveDialog == nil || a.OpenDialog == nil {
+		return fmt.Errorf("文件对话框不可用(运行环境未注入)")
+	}
+	return nil
+}
+
+// SaveDumpDialog 弹出保存对话框并把缓存/现读的 dump 写入所选路径。
+func (a *App) SaveDumpDialog() error {
+	if err := a.dialogGuard(); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	name := "spd-1024B.bin"
+	if a.dimm != nil {
+		name = fmt.Sprintf("spd-%#x-%d.bin", a.dimm.Addr, a.dimm.Size)
+	}
+	a.mu.Unlock()
+	path, err := a.SaveDialog("保存 SPD dump", name)
+	if err != nil {
+		return err
+	}
+	if path == "" {
+		a.logf("已取消保存")
+		return nil
+	}
+	return a.SaveDump(path)
+}
+
+// DecodeFileDialog 弹出打开对话框并解析所选 dump 文件。
+func (a *App) DecodeFileDialog() (*DecodeResult, error) {
+	if err := a.dialogGuard(); err != nil {
+		return nil, err
+	}
+	path, err := a.OpenDialog("选择 SPD dump 文件")
+	if err != nil {
+		return nil, err
+	}
+	if path == "" {
+		return nil, fmt.Errorf("已取消")
+	}
+	r, err := a.DecodeFile(path)
+	if r != nil {
+		r.Path = path
+	}
+	return r, err
+}
+
+// VerifyFileDialog 弹出打开对话框并校验所选文件与设备当前内容, 返回文件路径。
+func (a *App) VerifyFileDialog() (string, error) {
+	if err := a.dialogGuard(); err != nil {
+		return "", err
+	}
+	path, err := a.OpenDialog("选择要校验的 dump 文件")
+	if err != nil {
+		return "", err
+	}
+	if path == "" {
+		return "", fmt.Errorf("已取消")
+	}
+	return path, a.VerifyFile(path)
+}
+
+// WriteFileDialog 弹出打开对话框并把所选文件写入当前设备, 返回文件路径。
+func (a *App) WriteFileDialog(force bool) (string, error) {
+	if err := a.dialogGuard(); err != nil {
+		return "", err
+	}
+	path, err := a.OpenDialog("选择要写入的 dump 文件")
+	if err != nil {
+		return "", err
+	}
+	if path == "" {
+		return "", fmt.Errorf("已取消")
+	}
+	return path, a.WriteFromFile(path, force)
 }
 
 // SaveDumpData 把前端传入的 dump 写到文件。
