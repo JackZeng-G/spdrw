@@ -55,6 +55,8 @@
         <div id="bus-stats" class="bus-stats muted">—</div>
         <button id="btn-bus-stats" disabled>读取总线统计</button>
         <button id="btn-bus-reset" disabled>清零计数</button>
+        <label class="chk"><input type="checkbox" id="chk-fastread" checked> 块读加速(32 字节/事务; 关掉则逐字节兼容)</label>
+        <div id="read-mode" class="bus-stats muted">—</div>
         <div class="muted small">
           真机验证"干跑不写盘"用: 干跑前后各读一次, <b>NVM 写</b>必须为 0。<br>
           NVM 写 = 真正落到 SPD 内容区的字节写(读写流程必需的页选择/寄存器写不计入)。

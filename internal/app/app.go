@@ -295,9 +295,17 @@ func (a *App) Dump() ([]byte, error) {
 	if a.dev == nil {
 		return nil, fmt.Errorf("请先选择设备")
 	}
+	start := time.Now()
 	data, err := a.dev.ReadAll()
 	if err != nil {
 		return nil, err
+	}
+	st := a.dev.ReadStats()
+	if st.BlockReadKnown && st.BlockReadOK {
+		a.logf("读取 %d 字节: 块读加速(64 字节/事务… 事务 %d 次, 耗时 %s)", len(data), st.Transactions, time.Since(start).Round(time.Millisecond))
+	} else if st.BlockReadKnown {
+		a.logf("读取 %d 字节: 逐字节(块读不可用, 已回退; 事务 %d 次, 耗时 %s)",
+			len(data), st.Transactions, time.Since(start).Round(time.Millisecond))
 	}
 	a.lastDumpAddr = a.dev.Addr()
 	a.lastDump = data
@@ -754,4 +762,31 @@ type BusStatsResult struct {
 	ByteDataWrites int    `json:"byteDataWrites"`
 	ByteWrites     int    `json:"byteWrites"`
 	NVMWrites      int    `json:"nvmWrites"`
+}
+
+// SetFastRead 开关块读加速(默认开)。关掉可对照"逐字节"的兼容模式。
+func (a *App) SetFastRead(on bool) (bool, error) {
+	defer a.lockOp()()
+	a.mu.Lock()
+	dev := a.dev
+	a.mu.Unlock()
+	if dev == nil {
+		return false, fmt.Errorf("请先选择设备")
+	}
+	dev.SetFastRead(on)
+	a.logf("块读加速: %v", map[bool]string{true: "开启(快)", false: "关闭(逐字节兼容)"}[on])
+	return dev.FastRead(), nil
+}
+
+// ReadStats 返回当前设备的读取方式统计(界面显示"这次是快读还是慢读")。
+func (a *App) ReadStats() (*eeprom.ReadStats, error) {
+	defer a.lockOp()()
+	a.mu.Lock()
+	dev := a.dev
+	a.mu.Unlock()
+	if dev == nil {
+		return nil, fmt.Errorf("请先选择设备")
+	}
+	st := dev.ReadStats()
+	return &st, nil
 }

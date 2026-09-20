@@ -246,6 +246,17 @@ func (p *pawnioTransport) WriteByteNoData(addr byte) error {
 	return err
 }
 
+// ReadBlockData 走 SMBus Block Read(协议 5): 一次事务最多拿 32 字节。
+// 这是把整片读取从"每字节一次事务"降到"每 32 字节一次"的关键 —— 真机上单次事务
+// 开销约 30ms, 逐字节读 1024B 要 32 秒, 块读可以降到 1~2 秒。
+func (p *pawnioTransport) ReadBlockData(addr byte, cmd byte) ([]byte, error) {
+	out, err := p.xfer(addr, false, cmd, ProtoBlockData, nil, true)
+	if err != nil {
+		return nil, err
+	}
+	return UnmarshalBlockRead(out)
+}
+
 func (p *pawnioTransport) ReadWordData(addr byte, cmd byte) (uint16, error) {
 	out, err := p.xfer(addr, false, cmd, ProtoWordData, nil, true)
 	if err != nil {

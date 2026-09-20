@@ -44,6 +44,9 @@ type Transport interface {
 	ReadByteData(addr byte, cmd byte) (byte, error)
 	WriteByteData(addr byte, cmd byte, val byte) error
 	WriteByteNoData(addr byte) error
+	// ReadBlockData 是 SMBus Block Read(协议 5): 一次最多 32 字节。
+	// 设备/控制器若不支持会返回错误, 调用方应回退到逐字节读。
+	ReadBlockData(addr byte, cmd byte) ([]byte, error)
 	ReadWordData(addr byte, cmd byte) (uint16, error)
 	Close() error
 }
