@@ -106,7 +106,7 @@
             <button id="btn-write-probe" disabled>检测写入能力</button>
           </div>
           <div class="write-row">
-            <label class="chk">确认串 <input id="inp-wp-ack" type="text" placeholder="RSWP / CLEAR" size="12" autocomplete="off"></label>
+            <label class="chk">确认串 <input id="inp-wp-ack" type="text" placeholder="CLEAR" size="10" autocomplete="off"></label>
             <button id="btn-wp-set" disabled class="danger">RSWP 加保护…</button>
             <button id="btn-wp-clear" disabled>RSWP 清除</button>
           </div>
@@ -123,7 +123,7 @@
           <b>检测写入能力</b>: 在一个空闲字节上写反值再立即还原(自动备份 + 整片复核), 回答
           "这条到底能不能写"。回读仍是原值 = 写入被平台/器件忽略(BIOS 的 SPD 写保护、块保护
           或 WP# 引脚), 不是工具问题。<br>
-          <b>RSWP 加保护/清除</b>: 加保护输入 <b>RSWP</b>, 清除输入 <b>CLEAR</b>;都会真写设备,
+          <b>RSWP 加保护/清除</b>: 两个动作都输入确认串 <b>CLEAR</b>;都会真写设备,
           下发后回读复核是否生效(EE1004 的 SWP/CWP 需要 WP 引脚 VHV, 器件可能 ACK 但忽略)。
           DDR5 每块 64B(MR12/MR13 位图); DDR4 及更早每块 128B。清除在部分平台/颗粒上需要
           离线模式或断电。

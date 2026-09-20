@@ -82,9 +82,9 @@ test("WPSet 传数字数组 + 确认串([]int 契约, 且不可逆操作必须�
   await el("btn-wp-set").onclick();
   await flush();
   assert.equal(calls.some((c) => c.name === "WPSet"), false, "缺少确认串时不得下发");
-  assert.match(el("log").text(), /RSWP/, "应提示需要确认串");
+  assert.match(el("log").text(), /CLEAR/, "应提示需要确认串");
 
-  el("inp-wp-ack").value = "rswp"; // 大小写不敏感
+  el("inp-wp-ack").value = "clear"; // 统一确认串, 大小写不敏感
   await el("btn-wp-set").onclick();
   await flush();
   const call = calls.find((c) => c.name === "WPSet");
@@ -93,7 +93,7 @@ test("WPSet 传数字数组 + 确认串([]int 契约, 且不可逆操作必须�
   // 跨 vm realm 的数组原型不同, 展开后比较
   assert.deepEqual([...call.args[0]], [1, 15]);
   assert.equal(typeof call.args[0][0], "number", "元素必须是 number(→ Go []int)");
-  assert.equal(call.args[1], "RSWP", "第二个参数必须是确认串(Go 侧再校验一次)");
+  assert.equal(call.args[1], "CLEAR", "第二个参数必须是确认串(Go 侧再校验一次)");
 });
 
 test("WPClear 也必须带 CLEAR 确认串", async () => {

@@ -419,6 +419,10 @@ func TestWPSetClear(t *testing.T) {
 	if err := a.WPSet([]int{2}, "WRONG"); err == nil {
 		t.Fatal("确认串不正确时应拒绝")
 	}
+	// 统一确认串 CLEAR 必须可用(旧写法 RSWP 仍兼容)
+	if err := a.WPSet([]int{2}, "clear"); err != nil && !strings.Contains(err.Error(), "回读") {
+		t.Fatalf("CLEAR 应被接受: %v", err)
+	}
 	// DDR4 RSWPSet(2) 应发出 SWP2 quick 命令(写 0x35)与 CWP(0x33);
 	// 这个 Fake 的保护是"偏移 >=128 之后 NACK", 与 RSWP 命令无关 —— 因此回读复核
 	// 必须如实报告"命令下发了但没生效"(审计 H3: 器件 ACK 但忽略命令的情况)

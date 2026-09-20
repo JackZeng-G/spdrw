@@ -641,8 +641,8 @@ $("btn-wp-set").onclick = async () => {
   if (!inp) return;
   const blocks = inp.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
   if (!blocks.length) { addLog("", "未输入有效块号"); return; }
-  if (wpAck($("inp-wp-ack").value) !== "RSWP") {
-    addLog("", 'RSWP 加保护需要确认串: 请在"写保护"面板的确认串框里输入 RSWP');
+  if (wpAck($("inp-wp-ack").value) !== "CLEAR") {
+    addLog("", '写保护操作需要确认串: 请在"写保护"面板的确认串框里输入 CLEAR');
     return;
   }
   if (!confirm("确定对这些块启用 RSWP 写保护?\n" + blocks.join(",") +

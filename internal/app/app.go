@@ -676,15 +676,18 @@ func summarizeWP(r *WPStatusResult) string {
 	return sb.String()
 }
 
-// WPSet 设置指定块 RSWP; blocks 为块号列表。必须带确认串 "RSWP"。
+// WPSet 设置指定块 RSWP; blocks 为块号列表。确认串统一为 "CLEAR"
+// (旧写法 "RSWP" 仍接受, 免得改了界面就点不动)。
 //
 // RSWP 在部分平台上是**不可逆**的(清零需要离线模式或断电), 且 EE1004 的 SWP/CWP
 // 命令需要 WP 引脚上的 VHV —— 器件可能照样 ACK 但忽略命令, 所以下发后必须回读复核,
 // 不能"命令没报错"就当成功。
 func (a *App) WPSet(blocks []int, ack string) error {
 	defer a.lockOp()()
-	if strings.ToUpper(strings.TrimSpace(ack)) != "RSWP" {
-		return fmt.Errorf("确认串不正确(设置写保护应输入 RSWP)")
+	switch strings.ToUpper(strings.TrimSpace(ack)) {
+	case "CLEAR", "RSWP": // CLEAR 为统一确认串, RSWP 为兼容旧写法
+	default:
+		return fmt.Errorf("确认串不正确(应输入 CLEAR)")
 	}
 	a.mu.Lock()
 	dev := a.dev
