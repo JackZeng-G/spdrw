@@ -111,7 +111,7 @@ func (d *DDR5SPD) ChannelBusWidth() (channels, extension, primary byte) {
 	return
 }
 
-// TotalCapacityBytes 计算模块总容量(字节)。非对称返回 0(原版同款)。
+// TotalCapacityBytes 计算模块总容量(单位 GiB, 原版公式直接出 GiB)。非对称返回 0。
 func (d *DDR5SPD) TotalCapacityBytes() uint64 {
 	asym, ranks := d.Organization()
 	if asym {
