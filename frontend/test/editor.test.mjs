@@ -129,26 +129,85 @@ test("编辑器: 左侧 hex 点击可就地改字节(十六进制解析)", async
   assert.match(el("log").text(), /十六进制/);
 });
 
-test("编辑器: 原始 hex 表单按十六进制解析(5A=90, 不是十进制)", async () => {
-  const { el, calls, ctx } = setup();
+// 校验状态徽标: 依据"左侧 hex 正在显示的字节"由后端判定, 且要区分
+// "改动影响校验"(必须重算)与"改动不在校验范围"(序列号/日期等, 不用管)。
+function cellAt(el, off) {
+  return el("hexgrid").querySelectorAll("span[data-off]")
+    .find((b) => b.getAttribute("data-off") === String(off));
+}
+
+test("校验状态: 面板把左侧 dump 的字节交给后端判定并显示结果", async () => {
+  const { el, calls } = setup();
   await flush();
   el("tab-edit").onclick();
   await el("btn-edit-load-dev").onclick();
   await flush();
 
-  el("hex-off").value = "104";   // 十六进制 0x104 = 260
-  el("hex-val").value = "5A";    // 十六进制 0x5A = 90
-  await el("btn-hex-apply").onclick();
-  await flush();
-  const call = calls.find((c) => c.name === "EditSetByte");
-  assert.ok(call, "应调用 EditSetByte");
-  assert.deepEqual([...call.args], [0x104, 0x5a]);
+  const call = calls.find((c) => c.name === "CRCStatus");
+  assert.ok(call, "应调用 CRCStatus 查询校验状态");
+  assert.equal(call.args[0].length, 512, "应把左侧视图的字节([]int)传给后端");
+  assert.match(el("crc-status").textContent, /CRC 通过/, "桩里 dump 的 CRC 是通过的");
+  assert.match(el("crc-status").title, /参与校验的区域/, "悬停应给出校验区划分");
+  assert.equal(cellAt(el, 126).classList.contains("crcbyte"), true, "CRC 值字节要标出来");
+  assert.equal(cellAt(el, 20).classList.contains("crcbyte"), false);
+});
 
-  calls.length = 0;
-  el("hex-val").value = "zz";
-  await el("btn-hex-apply").onclick();
+test("校验状态: 改动在校验范围外 → CRC 仍通过, 格子标蓝且不提示重算", async () => {
+  const onlyFree = () => ({
+    ...diffDirty, crcOk: true, crcDirty: 0, crcFreeDirty: 3,
+    dirtyInCrc: [], dirtyFree: [323, 325, 329],
+  });
+  const { el } = setup({ EditDiff: onlyFree });
   await flush();
-  assert.equal(calls.some((c) => c.name === "EditSetByte"), false, "非法值不应提交");
+  el("tab-edit").onclick();
+  await el("btn-edit-load-dev").onclick();
+  await flush();
+
+  assert.match(el("crc-status").textContent, /CRC 通过/);
+  assert.match(el("crc-status").textContent, /3 处改动不在校验范围/);
+  assert.equal(cellAt(el, 325).classList.contains("chg-free"), true, "序列号改动应标蓝");
+  assert.equal(cellAt(el, 325).classList.contains("chg-crc"), false);
+  assert.match(el("edit-diff").innerHTML, /不影响校验/);
+});
+
+test("校验状态: 改动落在校验范围内 → 提示重算, 格子标红", async () => {
+  const inRange = () => ({
+    ...diffDirty, crcOk: false, crcDirty: 1, crcFreeDirty: 0,
+    dirtyInCrc: [20], dirtyFree: [],
+  });
+  const { el } = setup({ EditDiff: inRange });
+  await flush();
+  el("tab-edit").onclick();
+  await el("btn-edit-load-dev").onclick();
+  await flush();
+
+  assert.match(el("crc-status").textContent, /CRC 需重算/);
+  assert.match(el("crc-status").textContent, /1 处在校验范围内/);
+  assert.equal(cellAt(el, 20).classList.contains("chg-crc"), true, "时序改动应标红");
+  assert.equal(cellAt(el, 20).classList.contains("chg-free"), false);
+  assert.match(el("edit-diff").innerHTML, /影响校验/);
+  assert.equal(el("btn-edit-write").disabled, true, "CRC 不通过时禁止写入");
+});
+
+test("校验状态: 重算 CRC 后回到通过, 且不再提示重算", async () => {
+  let fixed = false;
+  const { el, calls } = setup({
+    EditDiff: () => fixed
+      ? { ...diffDirty, crcOk: true, crcDirty: 2, crcFreeDirty: 1, dirtyInCrc: [126, 127], dirtyFree: [325] }
+      : { ...diffDirty, crcOk: false, crcDirty: 1, crcFreeDirty: 0, dirtyInCrc: [20], dirtyFree: [] },
+    EditFixCRC: () => { fixed = true; return { ...state, dirty: true, changeCount: 4 }; },
+  });
+  await flush();
+  el("tab-edit").onclick();
+  await el("btn-edit-load-dev").onclick();
+  await flush();
+  assert.match(el("crc-status").textContent, /CRC 需重算/);
+
+  await el("btn-edit-fixcrc").onclick();
+  await flush();
+  assert.ok(calls.some((c) => c.name === "EditFixCRC"), "应调用 EditFixCRC");
+  assert.match(el("crc-status").textContent, /CRC 通过/);
+  assert.equal(el("btn-edit-write").disabled, false, "重算后可以写入");
 });
 
 test("编辑器: 修改字段会调用 EditSetField 并刷新 diff", async () => {

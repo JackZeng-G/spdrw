@@ -22,7 +22,8 @@ SPD-Reader-Writer 的 Go 复刻版: Windows 桌面工具, 通过 **PawnIO** 内�
   - 常用信息: 厂商(JEP106 反查/搜索)、厂商码、生产地点、日期、序列号、部件号、修订码、DRAM 厂商/stepping
   - JEDEC 时序: DDR4 medium+fine、DDR5 16bit(ps/ns, 含 lower limit)、DDR3 MTB/FTB、DDR2 BCD(含扩展码)
   - 扩展信息: **XMP 2.0**(DDR4, 2×63B)、**XMP 3.0**(DDR5, header + 5 槽)、**EXPO**(DDR5, 与 XMP 槽 3/User1 互斥) —— 可创建/修改/清除, CRC 自动重算
-  - 原始 hex 任意字节编辑; 变更按区域风险(low/medium/high)汇总, 写回设备前必须过预检
+  - hex 视图内点格子就地编辑任意字节; **实时校验状态**:顶部显示"CRC 通过 / 需重算",
+    并按"改动是否在校验范围内"分色(红=影响校验, 蓝=序列号/日期等不影响校验的字段)
 - **写入护栏**(写入是唯一可能变砖的操作):
   - 写前预检: 长度/类型匹配、目标 dump CRC 必须有效、受保护块检测、高危字段(容量/组织/电压/PMIC)清单
   - 自动备份当前整片到 `~/.spdrw/backups`; 确认串 `WRITE` 才真正执行

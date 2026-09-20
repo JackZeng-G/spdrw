@@ -19,6 +19,9 @@
     step("信息面板显示厂商", $("info-body").textContent.includes("Micron"));
     step("信息面板显示容量", $("info-body").textContent.includes("8 GiB"));
     step("时序表出现", $("info-body").textContent.includes("tCK"));
+    // 校验状态直接读左侧 dump(此时还没有编辑器内容): 正常 dump 应显示"CRC 通过"
+    step("读后即显示校验状态", $("crc-status").textContent.includes("CRC 通过"));
+    step("校验状态按后端结果渲染", window.__CALLS.some((c) => c.name === "CRCStatus"));
 
     // 总线统计(真机 V2 的证据入口)
     await $("btn-bus-stats").onclick();
@@ -44,9 +47,23 @@
     await $("btn-edit-load-dev").onclick();
     await wait(60);
     step("编辑器显示来源", $("edit-state").textContent.includes("设备 0x50"));
-    step("字段表单渲染输入框", $("edit-fields").querySelectorAll("input").length >= 3);
-    step("字段含 JEDEC 时序分组", $("edit-fields").textContent.includes("JEDEC 时序"));
+    // 字段按分组页签渲染, 一次只画当前组 → 输入框数 = 当前组字段数, 组名在 #edit-groups
+    step("字段表单渲染输入框", $("edit-fields").querySelectorAll("input").length >= 2);
+    step("分组页签含 JEDEC 时序", $("edit-groups").textContent.includes("JEDEC 时序"));
     step("变更面板显示 CRC 通过", $("edit-diff").textContent.includes("CRC 校验通过"));
+    // 校验状态: 依据左侧 dump 判定, 并把"影响校验/不影响校验"分开
+    step("hex 标题旁显示校验状态", $("crc-status").textContent.includes("CRC 通过"));
+    step("校验状态给出校验区提示", ($("crc-status").title || "").includes("参与校验的区域"));
+    step("CRC 值字节被标出", $("hexgrid").querySelectorAll(".crcbyte").length >= 4);
+    step("改动不影响校验时标蓝", (() => {
+      // 注意: 浏览器里 querySelectorAll 返回 NodeList(没有 find), 必须先转数组
+      const btn = Array.from($("hexgrid").querySelectorAll("span[data-off]"))
+        .find((b) => b.getAttribute("data-off") === "325");
+      return btn && btn.classList.contains("chg-free");
+    })());
+    step("校验状态说明不影响校验", $("crc-status").textContent.includes("不在校验范围"));
+    step("原始 hex 表单已移除", document.getElementById("btn-hex-apply") === null &&
+      document.getElementById("hex-off") === null);
 
     // 应用一个字段
     const btn = $("edit-fields").querySelectorAll("button")[0];

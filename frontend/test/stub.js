@@ -22,7 +22,7 @@
     protectionHit: false, offline: false, pswpApplicable: true, pswp: false,
     warnings: ["DDR4 无写保护状态寄存器: 状态由块首写测试得出"],
   };
-  const editState = { source: "设备 0x50", generation: "DDR4", size: 512, dirty: true, changeCount: 3, crcOk: true, canWrite: true };
+  const editState = { source: "设备 0x50", generation: "DDR4", size: 512, dirty: true, changeCount: 3, crcOk: true, canWrite: true, crcStale: false };
   const editFields = [
     { key: "partNumber", name: "部件号", group: "常用信息", kind: "string", value: "TEST-PN", offset: "0x149-20B", risk: "low" },
     { key: "serial", name: "序列号(hex)", group: "常用信息", kind: "hex", value: "DEADBEEF", offset: "0x145-4B", risk: "low" },
@@ -32,6 +32,22 @@
     changes: [{ offset: 325, old: 0xde, new: 0x11, field: "序列号", risk: "low" }],
     fields: [{ region: "序列号", risk: "low", count: 4, ranges: "0x145-0x148" }],
     highRisk: 0, crcFields: 2, changeCount: 3, crcOk: true, truncated: false,
+    crcDirty: 0, crcFreeDirty: 3, dirtyInCrc: [], dirtyFree: [323, 325, 329],
+  };
+  // 校验状态: 桩里的 dump 是 512B DDR4(byte2=0x0C), 两段各 128B
+  const crcStatus = {
+    generation: "DDR4", size: 512, known: true, ok: true, covered: 252,
+    crcBytes: [126, 127, 254, 255],
+    ranges: [
+      { name: "块 1(0x000-0x07D)", start: 0, end: 126, crcOff: 126, crcLen: 2 },
+      { name: "块 2(0x080-0x0FD)", start: 128, end: 254, crcOff: 254, crcLen: 2 },
+    ],
+    freeAreas: [
+      { name: "厂商", start: 320, end: 322 },
+      { name: "生产日期", start: 323, end: 325 },
+      { name: "序列号", start: 325, end: 329 },
+      { name: "部件号", start: 329, end: 349 },
+    ],
   };
   const preflight = {
     path: "/tmp/dump.bin", addr: 0x50, generation: "DDR4", deviceSize: 512, fileSize: 512, sizeOk: true,
@@ -77,6 +93,7 @@
     EditExportDialog: rec("EditExportDialog", "/tmp/edited.bin"),
     EditApplyToDevice: rec("EditApplyToDevice", { dryRun: false, written: 3, total: 3, backupPath: "/root/.spdrw/backups/e.bin", verified: true, message: "写入并校验通过" }),
     EditState: rec("EditState", editState),
+    CRCStatus: rec("CRCStatus", crcStatus),
     MfgSearch: rec("MfgSearch", [{ name: "Micron Technology", cont: 0x80, code: 0x2c }]),
   } } };
   window.runtime = { EventsOn: () => {} };

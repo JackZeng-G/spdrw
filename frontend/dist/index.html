@@ -27,6 +27,7 @@
   <main id="layout">
     <section id="hex-panel">
       <div class="panel-title">SPD 内容 <span id="hex-meta" class="muted"></span>
+        <span id="crc-status" class="crc-badge">—</span>
         <span id="hex-hint" class="muted small"></span></div>
       <div id="hexgrid" class="hexgrid"><div class="placeholder">先连接控制器并扫描设备</div></div>
     </section>
@@ -93,17 +94,17 @@
         <div id="edit-fields" class="edit-fields"><div class="placeholder">先载入数据</div></div>
         <datalist id="mfg-list"></datalist>
 
-        <div class="panel-title ops-title">原始 hex 编辑</div>
-        <div class="ops hexedit">
-          <label>偏移(hex) <input id="hex-off" type="text" placeholder="204 或 0x204" size="9"></label>
-          <label>值(hex) <input id="hex-val" type="text" placeholder="5A" size="5"></label>
-          <button id="btn-hex-apply" disabled>写入该字节</button>
-          <div class="muted small">两个框都是**十六进制**(可不带 0x); 也可以直接点左侧 hex 里的字节就地修改。之后用"重算 CRC"修正校验和。</div>
-        </div>
-
         <div class="panel-title ops-title">变更与写入</div>
         <div class="ops edit-apply">
           <div id="edit-diff" class="edit-diff muted">—</div>
+          <div class="muted small">
+            改字节: 直接点左侧 hex 里的格子输入(十六进制, 可带 0x)。<br>
+            左侧配色区分改动是否影响校验:
+            <b class="danger">红</b> = 落在校验范围内(必须点"重算 CRC");
+            <b class="ok">蓝</b> = 不在校验范围(序列号/生产日期/部件号等), CRC 仍然有效;
+            <b class="warn">黄框</b> = CRC 值本身。<br>
+            改完记得看左侧标题旁的校验状态。
+          </div>
           <label class="chk"><input type="checkbox" id="chk-edit-backup"> 我已另有备份</label>
           <label class="chk"><input type="checkbox" id="chk-edit-dryrun"> 干跑(不写入)</label>
           <label class="chk">确认串 <input id="inp-edit-ack" type="text" placeholder="WRITE" size="10" autocomplete="off"></label>

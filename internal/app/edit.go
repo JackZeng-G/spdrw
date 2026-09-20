@@ -24,6 +24,9 @@ type EditState struct {
 	ChangeCount int    `json:"changeCount"`
 	CRCOK       bool   `json:"crcOk"`
 	CanWrite    bool   `json:"canWrite"` // 只有来自设备的编辑才能写回设备
+	// CRCStale 表示"有改动落在校验覆盖范围内" —— 这类改动必须重算 CRC 才能写入;
+	// 改序列号/生产日期/部件号(不在覆盖范围)不置此位, 这才是对的提示。
+	CRCStale bool `json:"crcStale"`
 }
 
 // EditDiff 是编辑结果的差异视图。
@@ -36,6 +39,13 @@ type EditDiff struct {
 	CRCOK         bool             `json:"crcOk"`
 	Truncated     bool             `json:"truncated"`
 	PreviewBase64 string           `json:"previewBase64,omitempty"`
+	// 改动的"是否影响校验"分类: 落在校验覆盖区(或校验值字节本身)里的改动会
+	// 让 CRC 失效, 必须点"重算 CRC"; 落在校验区之外的(如 DDR4/DDR5 的序列号、
+	// 生产日期、部件号区)改多少都不影响 —— 界面要把这两类分开显示。
+	CRCDirty     int   `json:"crcDirty"`
+	CRCFreeDirty int   `json:"crcFreeDirty"`
+	DirtyInCRC   []int `json:"dirtyInCrc"` // 影响校验的改动偏移(hex 视图标红用)
+	DirtyFree    []int `json:"dirtyFree"`  // 不影响校验的改动偏移(hex 视图标蓝用)
 }
 
 // EditLoadFromDevice 把当前选中设备的整片内容读进编辑器。
@@ -123,6 +133,14 @@ func (a *App) editStateLocked() (*EditState, error) {
 	if a.editor == nil {
 		return nil, fmt.Errorf("编辑器尚未载入数据")
 	}
+	ranges := spd.CRCRanges(a.editor.Bytes())
+	stale := false
+	for _, c := range a.editor.Changes() {
+		if spd.AffectsChecksum(ranges, c.Offset) {
+			stale = true
+			break
+		}
+	}
 	return &EditState{
 		Source:      a.editSource,
 		Generation:  a.editor.RamType().String(),
@@ -131,6 +149,7 @@ func (a *App) editStateLocked() (*EditState, error) {
 		ChangeCount: len(a.editor.Changes()),
 		CRCOK:       a.editor.CRCOK(),
 		CanWrite:    a.editFromDevice,
+		CRCStale:    stale,
 	}, nil
 }
 
@@ -229,9 +248,10 @@ func (a *App) EditDiff() (*EditDiff, error) {
 	if d.Changes == nil {
 		d.Changes = []spd.EditChange{}
 	}
+	crcRanges := spd.CRCRanges(ed.Bytes())
 	byteChanges := make([]eeprom.ByteChange, 0, len(changes))
 	crcSet := map[int]bool{}
-	for _, off := range spd.CRCOffsets(ed.Bytes()) {
+	for _, off := range spd.CRCBytes(crcRanges) {
 		crcSet[off] = true
 	}
 	for _, c := range changes {
@@ -239,6 +259,14 @@ func (a *App) EditDiff() (*EditDiff, error) {
 		byteChanges = append(byteChanges, bc)
 		if bc.IsCRC {
 			d.CRCFields++
+		}
+		// 影响校验 vs 不影响: 前者必须重算 CRC, 后者(序列号/日期等)不用管
+		if spd.AffectsChecksum(crcRanges, c.Offset) {
+			d.CRCDirty++
+			d.DirtyInCRC = append(d.DirtyInCRC, c.Offset)
+		} else {
+			d.CRCFreeDirty++
+			d.DirtyFree = append(d.DirtyFree, c.Offset)
 		}
 		if c.Risk == "high" {
 			d.HighRisk++

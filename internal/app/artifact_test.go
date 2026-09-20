@@ -28,6 +28,8 @@ func TestBuiltExeEmbedsAssets(t *testing.T) {
 		"PawnIO 模块":        []byte("Smbus"),
 		"PawnIOLib.dll":    []byte("PawnIOLib"),
 		"中文界面文案":           []byte("写入前确认"),
+		"校验状态面板(新)":        []byte(`id="crc-status"`),
+		"校验状态绑定(新)":        []byte("CRCStatus"),
 		"版本日志格式":           []byte("SPD Reader Writer (Go) build"),
 	}
 	for name, m := range markers {

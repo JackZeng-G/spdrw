@@ -223,3 +223,35 @@ table.timing th { background: var(--bg3); color: var(--muted); text-align: left;
   background: #2b3245; color: #ffd479;
   border: 1px solid #ffd479; border-radius: 2px; outline: none;
 }
+
+/* ---------- 校验状态(左侧 hex 标题旁)与改动配色 ---------- */
+.crc-badge {
+  margin-left: 10px;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: help;
+}
+.crc-badge.ok { color: var(--ok); border-color: #2c5c38; background: #16281a; }
+.crc-badge.bad { color: #ff8f92; border-color: #5a3234; background: #2a1618; }
+.crc-badge.warn { color: var(--warn); border-color: #5a4a24; background: #2a2415; }
+
+/* 改动过的字节: 红 = 影响校验, 蓝 = 不影响校验(序列号/日期等) */
+.hexgrid .hexbyte.chg-crc {
+  background: #5a1f22;
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 1px #e5484d;
+}
+.hexgrid .hexbyte.chg-free {
+  background: #1b3350;
+  border-radius: 2px;
+  box-shadow: inset 0 0 0 1px #4f9cf9;
+}
+/* CRC 值本身: 只描边, 与"改动"底色共存 */
+.hexgrid .hexbyte.crcbyte { box-shadow: inset 0 0 0 1px var(--warn); }
+.hexgrid .hexbyte.chg-crc.crcbyte { box-shadow: inset 0 0 0 1px var(--warn), inset 0 0 0 2px #e5484d; }
+.hexgrid .hexbyte.chg-free.crcbyte { box-shadow: inset 0 0 0 1px var(--warn), inset 0 0 0 2px #4f9cf9; }
+.hexgrid.editable .hexbyte { cursor: pointer; }
+.hexgrid .hexbyte input { width: 2ch; font: inherit; background: var(--bg3); color: var(--fg); border: 1px solid var(--accent); }

@@ -128,6 +128,15 @@ export function makeAppStub(overrides = {}) {
     EditApplyToDevice: null,
     EditState: null,
     MfgSearch: [],
+    CRCStatus: {
+      generation: "DDR4", size: 512, known: true, ok: true, covered: 252,
+      crcBytes: [126, 127, 254, 255],
+      ranges: [
+        { name: "块 1(0x000-0x07D)", start: 0, end: 126, crcOff: 126, crcLen: 2 },
+        { name: "块 2(0x080-0x0FD)", start: 128, end: 254, crcOff: 254, crcLen: 2 },
+      ],
+      freeAreas: [{ name: "序列号", start: 325, end: 329 }],
+    },
     ...overrides,
   };
   const stub = {};

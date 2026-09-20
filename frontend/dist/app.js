@@ -190,10 +190,12 @@ async function doDump() {
     // 兜底(测试注入 Uint8Array 等): 转成 base64
     currentDump = btoa(String.fromCharCode(...dump));
   }
+  resetEditMarks(); // 设备内容覆盖了左侧视图: 编辑器改动标记不再适用
   renderHexB64(currentDump);
   enableOps(true);
   await decodeCurrent();
   await refreshReadMode().catch(() => {});
+  await refreshCRCStatus().catch(() => {});
 }
 
 $("btn-scan").onclick = async () => {
@@ -249,9 +251,9 @@ $("hexgrid").onclick = (ev) => {
     try {
       const st = await call("EditSetByte", off, nv);
       renderEditState(st);
-      await refreshEditDiff();
-      await refreshEditBytes();
-      addLog("", `原始编辑: ${hex(off, 3)} = ${hex(nv, 2)}(记得"重算 CRC")`);
+      await refreshEditBytes();   // 先让左侧视图拿到新字节
+      await refreshEditDiff();    // 再按新字节 + 改动分类刷新校验状态
+      addLog("", `修改 ${hex(off, 3)} = ${hex(nv, 2)}${st && st.crcStale ? "(该改动影响校验, 记得\"重算 CRC\")" : "(不影响校验, 无需重算)"}`);
     } catch (e) { addLog("", "原始编辑失败: " + e); }
   };
   inp.onkeydown = (e) => {
@@ -263,7 +265,9 @@ $("hexgrid").onclick = (ev) => {
 function renderHex(dump) {
   const grid = $("hexgrid");
   $("hex-meta").textContent = `${dump.length} 字节`;
-  $("hex-hint").textContent = editorLoaded ? "· 点击任意字节可直接修改" : "";
+  $("hex-hint").textContent = editorLoaded
+    ? "· 点击字节就地修改(hex) · 红=改动影响校验, 蓝=不影响"
+    : "";
   grid.classList.toggle("editable", editorLoaded);
   let html = "";
   for (let off = 0; off < dump.length; off += 16) {
@@ -279,6 +283,105 @@ function renderHex(dump) {
     html += `<div class="row">${line}<span class="ascii">${ascii}</span></div>`;
   }
   grid.innerHTML = html;
+  applyHexMarks();
+}
+
+// ---------- 校验状态(依据左侧正在显示的 dump) ----------
+// 后端按"我们传过去的字节"算校验, 所以面板结论与屏幕上看到的永远是同一份数据。
+let crcState = { known: null, ok: null, ranges: [], crcBytes: new Set(), freeAreas: [] };
+// 编辑器改动的偏移 → 是否影响校验(EditDiff 给的全量分类, 不受列表截断影响)
+let hexChangeMap = new Map();
+let editDiffCache = null;
+
+function b64ToIntArray(b64) {
+  const bin = atob(b64);
+  const out = new Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function resetEditMarks() {
+  hexChangeMap = new Map();
+  editDiffCache = null;
+}
+
+// applyHexMarks 给已渲染的格子补上"改动/CRC 字节"样式, 并刷新标题旁的校验状态。
+// 只切 class, 不重绘 —— 否则会把正在输入的格子里的 input 一起抹掉。
+function applyHexMarks() {
+  const grid = $("hexgrid");
+  for (const n of grid.querySelectorAll("span[data-off]")) {
+    const off = parseInt(n.getAttribute("data-off"), 10);
+    const chg = hexChangeMap.get(off);
+    n.classList.toggle("chg-crc", !!chg && chg.inCRC);
+    n.classList.toggle("chg-free", !!chg && !chg.inCRC);
+    n.classList.toggle("crcbyte", crcState.crcBytes.has(off));
+  }
+  renderCRCBadge();
+}
+
+function renderCRCBadge() {
+  const el = $("crc-status");
+  if (!el) return;
+  const d = editDiffCache;
+  const inRange = d ? d.crcDirty || 0 : 0;
+  const free = d ? d.crcFreeDirty || 0 : 0;
+  const ok = d ? !!d.crcOk : crcState.ok;
+  let text = "—", cls = "crc-badge muted", title = "";
+  if (crcState.known === null && !d) {
+    text = "—";
+  } else if (crcState.known === false && !d) {
+    text = "无法校验(世代未知)";
+    cls = "crc-badge warn";
+  } else if (ok) {
+    if (inRange > 0) {
+      text = `CRC 通过 · ${inRange} 处改动已计入校验`;
+    } else if (free > 0) {
+      text = `CRC 通过 · ${free} 处改动不在校验范围`;
+    } else {
+      text = "CRC 通过";
+    }
+    cls = "crc-badge ok";
+  } else if (inRange > 0) {
+    text = `CRC 需重算 · ${inRange} 处在校验范围内`;
+    cls = "crc-badge bad";
+  } else {
+    text = "CRC 不通过";
+    cls = "crc-badge bad";
+  }
+  if (crcState.ranges.length) {
+    title = "参与校验的区域:\n" + crcState.ranges.map((r) =>
+      `  ${r.name}${r.checksum ? "(校验和)" : ""} → ${fmtOff(r.start)}-${fmtOff(r.end - 1)}` +
+      `, 校验值在 ${fmtOff(r.crcOff)}-${fmtOff(r.crcOff + r.crcLen - 1)}`).join("\n");
+    if (crcState.freeAreas.length) {
+      title += "\n不参与校验(改了不用重算):\n" + crcState.freeAreas.map((a) =>
+        `  ${a.name} ${fmtOff(a.start)}-${fmtOff(a.end - 1)}`).join("\n");
+    }
+  }
+  el.textContent = text;
+  el.className = cls;
+  el.title = title;
+}
+
+function fmtOff(off) { return "0x" + Number(off).toString(16).toUpperCase().padStart(3, "0"); }
+
+// refreshCRCStatus 把左侧视图当前的字节交给后端判定校验状态。
+async function refreshCRCStatus() {
+  if (!currentDump) { applyHexMarks(); return; }
+  try {
+    const st = await call("CRCStatus", b64ToIntArray(currentDump));
+    crcState = {
+      known: st ? !!st.known : null,
+      ok: st ? !!st.ok : null,
+      ranges: (st && st.ranges) || [],
+      crcBytes: new Set((st && st.crcBytes) || []),
+      freeAreas: (st && st.freeAreas) || [],
+    };
+  } catch (e) {
+    crcState = { known: null, ok: null, ranges: [], crcBytes: new Set(), freeAreas: [] };
+    // 不吞错: 绑定缺失/参数不合契约时必须在日志里看得见(以前这类错误静默成"没有状态")
+    addLog("", "校验状态查询失败: " + e);
+  }
+  applyHexMarks();
 }
 
 // ---------- 信息面板 ----------
@@ -367,7 +470,9 @@ $("btn-load-decode").onclick = async () => {
     if (!r) return; // 用户取消
     renderInfo(r);
     currentDump = await call("ReadFileBytes", r.path); // base64 string
+    resetEditMarks();
     renderHexB64(currentDump);
+    await refreshCRCStatus().catch(() => {});
     addLog("", "已解析 " + r.path);
   } catch (e) {
     if (String(e).includes("已取消")) { addLog("", "已取消"); return; }
@@ -655,7 +760,7 @@ function switchTab(which) {
 
 function setEditEnabled(on) {
   // 注意: btn-edit-write 由 refreshEditDiff 依据 CRC/变更数决定, 不在这里放开
-  ["btn-edit-reset", "btn-edit-fixcrc", "btn-edit-export", "btn-hex-apply"].forEach(
+  ["btn-edit-reset", "btn-edit-fixcrc", "btn-edit-export"].forEach(
     (id) => ($(id).disabled = !on));
 }
 
@@ -768,6 +873,7 @@ async function applyEditField(key, box) {
     renderEditState(st);
     editFieldsCache = (await call("EditFields")) || [];
     renderEditFields();
+    await refreshEditBytes();
     await refreshEditDiff();
     addLog("", `编辑 ${key} = ${val}`);
   } catch (e) {
@@ -782,6 +888,7 @@ $("btn-edit-reset").onclick = async () => {
     renderEditState(st);
     editFieldsCache = (await call("EditFields")) || [];
     renderEditFields();
+    await refreshEditBytes();
     await refreshEditDiff();
   } catch (e) { addLog("", "重置失败: " + e); }
 };
@@ -792,7 +899,9 @@ $("btn-edit-fixcrc").onclick = async () => {
     renderEditState(st);
     editFieldsCache = (await call("EditFields")) || [];
     renderEditFields();
+    await refreshEditBytes();
     await refreshEditDiff();
+    addLog("", "已重算 CRC(校验值字节已更新)");
   } catch (e) { addLog("", "重算 CRC 失败: " + e); }
 };
 
@@ -806,21 +915,6 @@ $("btn-edit-export").onclick = async () => {
   }
 };
 
-$("btn-hex-apply").onclick = async () => {
-  const off = parseHexOffset($("hex-off").value);
-  const val = parseHexByte($("hex-val").value);
-  if (off == null || val == null) {
-    addLog("", "偏移/值必须是十六进制(偏移如 204 或 0x204; 值如 5A 或 0x5A)");
-    return;
-  }
-  try {
-    const st = await call("EditSetByte", off, val);
-    renderEditState(st);
-    await refreshEditDiff();
-    await refreshEditBytes();
-  } catch (e) { addLog("", "原始编辑失败: " + e); }
-};
-
 // parseHexByte 解析一个字节: **一律按十六进制**(允许 0x 前缀, 1~2 位)。
 // 早先的实现剥掉 0x 后用 parseInt(s,10), 于是 "5A"/"0b" 被当十进制(5A→5, 0b→0),
 // 是明确的错误 —— 这是 hex 编辑器, 输入的就是十六进制。
@@ -830,24 +924,25 @@ function parseHexByte(s) {
   return parseInt(s, 16);
 }
 
-// parseHexOffset 解析偏移: 一律按十六进制(允许 0x 前缀)。
-function parseHexOffset(s) {
-  s = String(s || "").trim().replace(/^0x/i, "");
-  if (!/^[0-9a-fA-F]+$/.test(s)) return null;
-  return parseInt(s, 16);
-}
-
 async function refreshEditBytes() {
   try {
     const b64 = await call("EditBytes");
     if (typeof b64 === "string") { currentDump = b64; renderHexB64(b64); }
+    await refreshCRCStatus();
   } catch (e) { /* 编辑器未载入 */ }
 }
 
 async function refreshEditDiff() {
   const d = await call("EditDiff");
+  editDiffCache = d;
+  hexChangeMap = new Map();
+  for (const off of d.dirtyInCrc || []) hexChangeMap.set(off, { inCRC: true });
+  for (const off of d.dirtyFree || []) hexChangeMap.set(off, { inCRC: false });
+  applyHexMarks();
   const lines = [];
   lines.push(`变更 <b>${d.changeCount}</b> 字节 · CRC 字段 ${d.crcFields} · 高危 ${d.highRisk}`);
+  const inRange = d.crcDirty || 0, free = d.crcFreeDirty || 0;
+  lines.push(`其中影响校验 <b>${inRange}</b> 处(需重算 CRC) · 不影响校验 <b>${free}</b> 处(序列号/日期等)`);
   lines.push(d.crcOk ? "CRC 校验通过" : `<span class="danger">CRC 不通过(记得"重算 CRC")</span>`);
   for (const f of (d.fields || [])) {
     const cls = f.risk === "high" ? "danger" : f.risk === "medium" ? "warn" : "";
