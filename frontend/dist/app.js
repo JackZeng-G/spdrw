@@ -4,6 +4,7 @@
 const $ = (id) => document.getElementById(id);
 let currentDump = null;
 let selectedAddr = null;
+let editorLoaded = false;   // 编辑器已载入时, 左侧 hex 可直接点击修改
 
 // ---------- Wails 绑定桥 ----------
 // Wails v2 绑定键 = 绑定结构体的包名.结构体名(官方模板是 main.App;
@@ -214,9 +215,31 @@ function renderHexB64(b64) {
   renderHex(dump);
 }
 
+// hex 视图的字节带 data-off, 编辑器载入后可点击直接改(走后端 EditSetByte)
+$("hexgrid").onclick = async (ev) => {
+  const t = ev.target;
+  if (!t || !t.classList || !t.classList.contains("hexbyte")) return;
+  if (!editorLoaded) { addLog("", "左侧 hex 需先在编辑器标签页载入数据后才能直接修改"); return; }
+  const off = parseInt(t.getAttribute("data-off"), 10);
+  const cur = t.textContent;
+  const v = prompt(`偏移 ${hex(off, 3)}(当前 ${cur})\n输入新值(hex, 如 5A 或 0x5A):`, cur);
+  if (v == null) return;
+  const nv = parseHexOrDec(v.trim().replace(/^0x/i, ""));
+  if (nv == null || nv < 0 || nv > 255) { addLog("", `字节值无效: ${v}`); return; }
+  try {
+    const st = await call("EditSetByte", off, nv);
+    renderEditState(st);
+    await refreshEditDiff();
+    await refreshEditBytes();
+    addLog("", `原始编辑: ${hex(off, 3)} = ${hex(nv, 2)}(记得"重算 CRC")`);
+  } catch (e) { addLog("", "原始编辑失败: " + e); }
+};
+
 function renderHex(dump) {
   const grid = $("hexgrid");
   $("hex-meta").textContent = `${dump.length} 字节`;
+  $("hex-hint").textContent = editorLoaded ? "· 点击任意字节可直接修改" : "";
+  grid.classList.toggle("editable", editorLoaded);
   let html = "";
   for (let off = 0; off < dump.length; off += 16) {
     let line = `<span class="offset">${off.toString(16).padStart(4, "0")}</span>`;
@@ -225,7 +248,7 @@ function renderHex(dump) {
       if (off + i >= dump.length) break;
       const b = dump[off + i];
       const hi = (b >> 4).toString(16);
-      line += `<span class="c${hi}">${b.toString(16).padStart(2, "0")}</span> `;
+      line += `<span class="hexbyte c${hi}" data-off="${off + i}">${b.toString(16).padStart(2, "0")}</span> `;
       ascii += b >= 0x20 && b < 0x7f ? escapeHtml(String.fromCharCode(b)) : "·";
     }
     html += `<div class="row">${line}<span class="ascii">${ascii}</span></div>`;
@@ -609,6 +632,8 @@ async function loadEditor(method) {
   renderEditFields();
   await refreshEditDiff();
   setEditEnabled(true);
+  editorLoaded = true;
+  await refreshEditBytes();   // 让左侧 hex 进入"可直接点击修改"状态
   addLog("", `编辑器已载入: ${st.source}(${st.generation} ${st.size}B)`);
 }
 
@@ -621,18 +646,38 @@ function renderEditState(st) {
   $("edit-state").className = "muted small " + (st.crcOk ? "" : "danger");
 }
 
+let editGroup = null;   // 当前分组(基本信息/JEDEC 时序/XMP 2.0/XMP 3.0/EXPO)
+
 function renderEditFields() {
   const box = $("edit-fields");
-  if (!editFieldsCache.length) { box.innerHTML = `<div class="placeholder">无可编辑字段</div>`; return; }
+  const tabs = $("edit-groups");
+  if (!editFieldsCache.length) {
+    box.innerHTML = `<div class="placeholder">无可编辑字段</div>`;
+    tabs.innerHTML = "";
+    return;
+  }
   const groups = [];
   for (const f of editFieldsCache) {
     let g = groups.find((x) => x.name === f.group);
     if (!g) { g = { name: f.group, items: [] }; groups.push(g); }
     g.items.push(f);
   }
+  if (!editGroup || !groups.some((g) => g.name === editGroup)) {
+    editGroup = groups[0].name;
+  }
+  // 分组按钮(字段多时不必一次渲染全部, 也更好找)
+  tabs.innerHTML = "";
+  for (const g of groups) {
+    const b = document.createElement("button");
+    b.textContent = `${g.name}(${g.items.length})`;
+    b.className = g.name === editGroup ? "active" : "";
+    b.onclick = () => { editGroup = g.name; renderEditFields(); };
+    tabs.appendChild(b);
+  }
   let html = "";
   for (const g of groups) {
-    html += `<div class="grp">${escapeHtml(g.name)}</div><table>`;
+    if (g.name !== editGroup) continue;
+    html += `<table>`;
     for (const f of g.items) {
       const risk = f.risk === "high" ? "risk-high" : f.risk === "medium" ? "risk-medium" : "";
       const kind = f.kind === "bool" ? "text" : "text";

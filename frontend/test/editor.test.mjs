@@ -48,8 +48,49 @@ test("编辑器: 标签页切换与从设备载入", async () => {
   assert.ok(calls.some((c) => c.name === "EditFields"), "载入后应拉字段");
   assert.match(el("edit-state").textContent, /设备 0x50/);
   assert.match(el("edit-fields").html(), /部件号/);
-  assert.match(el("edit-fields").html(), /JEDEC 时序/);
   assert.equal(el("btn-edit-write").disabled, false, "CRC 通过且有变更时应可写入");
+});
+
+test("编辑器: 分组切换(JEDEC 时序/常用信息分开渲染)", async () => {
+  const { el } = setup();
+  await flush();
+  el("tab-edit").onclick();
+  await el("btn-edit-load-dev").onclick();
+  await flush();
+  const tabs = el("edit-groups").children;
+  assert.ok(tabs.length >= 2, "应有多个分组按钮: " + tabs.length);
+  const names = tabs.map((t) => t.textContent).join("|");
+  assert.match(names, /常用信息/);
+  assert.match(names, /JEDEC 时序/);
+  // 切到 JEDEC 分组后应渲染 tAA 输入框
+  const jedec = tabs.find((t) => t.textContent.includes("JEDEC"));
+  jedec.onclick();
+  await flush();
+  const keys = el("edit-fields").querySelectorAll("input").map((i) => i.getAttribute("data-key"));
+  assert.ok(keys.includes("ddr4.tAA"), "JEDEC 分组应含 tAA: " + keys.join(","));
+  assert.ok(!keys.includes("partNumber"), "切换分组后不应再渲染常用信息字段");
+});
+
+test("编辑器: 左侧 hex 点击可直接改字节", async () => {
+  const { el, calls, ctx } = setup();
+  await flush();
+  el("tab-edit").onclick();
+  await el("btn-edit-load-dev").onclick();
+  await flush();
+  ctx.prompt = () => "00";
+  assert.match(el("hexgrid").innerHTML, /data-off="260"/, "hex 视图的字节应带 data-off(可点击)");
+  assert.match(el("hex-hint").textContent, /点击/, "应提示左侧 hex 可直接修改");
+  // 直接构造点击目标(不依赖夹具的 HTML 解析能力)
+  const target = {
+    classList: { contains: (c) => c === "hexbyte" },
+    getAttribute: (k) => (k === "data-off" ? "260" : null),
+    textContent: "00",
+  };
+  el("hexgrid").onclick({ target });
+  await flush();
+  const call = calls.find((c) => c.name === "EditSetByte");
+  assert.ok(call, "点击字节应调用 EditSetByte");
+  assert.deepEqual([...call.args], [260, 0x00]);
 });
 
 test("编辑器: 修改字段会调用 EditSetField 并刷新 diff", async () => {

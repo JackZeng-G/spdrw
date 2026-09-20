@@ -26,7 +26,8 @@
 
   <main id="layout">
     <section id="hex-panel">
-      <div class="panel-title">SPD 内容 <span id="hex-meta" class="muted"></span></div>
+      <div class="panel-title">SPD 内容 <span id="hex-meta" class="muted"></span>
+        <span id="hex-hint" class="muted small"></span></div>
       <div id="hexgrid" class="hexgrid"><div class="placeholder">先连接控制器并扫描设备</div></div>
     </section>
 
@@ -86,6 +87,7 @@
           <button id="btn-edit-fixcrc" disabled>重算 CRC</button>
           <button id="btn-edit-export" disabled>另存为…</button>
         </div>
+        <div id="edit-groups" class="edit-groups"></div>
         <div id="edit-fields" class="edit-fields"><div class="placeholder">先载入数据</div></div>
         <datalist id="mfg-list"></datalist>
 

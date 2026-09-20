@@ -109,7 +109,7 @@ export function makeAppStub(overrides = {}) {
     EditFixCRC: null,
     EditReset: null,
     EditDiff: { changes: [], fields: [], highRisk: 0, crcFields: 0, changeCount: 0, crcOk: true, truncated: false },
-    EditBytes: null,
+    EditBytes: dumpB64,
     EditExportDialog: null,
     EditApplyToDevice: null,
     EditState: null,
@@ -166,7 +166,7 @@ function matches(el, sel) {
 // (只覆盖测试需要的形态: input / button / option)
 function parseTags(html) {
   const out = [];
-  const re = /<(input|button|option)\b([^>]*)>/g;
+  const re = /<(input|button|option|span)\b([^>]*)>/g;
   let m;
   while ((m = re.exec(html)) !== null) {
     const tag = m[1];

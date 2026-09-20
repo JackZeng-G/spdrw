@@ -47,9 +47,20 @@ func (a *App) EditLoadFromDevice() (*EditState, error) {
 	if dev == nil {
 		return nil, fmt.Errorf("请先选择设备")
 	}
-	dump, err := dev.ReadAll()
-	if err != nil {
-		return nil, err
+	// 复用刚才读过的缓存: 编辑器要的是"设备当前内容", 而 Select/Dump 已经读过一次,
+	// 真机上整片读取要 2~3 秒(逐字节事务), 没必要再读一遍。
+	a.mu.Lock()
+	cached := a.lastDump != nil && a.lastDumpAddr == dev.Addr()
+	var dump []byte
+	if cached {
+		dump = append([]byte{}, a.lastDump...)
+	}
+	a.mu.Unlock()
+	if !cached {
+		var err error
+		if dump, err = dev.ReadAll(); err != nil {
+			return nil, err
+		}
 	}
 	ed, err := spd.NewEditor(dump)
 	if err != nil {
