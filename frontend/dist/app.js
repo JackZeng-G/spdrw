@@ -160,6 +160,9 @@ $("btn-log-clear").onclick = () => {
 const LOG_H_KEY = "spdrw.logHeight";
 const LOG_H_MIN = 56;
 const LOG_H_DEFAULT = 150;
+// 记住"展开时"的高度: 折叠后 CSS 高度只有 34px, 从折叠态开始拖要用记忆值做基准,
+// 否则一按下去就把面板拖成一个很矮的尺寸。
+let logHeightExpanded = LOG_H_DEFAULT;
 
 function logMaxH() {
   const h = (typeof window !== "undefined" && window.innerHeight) || 800;
@@ -173,6 +176,7 @@ function getLogHeight() {
 }
 function setLogHeight(px, persist = true) {
   const h = Math.min(logMaxH(), Math.max(LOG_H_MIN, Math.round(px)));
+  logHeightExpanded = h;
   const root = document.documentElement;
   if (root && root.style && root.style.setProperty) root.style.setProperty("--log-h", h + "px");
   if (persist) { try { localStorage.setItem(LOG_H_KEY, String(h)); } catch (e) { /* 无 localStorage(测试夹具) */ } }
@@ -187,12 +191,13 @@ let logDragFrom = null;
 const logResizer = $("log-resizer");
 logResizer.addEventListener("pointerdown", (ev) => {
   const panel = $("log-panel");
-  logDragFrom = { y: ev.clientY, h: panel.getBoundingClientRect().height };
-  panel.classList.add("dragging");
-  if (panel.classList.contains("collapsed")) {
+  const wasCollapsed = panel.classList.contains("collapsed");
+  if (wasCollapsed) {
     panel.classList.remove("collapsed");
     $("btn-log-toggle").textContent = "收起";
   }
+  logDragFrom = { y: ev.clientY, h: wasCollapsed ? logHeightExpanded : panel.getBoundingClientRect().height };
+  panel.classList.add("dragging");
   if (logResizer.setPointerCapture) { try { logResizer.setPointerCapture(ev.pointerId); } catch (e) {} }
   ev.preventDefault();
 });
