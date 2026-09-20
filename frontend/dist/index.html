@@ -49,6 +49,17 @@
         <input type="file" id="file-input" class="hidden">
       </div>
 
+      <div class="panel-title ops-title">总线统计</div>
+      <div class="ops bus">
+        <div id="bus-stats" class="bus-stats muted">—</div>
+        <button id="btn-bus-stats" disabled>读取总线统计</button>
+        <button id="btn-bus-reset" disabled>清零计数</button>
+        <div class="muted small">
+          真机验证"干跑不写盘"用: 干跑前后各读一次, <b>NVM 写</b>必须为 0。<br>
+          NVM 写 = 真正落到 SPD 内容区的字节写(读写流程必需的页选择/寄存器写不计入)。
+        </div>
+      </div>
+
       <div class="panel-title ops-title">写保护</div>
       <div class="ops wp">
         <div id="wp-blocks" class="wp-blocks muted">—</div>

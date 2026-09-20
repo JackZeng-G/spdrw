@@ -88,6 +88,8 @@ export function makeAppStub(overrides = {}) {
     Dump: dumpB64,
     Decode: null,
     ReadFileBytes: dumpB64,
+    BusStats: null,
+    ResetBusStats: null,
     WPStatus: null,
     WPSet: null,
     WPClear: null,

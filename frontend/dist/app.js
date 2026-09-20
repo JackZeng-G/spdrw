@@ -434,10 +434,35 @@ $("btn-write-go").onclick = async () => {
     closeWritePanel();
     if (dryRun) addLog("", "干跑模式: SPD 未被改动");
     else await doDump();
+    await refreshBusStats().catch(() => {});
   } catch (e) {
     addLog("", "写入失败: " + e);
   }
 };
+
+// ---------- 总线统计 ----------
+// 真机 V2 验证: 干跑前后各读一次计数, NVM 写必须为 0。
+$("btn-bus-stats").onclick = async () => {
+  try { await refreshBusStats(); } catch (e) { addLog("", "读取总线统计失败: " + e); }
+};
+$("btn-bus-reset").onclick = async () => {
+  try { await call("ResetBusStats"); addLog("", "总线计数已清零"); await refreshBusStats(); }
+  catch (e) { addLog("", "清零失败: " + e); }
+};
+
+async function refreshBusStats() {
+  const b = await call("BusStats");
+  if (!b) throw new Error("后端未返回统计");
+  const nvm = b.nvmWrites || 0;
+  $("bus-stats").innerHTML =
+    `${escapeHtml(b.generation || "")}<br>` +
+    `读 <b>${b.reads}</b> · 页选择/命令写 <b>${(b.quickWrites || 0) + (b.byteWrites || 0)}</b> · ` +
+    `字节写 <b>${b.byteDataWrites}</b><br>` +
+    `其中 NVM 写 <b class="${nvm === 0 ? "ok" : "bad"}">${nvm}</b>`;
+  addLog("", `总线统计: 读 ${b.reads} / 页选择与命令写 ${(b.quickWrites || 0) + (b.byteWrites || 0)} / ` +
+    `字节写 ${b.byteDataWrites}(NVM ${nvm})`);
+  return b;
+}
 
 // ---------- 写保护 ----------
 // WPStatus 返回单个结构体(Wails v2 绑定方法只支持 ≤2 个返回值, 旧版 4 返回值
@@ -758,4 +783,6 @@ const _origEnableOps = enableOps;
 enableOps = function (on) {
   _origEnableOps(on);
   $("btn-edit-load-dev").disabled = !on;
+  $("btn-bus-stats").disabled = !on;
+  $("btn-bus-reset").disabled = !on;
 };
