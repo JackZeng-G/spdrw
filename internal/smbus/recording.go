@@ -42,7 +42,11 @@ type RecordingTransport struct {
 	FailWriteAt int
 	// FailWriteFrom > 0 时, 第 N 次及之后的写全部失败(模拟持续故障/还原失败)。
 	FailWriteFrom int
-	ErrInjected   error
+	// FailWriteCmdFilter 非 nil 时, 只有满足条件的写才计数/注入失败。
+	// DDR5 用得上: MR 寄存器写(切页 MR11 等, cmd bit7=0)不算 NVM 写入,
+	// 让它参与计数会把"第 N 次数据写"算错。
+	FailWriteCmdFilter func(cmd byte) bool
+	ErrInjected        error
 	// DenyWriteFrom >= 0 时, cmd >= 该值的写事务返回 NACK(模拟写保护块)。
 	DenyWriteFrom int
 	// BanQuickWrite 为 true 时所有 quick 写事务返回 NACK(模拟控制器不支持快速命令)。
@@ -101,6 +105,18 @@ func (r *RecordingTransport) DataWrites() []Op {
 	return out
 }
 
+// NVMWrites 返回真正的 NVM 数据写事务(仅 DDR5 语义: cmd bit7=1 为 NVM 窗口;
+// DDR5 的 MR 寄存器写/切页写成 bit7=0, 不属于 NVM 写入)。
+func (r *RecordingTransport) NVMWrites() []Op {
+	var out []Op
+	for _, op := range r.Writes() {
+		if op.Kind == OpWriteByteData && op.Cmd&0x80 != 0 {
+			out = append(out, op)
+		}
+	}
+	return out
+}
+
 // WritesAtCmd 返回对指定 cmd 的全部 byte-data 写事务。
 func (r *RecordingTransport) WritesAtCmd(cmd byte) []Op {
 	var out []Op
@@ -141,11 +157,20 @@ func (r *RecordingTransport) String() string {
 // n 从 1 开始计数。
 func (r *RecordingTransport) writeGuard(cmd byte) (int, error) {
 	r.mu.Lock()
+	filter := r.FailWriteCmdFilter
 	n := 0
 	for _, op := range r.ops {
-		if op.Write && op.Kind != OpQuick {
-			n++
+		if !op.Write || op.Kind == OpQuick {
+			continue
 		}
+		if filter != nil && !filter(op.Cmd) {
+			continue
+		}
+		n++
+	}
+	if filter != nil && !filter(cmd) {
+		r.mu.Unlock()
+		return n, nil // 不参与计数与注入
 	}
 	n++ // 当前这次
 	failAt, failFrom, deny, inj := r.FailWriteAt, r.FailWriteFrom, r.DenyWriteFrom, r.ErrInjected

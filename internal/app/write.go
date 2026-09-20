@@ -52,6 +52,9 @@ type WritePreflight struct {
 	Warnings         []string            `json:"warnings"`
 	Blocked          bool                `json:"blocked"`
 	BlockReason      string              `json:"blockReason"`
+	// BlockKind 区分阻断原因: size/crc = "数据本身不合格"(干跑也拒绝);
+	// protected/pswp = "硬件此刻不接受写入"(干跑只是内存演算, 可以放行)。
+	BlockKind string `json:"blockKind"`
 }
 
 // WriteResult 是一次写入(或干跑)的结果。
@@ -220,7 +223,8 @@ func (a *App) buildPreflight(label string, dump []byte, force bool) (*WritePrefl
 	}
 	pf.SizeOK = len(dump) == dev.Size()
 	if !pf.SizeOK {
-		pf.Blocked, pf.BlockReason = true, fmt.Sprintf(
+		pf.Blocked, pf.BlockKind = true, "size"
+		pf.BlockReason = fmt.Sprintf(
 			"文件 %d 字节与 %s SPD 大小 %d 字节不一致(不支持截断/补齐写入)", len(dump), pf.Generation, dev.Size())
 		return pf, nil
 	}
@@ -232,7 +236,7 @@ func (a *App) buildPreflight(label string, dump []byte, force bool) (*WritePrefl
 		pf.TargetCRCValid = ok
 	}
 	if !pf.TargetCRCValid {
-		pf.Blocked = true
+		pf.Blocked, pf.BlockKind = true, "crc"
 		pf.BlockReason = "目标文件 CRC 校验不通过(先用编辑器修复 CRC 或重新生成 dump)"
 	}
 
@@ -306,11 +310,11 @@ func (a *App) buildPreflight(label string, dump []byte, force bool) (*WritePrefl
 		}
 	}
 	if len(hit) > 0 && !pf.Blocked {
-		pf.Blocked = true
+		pf.Blocked, pf.BlockKind = true, "protected"
 		pf.BlockReason = fmt.Sprintf("变更涉及受写保护的块 %v(可先执行 RSWP 清除, 若可逆)", hit)
 	}
 	if pf.PSWP && !pf.Blocked {
-		pf.Blocked = true
+		pf.Blocked, pf.BlockKind = true, "pswp"
 		pf.BlockReason = "该条已处于 PSWP 永久写保护, 无法写入"
 	}
 	if pf.HighRiskCount > 0 {
@@ -471,7 +475,12 @@ func (a *App) WriteConfirmed(path string, force, dryRun bool, ack string) (*Writ
 // writeWithPreflight 在预检通过后执行写入(文件写入、编辑器写入与测试共用)。
 func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun bool) (*WriteResult, error) {
 	if pf.Blocked {
-		return nil, fmt.Errorf("写入被拒绝: %s", pf.BlockReason)
+		// 干跑只是内存演算, 不碰硬件: 只有"数据本身不合格"(长度/CRC)才拒绝,
+		// 写保护/PSWP 这类"硬件此刻不接受"的原因允许继续(结果里带警示)。
+		hardwareGate := pf.BlockKind == "protected" || pf.BlockKind == "pswp"
+		if !(dryRun && hardwareGate) {
+			return nil, fmt.Errorf("写入被拒绝: %s", pf.BlockReason)
+		}
 	}
 	a.mu.Lock()
 	dev := a.dev
@@ -498,6 +507,9 @@ func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun 
 		}
 		res.Total, res.Written, res.Verified = len(changes), len(changes), true
 		res.Message = fmt.Sprintf("干跑完成: 将写入 %d 字节(总线上零写事务)", len(changes))
+		if pf.Blocked {
+			res.Message += "; 注意: " + pf.BlockReason
+		}
 		a.logf("%s", res.Message)
 		return res, nil
 	}
