@@ -42,9 +42,12 @@ type LogEntry struct {
 // BuildHash 由构建命令注入(-X), 用于日志自识别版本。
 var BuildHash = "dev"
 
+// BuildAuthor 是署名(日志与界面都显示)。
+const BuildAuthor = "by jackzeng 2026"
+
 // LogVersion 打印版本行(启动时调用, 便于确认运行的是哪个构建)。
 func (a *App) LogVersion() {
-	a.logf("SPD Reader Writer (Go) build %s", BuildHash)
+	a.logf("SPD Reader Writer (Go) build %s · %s", BuildHash, BuildAuthor)
 }
 
 // SetContext 由 main.go 在 OnStartup 注入 Wails 运行时上下文。

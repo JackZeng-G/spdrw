@@ -1,0 +1,20 @@
+# 行尾与二进制标记
+#
+# 这个仓库在 Linux 上开发/交叉编译、在 Windows 上运行, 所以:
+#   - 文本文件统一 LF(默认), 避免 Windows 检出后出现整文件 diff;
+#   - PowerShell 脚本用 CRLF(PowerShell 5.1 对 LF 的 .ps1 有过解析坑);
+#   - 二进制文件标记出来, 免得被当文本做行尾转换或生成毫无意义的 diff。
+
+* text=auto eol=lf
+
+*.ps1  text eol=crlf
+
+# 二进制
+*.exe   binary
+*.dll   binary
+*.syso  binary
+*.ico   binary
+*.png   binary
+*.bin   binary
+*.gif   binary
+*.jpg   binary

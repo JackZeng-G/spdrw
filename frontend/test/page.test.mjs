@@ -95,6 +95,14 @@ test("图例必须用真实色块, 不能拿绿字写个「蓝」(颜色要与�
   assert.match(css, /--chg-free-line:\s*#4f9cf9/, "自由区描边应复用 accent 蓝");
 });
 
+test("署名与写入区标题(用户要求: 红色标题 + by jackzeng 2026)", () => {
+  assert.match(html, /by jackzeng 2026/, "顶栏要有版权署名");
+  assert.match(html, /<span class="title-txt">写入SPD芯片<\/span>/, "写入区标题文案应为「写入SPD芯片」");
+  assert.match(css, /\.ops-title \.title-txt\s*\{[^}]*color:\s*var\(--danger\)/,
+    "写入区标题必须是红色(危险动作的语义色)");
+  assert.match(css, /\.brand \.byline\s*\{/, "署名要有自己的弱化样式, 不能挤在品牌字号里");
+});
+
 test("SPD 内容: 列头与行偏移必须固定(sticky), 否则滚动后看不出位置", () => {
   assert.match(css, /\.hexgrid \.row\.head\s*\{[^}]*position:\s*sticky/, "列头应 sticky");
   assert.match(css, /\.hexgrid \.row \.offset\s*\{[^}]*position:\s*sticky/, "行偏移应 sticky");

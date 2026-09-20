@@ -3,5 +3,5 @@
 $tags = "desktop,production"
 $hash = git rev-parse --short HEAD
 $ldflags = "-H windowsgui -s -w -X spdrw/internal/app.BuildHash=$hash"
-go build -tags $tags -ldflags $ldflags -trimpath -o bin\SPDReaderWriter.exe .
-if ($LASTEXITCODE -eq 0) { Write-Host "OK -> bin\SPDReaderWriter.exe" }
+go build -tags $tags -ldflags $ldflags -trimpath -o build\SPDReaderWriter.exe .
+if ($LASTEXITCODE -eq 0) { Write-Host "OK -> build\SPDReaderWriter.exe" }

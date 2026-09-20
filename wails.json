@@ -12,7 +12,7 @@
   "info": {
     "productName": "SPD Reader Writer (Go)",
     "productVersion": "0.1.0",
-    "copyright": "LGPL-2.1 / MIT 混合, 详见 LICENSE",
+    "copyright": "by jackzeng 2026 · LGPL-2.1 / MIT 混合, 详见 LICENSE",
     "comments": "SPD 读写工具 (Go + Wails + PawnIO)"
   }
 }

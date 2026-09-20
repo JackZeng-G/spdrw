@@ -1,5 +1,7 @@
 # SPD Reader Writer (Go)
 
+<img src="build/icon/appicon.png" alt="图标" width="96" align="right">
+
 SPD-Reader-Writer 的 Go 复刻版: Windows 桌面工具, 通过 **PawnIO** 内核驱动直连芯片组 SMBus, 读写内存条 SPD 并解析。
 
 原版: https://github.com/1a2m3/SPD-Reader-Writer (C# WinForms + Arduino/USB 或内核驱动 SMBus)。
@@ -55,36 +57,46 @@ SPD-Reader-Writer 的 Go 复刻版: Windows 桌面工具, 通过 **PawnIO** 内�
 ## 构建
 
 需 Go 1.27+ (`go.mod` 的 toolchain 版本; 逻辑层不用 CGO)。
-
-**必须带 `desktop,production` 构建标签**, 否则启动时报
+**必须带 `desktop,production` 标签**, 否则启动时报
 "Wails applications will not build without the correct build tags"(这是 Wails 的运行时保护, 不是代码问题)。
 
-Windows PowerShell:
+产物统一放在 **`build/`**(exe 本身不入库, 见 `.gitignore`)。
 
+```bash
+./build.sh          # Linux/macOS 上交叉编译(无 CGO)
+```
 ```powershell
-.\build.ps1
-# 等价于(把提交号打进二进制, 日志里能看到在跑哪一版):
-$hash = git rev-parse --short HEAD
-go build -tags desktop,production -trimpath `
-  -ldflags="-H windowsgui -s -w -X spdrw/internal/app.BuildHash=$hash" `
-  -o bin\SPDReaderWriter.exe .
+.\build.ps1          # Windows 上本地构建(等价)
 ```
 
-或从 Linux/macOS 交叉编译 (无 CGO):
+两条路做的都是(把提交号打进二进制, 日志里能看到在跑哪一版):
 
 ```bash
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -tags desktop,production -trimpath \
   -ldflags="-H windowsgui -s -w -X spdrw/internal/app.BuildHash=$(git rev-parse --short HEAD)" \
-  -o bin/SPDReaderWriter.exe .
+  -o build/SPDReaderWriter.exe .
 ```
 
-安装了 Wails CLI 的话也可以直接 `wails build` (自动加标签)。
+### 图标与版本信息
 
-测试:
+exe 的**图标**和**属性里的版本/版权**(`by jackzeng 2026`)来自仓库根目录的
+`rsrc_windows_amd64.syso`: Go 会自动把它链进 windows/amd64 产物, Linux 构建时忽略。
+它由 `build/winres/winres.json` + `build/icon/` 里的图标生成 —— 改图标或改版权信息后按
+[`build/winres/README.md`](build/winres/README.md) 重新生成(三步命令都在那里)。
+图标本身是 `go run ./tools/makeicon` 用纯标准库画出来的, 不依赖 ImageMagick/PIL。
+
+### 测试
 
 ```bash
-go test ./...
+export GOPATH=$PWD/.gopath GOMODCACHE=$PWD/.gopath/pkg/mod GOCACHE=$PWD/.gocache   # 容器内需自定
+go test ./internal/...                          # 149 个顶层用例
+CGO_ENABLED=1 go test -race ./internal/...      # 并发/死锁问题只有 race 抓得到
+node --test "frontend/test/*.test.mjs"          # 前端契约与漂移守卫(37 条)
+go test ./internal/app/ -run TestBuiltExe -v    # 产物自检(需先构建: 前端/PawnIO/图标/版本信息)
 ```
+
+真实浏览器冒烟: `node frontend/test/make-real-page.mjs` 后打开 `frontend/test/_real-page.html?v=<时间戳>`,
+读 `window.__SMOKE`(全部 ok)与 `window.__ERRORS`(应为空)。
 
 ## 运行要求
 
@@ -103,6 +115,10 @@ go test ./...
   (上游 URL + 取用 commit + 为什么必须拆成 15 个银行 + 三步重建命令)。
 - 第三方二进制(PawnIO 模块与 DLL)出处与许可证见 `third_party/pawnio/README.md`。
 - 真实 dump 语料(67 份)与其来源清单见 `testdata/spd/MANIFEST.md`。
+- `build/` **不全是构建产物**: `build/icon/`(图标源)与 `build/winres/`(Windows 资源与版本信息
+  的配置)是要入库的源文件, 只有 exe 被 `.gitignore` 忽略。
+- `.gitattributes` 固定了行尾(文本 LF、`.ps1` CRLF)并把 exe/dll/syso/ico/png 标记为二进制, 免得
+  Windows 与 Linux 之间来回检出时出现整文件 diff。
 
 ## 文档
 
@@ -118,6 +134,9 @@ go test ./...
 ```
 frontend/dist        原生 HTML/JS/CSS (无 node 构建链)
 main.go              Wails v2 装配(事件桥/深色窗口)
+build/icon           图标源(go run ./tools/makeicon 生成: png/ico/各尺寸 png)
+build/winres         Windows 资源配置(图标 + 版本信息 + 版权) → rsrc_windows_amd64.syso
+tools/makeicon       纯标准库图标生成器(4 倍超采样; 16/24 用简化版)
 internal/app         GUI 服务层: 连接/扫描/读写/保护/解析编排
 internal/spd         SPD 解析: DDR4 全量 / DDR5(原版范围) / DDR2-3 基本信息 + JEP106 厂商表
 internal/eeprom      设备语义: 分页(EE1004 quick / DDR5 MR11)、RSWP/PSWP、增量写+校验
@@ -142,6 +161,6 @@ third_party/pawnio   模块与 DLL 的来源与许可证说明(LGPL-2.1)
 
 ## 许可证
 
-- 本项目代码: MIT
+- 本项目代码: MIT, 版权 `by jackzeng 2026`(界面顶栏与 exe 属性里都会显示)
 - PawnIO 模块与 PawnIOLib.dll: LGPL-2.1 (见 `third_party/pawnio/`)
 - JEP106 厂商识别表自原版项目(gzip 资源)提取为 `internal/spd/data/idcodes.json`
