@@ -172,7 +172,7 @@ func TestWriteAbortKeepsCRCStale(t *testing.T) {
 	target, _ := a.EditBytes()
 
 	// 预检(内含写保护探测)先做掉, 再单独测写入阶段
-	pf, err := a.buildPreflight("编辑器内容", target, false)
+	pf, err := a.buildPreflight("编辑器内容", target, false, true)
 	if err != nil {
 		t.Fatalf("buildPreflight: %v", err)
 	}
@@ -398,12 +398,20 @@ func TestDryRunPreflightNeverWritesBus(t *testing.T) {
 	}
 	_, _ = a.SetDryRun(false)
 
-	// 关闭干跑后: 写测试恢复, 且能被计数看到(证明仪表没坏)
+	// 关闭干跑后: 真正的写入路径会做写测试, 且能被计数看到(证明仪表没坏)
 	rec.Reset()
-	if _, err := a.PreflightWrite(path, false); err != nil {
-		t.Fatalf("预检(非干跑): %v", err)
+	if _, err := a.buildPreflight("探针", target, false, true); err != nil {
+		t.Fatalf("预检(带写测试): %v", err)
 	}
 	if n := len(rec.DataWrites()); n == 0 {
-		t.Fatal("关闭干跑后预检应包含块首写测试(否则保护状态无法判定)")
+		t.Fatal("关闭干跑后带写测试的预检应产生块首写测试(否则保护状态无法判定)")
+	}
+	// 而"预览"用的 PreflightWrite 永远不写: 这是给用户先看计划用的
+	rec.Reset()
+	if _, err := a.PreflightWrite(path, false); err != nil {
+		t.Fatalf("预览预检: %v", err)
+	}
+	if n := len(rec.DataWrites()); n != 0 {
+		t.Fatalf("预览式预检不得产生任何数据写, got %d", n)
 	}
 }

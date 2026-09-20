@@ -159,7 +159,7 @@ func ddr3TimingSpecs() []timingSpec {
 		}
 		set := func(e *Editor, ns float64) error {
 			m, fp := ddr3TimebaseF(e.dump)
-			med, fine, err := encodeTimingF(ns, m, fp)
+			med, fine, err := encodeTimingF(ns, m, fp, 0xFF) // 单字节 medium
 			if err != nil {
 				return err
 			}
@@ -189,7 +189,7 @@ func ddr3TimingSpecs() []timingSpec {
 		},
 		Set: func(e *Editor, ns float64) error {
 			mps, fp := ddr3TimebaseF(e.dump)
-			m, f, err := encodeTimingF(ns, mps, fp)
+			m, f, err := encodeTimingF(ns, mps, fp, 0xFFF) // tRC 是 12 位 medium
 			if err != nil {
 				return err
 			}
@@ -497,7 +497,9 @@ func ddr3Timebase(dump []byte) Timebase {
 }
 
 // encodeTimingF 与 encodeTimingMax 同理, 但允许小数 FTB(皮秒)。
-func encodeTimingF(ns float64, mediumPS int, finePS float64) (medium, fine int, err error) {
+// maxMedium 由调用方给出: DDR3 的 tCKmin/tAA/tRCD/tRP 是**单字节** medium(255),
+// 给它传 0xFFF 会把超范围的值截断成低 8 位静默写错(旧实现这里会报错)。
+func encodeTimingF(ns float64, mediumPS int, finePS float64, maxMedium int) (medium, fine int, err error) {
 	if ns <= 0 || math.IsNaN(ns) || math.IsInf(ns, 0) {
 		return 0, 0, fmt.Errorf("时间必须为正数")
 	}
@@ -518,8 +520,11 @@ func encodeTimingF(ns float64, mediumPS int, finePS float64) (medium, fine int, 
 			fine = int(math.Round((totalPS - float64(medium*mediumPS)) / finePS))
 		}
 	}
-	if medium < 0 || medium > 0xFFF {
-		return 0, 0, fmt.Errorf("%.3f ns 超出该字段可表示范围", ns)
+	if maxMedium <= 0 {
+		maxMedium = 0xFFF
+	}
+	if medium < 0 || medium > maxMedium {
+		return 0, 0, fmt.Errorf("%.3f ns 超出该字段可表示范围(medium=%d, 上限 %d)", ns, medium, maxMedium)
 	}
 	if fine > 127 {
 		fine = 127

@@ -486,3 +486,42 @@ func TestEditorDDR2Timings(t *testing.T) {
 		t.Fatal("DDR2 改动后校验和应可重算")
 	}
 }
+
+// TestDDR3SingleByteMediumRejectsOversize DDR3 的 tCKmin/tAA/tRCD/tRP 是**单字节** medium:
+// 超出 255 必须报错。上一步把 FTB 改成小数时放宽了编码器上限, 结果这些字段被静默截断
+// (40ns -> medium 320 -> byte 0x40 = 8ns), 属回归, 由第二轮审查实测发现。
+func TestDDR3SingleByteMediumRejectsOversize(t *testing.T) {
+	e := editorFor(t, makeDDR3(t))
+	orig := editorFieldValues(e)
+	for _, key := range []string{"ddr3.tCKmin", "ddr3.tAA", "ddr3.tRCD", "ddr3.tRP"} {
+		before := append([]byte{}, e.Bytes()...)
+		// 40ns 需要 medium=320 > 255: 必须报错, 且一个字节都不能动
+		if err := e.SetField(key, "40"); err == nil {
+			t.Errorf("%s=40ns 应报超出范围(单字节 medium 上限 255×125ps=31.875ns)", key)
+		}
+		_ = before
+		for i, b := range e.Bytes() {
+			if b != before[i] {
+				t.Fatalf("%s=40ns 被拒后仍改了字节 @%#x", key, i)
+			}
+		}
+		// 写回当前值必须是彻底的无操作(原值为空 = 未设置, 跳过)
+		if orig[key] == "" {
+			continue
+		}
+		if err := e.SetField(key, orig[key]); err != nil {
+			t.Errorf("%s 写回当前值 %q: %v", key, orig[key], err)
+		}
+	}
+	for i, b := range e.Bytes() {
+		if b != before0(t, makeDDR3(t))[i] {
+			t.Fatalf("写回当前值后字节应复原, @%#x 不同", i)
+		}
+	}
+	if e.IsDirty() {
+		t.Fatal("应为无变更")
+	}
+}
+
+// before0 返回一份全新夹具(用于比对"未改过"的字节)。
+func before0(t *testing.T, d []byte) []byte { return d }

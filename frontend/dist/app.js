@@ -390,7 +390,10 @@ function renderPreflight(pf) {
   if (!pf.currentCrcValid) rows.push(`<span class="warn">设备当前内容 CRC 已不通过</span>`);
   if (pf.highRiskCount) rows.push(`<span class="danger">含高危字节 ${pf.highRiskCount} 个(容量/组织/电压/PMIC 等)</span>`);
   if (pf.protectedBlocks && pf.protectedBlocks.length) rows.push(`<span class="danger">受写保护块: ${pf.protectedBlocks.join(", ")}</span>`);
-  if (pf.unknownBlocks && pf.unknownBlocks.length) rows.push(`<span class="warn">保护状态未知块: ${pf.unknownBlocks.join(", ")}</span>`);
+  if (pf.unknownBlocks && pf.unknownBlocks.length) {
+    rows.push(`<span class="warn">保护状态未知块: ${pf.unknownBlocks.join(", ")}` +
+      `(本次是预览, 未做写保护探测以免写入设备; 真正写入时会检测并在受保护时拒绝)</span>`);
+  }
   if (pf.pswp) rows.push(`<span class="danger">该条处于 PSWP 永久写保护</span>`);
   for (const w of (pf.warnings || [])) rows.push(`<span class="warn">提示: ${esc(w)}</span>`);
   if (pf.blocked) rows.push(`<span class="danger">已阻断: ${esc(pf.blockReason)}</span>`);
@@ -516,7 +519,9 @@ function renderWP(st) {
   $("wp-summary").innerHTML = html.join("<br>");
 
   const prot = (st.protected || []).map((p, i) => p ? `B${i}` : null).filter(Boolean);
-  addLog("", `保护状态: ${prot.length ? "受保护 " + prot.join(",") : "全部开放"}` +
+  const unknown = (st.known || []).map((k, i) => k ? null : `B${i}`).filter(Boolean);
+  const state = prot.length ? "受保护 " + prot.join(",") : (unknown.length ? `未知 ${unknown.join(",")}` : "全部开放");
+  addLog("", `保护状态: ${state}` +
     (st.pswpApplicable ? (st.pswp ? " · PSWP 永久保护" : " · PSWP 未设置") : " · PSWP 不适用"));
 }
 
