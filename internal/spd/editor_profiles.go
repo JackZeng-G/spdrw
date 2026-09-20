@@ -149,7 +149,7 @@ func (e *Editor) xmp2Fields() []Field {
 	out := []Field{
 		{Key: "xmp.present", Name: "XMP 2.0 是否存在", Group: "XMP 2.0", Kind: "bool",
 			Value: boolStr(present), Offset: "0x180", Risk: "medium",
-			Note: "写入 0x0C 0x4A 头即创建 XMP; 关闭只清启用位, 不清内容"},
+			Note: "写入 0x0C 0x4A 头即创建 XMP; 关闭 = 清掉 magic(区块失效), profile 内容字节保留"},
 		{Key: "xmp.version", Name: "XMP 版本(hex)", Group: "XMP 2.0", Kind: "hex",
 			Value: fmt.Sprintf("%02X", e.dump[base+3]), Offset: "0x183", Risk: "medium"},
 	}
@@ -173,7 +173,7 @@ func (e *Editor) xmp3Fields() []Field {
 	out = append(out,
 		Field{Key: "xmp3.present", Name: "XMP 3.0 是否存在", Group: "XMP 3.0", Kind: "bool",
 			Value: boolStr(hdrPresent), Offset: "0x280", Risk: "medium",
-			Note: "头 0x0C 0x4A + 版本 0x30; CRC 由编辑器重算"},
+			Note: "头 0x0C 0x4A + 版本 0x30; 关闭 = 清 magic; CRC 由编辑器重算"},
 		Field{Key: "xmp3.version", Name: "版本(hex)", Group: "XMP 3.0", Kind: "hex",
 			Value: fmt.Sprintf("%02X", e.dump[xmp30Offset+2]), Offset: "0x282", Risk: "medium"},
 	)
@@ -212,7 +212,7 @@ func (e *Editor) expoFields() []Field {
 	out := []Field{
 		{Key: "expo.present", Name: "EXPO 是否存在", Group: "EXPO", Kind: "bool",
 			Value: boolStr(hdrPresent), Offset: "0x340", Risk: "medium",
-			Note: "EXPO 占 0x340-0x3BF, 与 XMP 槽 3 / User1 互斥"},
+			Note: "EXPO 占 0x340-0x3BF, 与 XMP 槽 3 / User1 互斥; 关闭 = 清 magic"},
 		{Key: "expo.revision", Name: "EXPO 版本(hex)", Group: "EXPO", Kind: "hex",
 			Value: fmt.Sprintf("%02X", e.dump[expoOffset+4]), Offset: "0x344", Risk: "medium",
 			Note: "公开资料有限, 常见 0x10"},
@@ -290,11 +290,15 @@ func (e *Editor) setProfileField(key, value string) error {
 	switch {
 	case key == "xmp.present":
 		if !parseBool(value) {
-			// 只清启用位(保留内容, 便于再次启用)
-			if e.dump[xmp2Base] == xmp2Magic1 && e.dump[xmp2Base+1] == xmp2Magic2 {
-				return e.set(xmp2Base+2, 0, "XMP 启用位", "medium")
+			// 关闭 = 清掉 header magic(区块失效), 但保留 profile 内容字节,
+			// 这样字段值读回来确实是 false, 再次打开也不用重填时序。
+			if err := e.set(xmp2Base, 0, "XMP 头", "medium"); err != nil {
+				return err
 			}
-			return nil
+			if err := e.set(xmp2Base+1, 0, "XMP 头", "medium"); err != nil {
+				return err
+			}
+			return e.set(xmp2Base+2, 0, "XMP 启用位", "medium")
 		}
 		if err := e.set(xmp2Base, xmp2Magic1, "XMP 头", "medium"); err != nil {
 			return err
@@ -307,6 +311,13 @@ func (e *Editor) setProfileField(key, value string) error {
 		return e.setHexBytes(xmp2Base+3, 1, value, "XMP 版本", "medium")
 	case key == "xmp3.present":
 		if !parseBool(value) {
+			// 同上: 清 magic + 启用位, 保留槽内容
+			if err := e.set(xmp30Offset, 0, "XMP3 头", "medium"); err != nil {
+				return err
+			}
+			if err := e.set(xmp30Offset+1, 0, "XMP3 头", "medium"); err != nil {
+				return err
+			}
 			return e.set(xmp30Offset+3, 0, "XMP3 启用位", "medium")
 		}
 		if err := e.set(xmp30Offset, xmp2Magic1, "XMP3 头", "medium"); err != nil {
@@ -323,6 +334,12 @@ func (e *Editor) setProfileField(key, value string) error {
 		return e.setHexBytes(xmp30Offset+2, 1, value, "XMP3 版本", "medium")
 	case key == "expo.present":
 		if !parseBool(value) {
+			// 清掉 "EXPO" magic + 启用位(内容保留)
+			for i := 0; i < 4; i++ {
+				if err := e.set(expoOffset+i, 0, "EXPO 头", "medium"); err != nil {
+					return err
+				}
+			}
 			return e.set(expoOffset+5, 0, "EXPO 启用位", "medium")
 		}
 		for i, ch := range []byte("EXPO") {
@@ -433,7 +450,7 @@ func (e *Editor) applySpec(base int, sp pfSpec, value, group string) error {
 	switch sp.Kind {
 	case pfPS16, pfNS16, pfMedFin, pfNib12:
 		if ns, err := strconv.ParseFloat(value, 64); err == nil {
-			if cur, ok := e.specValue(base, sp); ok && math.Abs(cur-ns) < 1e-9 {
+			if cur, ok := e.specValue(base, sp); ok && math.Abs(cur-ns) < 6e-4 {
 				return nil
 			}
 		}

@@ -266,6 +266,9 @@ type DDR5Timings struct {
 	TCCDLWTR int
 	TCCDSWTR int
 	TRTP     int
+	TCCDM    int
+	TCCDMWR  int
+	TCCDMWTR int
 	Limits   map[string]int // 各组 lower limit(tRRD_L/tCCD_L/... 的计数下限)
 }
 
@@ -296,6 +299,9 @@ func (d *DDR5SPD) Timings() DDR5Timings {
 		TCCDLWTR: d.u16(ddr5OffTCCDLWTR),
 		TCCDSWTR: d.u16(ddr5OffTCCDSWTR),
 		TRTP:     d.u16(ddr5OffTRTP),
+		TCCDM:    d.u16(ddr5OffTCCDM),
+		TCCDMWR:  d.u16(ddr5OffTCCDMWR),
+		TCCDMWTR: d.u16(ddr5OffTCCDMWTR),
 	}
 	// CL 掩码: 5 字节, 位 i → CL = 20 + 2i(20..98 偶数)
 	for byteIdx := 0; byteIdx < 5; byteIdx++ {

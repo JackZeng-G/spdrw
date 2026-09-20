@@ -111,6 +111,9 @@ func (e *Editor) Fields() []Field {
 			Value: timingValue(v, ok), Offset: s.Offset, Risk: "medium",
 		})
 	}
+	if f, ok := e.clMaskField(); ok {
+		out = append(out, f)
+	}
 	out = append(out, e.profileFields()...)
 	return out
 }
@@ -124,7 +127,8 @@ func (e *Editor) identityFields() []Field {
 	out := []Field{
 		{Key: "manufacturer", Name: "模块厂商", Group: "常用信息", Kind: "string",
 			Value: id.Manufacturer, Offset: fmt.Sprintf("0x%03X-0x%03X", l.MfgCont, l.MfgCode),
-			Risk: "low", Note: "输入厂商名(可用搜索)或留空只改代码", Params: []string{"JEP106"}},
+			Risk: "low", Params: []string{"JEP106"},
+			Note: "输入厂商名(可用搜索);留空 = 不改动, 想清掉 ID 请改下面两个原始码"},
 		{Key: "mfgCode", Name: "厂商码(含奇校验位)", Group: "常用信息", Kind: "int",
 			Value: strconv.Itoa(int(id.ManufacturerCode)), Min: 0, Max: 255,
 			Offset: fmt.Sprintf("0x%03X", l.MfgCode), Risk: "low"},
@@ -188,7 +192,9 @@ func (e *Editor) SetField(key, value string) error {
 	switch key {
 	case "manufacturer":
 		if value == "" {
-			return fmt.Errorf("厂商名不能为空(也可只改厂商码)")
+			// 空串 = 不改动(字段当前值可能本来就是空, 因为原条没写厂商 ID);
+			// 想清掉写错的厂商 ID 就改 mfgCont/mfgCode 两个原始字段。
+			return nil
 		}
 		cont, code, ok := FindManufacturer(value)
 		if !ok {
@@ -205,6 +211,9 @@ func (e *Editor) SetField(key, value string) error {
 	case "dramManufacturer":
 		if l.DramCont < 0 {
 			return fmt.Errorf("%v 无 DRAM 厂商字段", e.rt)
+		}
+		if value == "" {
+			return nil // 空串 = 不改动
 		}
 		cont, code, ok := FindManufacturer(value)
 		if !ok {
@@ -291,11 +300,15 @@ func (e *Editor) SetField(key, value string) error {
 			return fmt.Errorf("%s 必须是数值(纳秒): %q", s.Name, value)
 		}
 		// 时间没变就不动字节: 同一时间可能有等价但字节不同的编码
-		// (厂商常用 medium 向下取整 + 正 fine, 与 JEDEC 建议的向上取整 + 负 fine 等价)
-		if cur, ok := s.Get(e); ok && math.Abs(cur-ns) < 1e-9 {
+		// (厂商常用 medium 向下取整 + 正 fine, 与 JEDEC 建议的向上取整 + 负 fine 等价)。
+		// 容差取半个皮秒 = 界面上显示精度(3 位小数)可能引入的最大偏差。
+		if cur, ok := s.Get(e); ok && math.Abs(cur-ns) < 6e-4 {
 			return nil
 		}
 		return s.Set(e, ns)
+	}
+	if key == "ddr4.cl" || key == "ddr5.cl" {
+		return e.setJEDECCLMask(value)
 	}
 	if err := e.setProfileField(key, value); err == nil {
 		return nil
