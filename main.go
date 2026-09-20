@@ -36,9 +36,20 @@ func main() {
 			Theme:                windows.Dark,
 		},
 		OnStartup: func(ctx context.Context) {
+			a.SetContext(ctx)
 			// app 服务层的 log/进度事件 → Wails 前端事件
 			a.Emit = func(event string, data ...interface{}) {
 				runtime.EventsEmit(ctx, event, data...)
+			}
+			// 对话框必须从 Go 侧调用(v2 的 JS 运行时无对话框 API)
+			a.SaveDialog = func(title, defaultName string) (string, error) {
+				return runtime.SaveFileDialog(ctx, runtime.SaveDialogOptions{
+					Title:           title,
+					DefaultFilename: defaultName,
+				})
+			}
+			a.OpenDialog = func(title string) (string, error) {
+				return runtime.OpenFileDialog(ctx, runtime.OpenDialogOptions{Title: title})
 			}
 			a.LogVersion()
 		},

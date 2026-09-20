@@ -83,10 +83,8 @@ async function autoConnectAll() {
     }
     fillDimmSelect(list);
     if (list.length) {
-      selectedAddr = list[0].addr;
-      $("dimm-select").value = String(selectedAddr);
-      await call("Select", selectedAddr);
-      await doDump();
+      addLog("", `发现 ${list.length} 个 SPD 设备, 请在列表中选择要读取的 DIMM`);
+      setWarn("");
     } else {
       setWarn("已枚举控制器但未扫到 SPD 设备。多端口主板请尝试手动切换控制器后重扫。");
     }
@@ -294,47 +292,48 @@ function enableOps(on) {
 }
 
 $("btn-save").onclick = async () => {
-  if (!currentDump) return;
-  const path = await window.runtime.SaveFileDialog({
-    Title: "保存 SPD dump",
-    DefaultFilename: `spd-${Date.now()}.bin`,
-  });
-  if (!path) return;
-  // 走后端缓存保存(不经 JS 传数据)
+  // 保存对话框在 Go 侧弹出(v2 JS 运行时无对话框 API), 数据走后端缓存
   try {
-    await call("SaveDump", path);
+    await call("SaveDumpDialog");
   } catch (e) { addLog("", "保存失败: " + e); }
 };
 
-$("btn-load-decode").onclick = () => pickFile(async (path) => {
+$("btn-load-decode").onclick = async () => {
+  // 打开对话框在 Go 侧弹出, 直接返回解析结果与 dump
   try {
-    const r = await call("DecodeFile", path);
+    const r = await call("DecodeFileDialog");
+    if (!r) return; // 用户取消
     renderInfo(r);
-    currentDump = await call("ReadFileBytes", path); // base64 string
+    currentDump = await call("ReadFileBytes", r.path); // base64 string
     renderHexB64(currentDump);
-    addLog("", "已解析 " + path);
-  } catch (e) { addLog("", "解析失败: " + e); }
-});
+    addLog("", "已解析 " + r.path);
+  } catch (e) {
+    if (String(e).includes("已取消")) { addLog("", "已取消"); return; }
+    addLog("", "解析失败: " + e);
+  }
+};
 
-$("btn-verify").onclick = () => pickFile(async (path) => {
+$("btn-verify").onclick = async () => {
   try {
-    await call("VerifyFile", path);
+    const path = await call("VerifyFileDialog");
     addLog("", "校验通过: " + path);
-  } catch (e) { addLog("", "校验失败: " + e); }
-});
+  } catch (e) {
+    if (String(e).includes("已取消")) { addLog("", "已取消"); return; }
+    addLog("", "校验失败: " + e);
+  }
+};
 
-$("btn-write").onclick = () => pickFile(async (path) => {
-  if (!confirm(`确定把 ${path} 写入 SPD?\n写错内容可能导致主板无法启动!`)) return;
+$("btn-write").onclick = async () => {
+  if (!confirm("确定把所选文件写入 SPD?\n写错内容可能导致主板无法启动!")) return;
   try {
-    await call("WriteFromFile", path, false);
+    const path = await call("WriteFileDialog", false);
     addLog("", "写入完成: " + path);
     await doDump();
-  } catch (e) { addLog("", "写入失败: " + e); }
-});
-
-function pickFile(cb) {
-  window.runtime.OpenFileDialog({ Title: "选择文件" }).then((path) => path && cb(path));
-}
+  } catch (e) {
+    if (String(e).includes("已取消")) { addLog("", "已取消"); return; }
+    addLog("", "写入失败: " + e);
+  }
+};
 
 // ---------- 写保护 ----------
 $("btn-wp-status").onclick = async () => {

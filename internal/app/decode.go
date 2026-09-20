@@ -19,6 +19,9 @@ type DecodeResult struct {
 	Size       int    `json:"size"`
 	ModuleType string `json:"moduleType"`
 
+	// Path 是来源文件路径(DecodeFileDialog 填充; 在线解码为空)。
+	Path string `json:"path,omitempty"`
+
 	// 容量
 	TotalMib    uint64 `json:"totalMib"`
 	TotalHuman  string `json:"totalHuman"`
