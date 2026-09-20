@@ -28,6 +28,7 @@ type pawnioTransport struct {
 	session   *pawnioSession
 	ctrl      Controller
 	piix4Port int // -1 = 非 PIIX4 会话
+	lastPort  int // 上次选中的端口(-2 = 未选), 避免每事务重复选路
 }
 
 // Discover 枚举本机全部可用 SMBus 总线。
@@ -58,7 +59,7 @@ func Discover() ([]Transport, error) {
 			s.close()
 			return
 		}
-		result = append(result, &pawnioTransport{session: s, ctrl: ctrl, piix4Port: piix4Port})
+		result = append(result, &pawnioTransport{session: s, ctrl: ctrl, piix4Port: piix4Port, lastPort: -2})
 	}
 
 	try("SmbusI801.bin", KindI801, 0, -1, nil)
@@ -140,8 +141,9 @@ func decodeName(v uint64) string {
 
 func (p *pawnioTransport) Identity() (Controller, error) { return p.ctrl, nil }
 
-// piix4Port 记录本会话绑定的 AMD 端口; >=0 表示每次事务前重设端口选择,
-// 因为 KernCZ 的端口选择寄存器是全局硬件状态, 多会话(端口0/1)会互相覆盖。
+// piix4Port 记录本会话绑定的 AMD 端口; >=0 表示事务前确保端口选择指向本会话
+// (KernCZ 的端口选择寄存器是全局硬件状态, 多会话/外部工具会互相覆盖)。
+// 同一会话内端口不变, 只在首次和出错后重选 —— 每字节省一次内核 execute(约减半耗时)。
 func (p *pawnioTransport) xfer(addr byte, write bool, cmd byte, proto byte, data []byte, wantOut bool) ([]uint64, error) {
 	in := MarshalXfer(addr, write, cmd, proto, data)
 	out := make([]uint64, XferOutSize)
@@ -151,14 +153,23 @@ func (p *pawnioTransport) xfer(addr byte, write bool, cmd byte, proto byte, data
 	}
 	defer unlock()
 
-	// AMD KernCZ: 每次事务前把端口选择切回本会话的端口
-	// (端口索引寄存器是全局硬件状态, 多会话并存时必须每次重设;
-	//  ioctl 会回写 old_port, 必须提供输出缓冲, 否则 STATUS_INVALID_PARAMETER)
-	if p.piix4Port >= 0 {
+	// AMD KernCZ: 端口路由是全局硬件状态, 首次事务与出错重试前重设;
+	// ioctl 会回写 old_port, 必须提供输出缓冲, 否则 STATUS_INVALID_PARAMETER
+	selectPort := func() error {
+		if p.piix4Port < 0 {
+			return nil
+		}
 		selOut := make([]uint64, 1)
 		if _, err := p.session.execute(fnPiix4PortSel, []uint64{uint64(p.piix4Port)}, selOut); err != nil {
-			return nil, fmt.Errorf("设置 PIIX4 端口 %d 失败: %w", p.piix4Port, err)
+			return fmt.Errorf("设置 PIIX4 端口 %d 失败: %w", p.piix4Port, err)
 		}
+		return nil
+	}
+	if p.lastPort != p.piix4Port {
+		if err := selectPort(); err != nil {
+			return nil, err
+		}
+		p.lastPort = p.piix4Port
 	}
 
 	// 失败自动重试(对齐原版工具的宽容时序): PawnIO 模块单次事务 64ms 硬超时,
@@ -172,6 +183,11 @@ func (p *pawnioTransport) xfer(addr byte, write bool, cmd byte, proto byte, data
 			for i := range out {
 				out[i] = 0
 			}
+			// 重试前重选端口: 全局路由可能被外部改动
+			if err := selectPort(); err != nil {
+				return nil, err
+			}
+			p.lastPort = p.piix4Port
 		}
 		ret, err = p.session.execute(fnSmbusXfer, in, out)
 		if err == nil {

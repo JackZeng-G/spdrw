@@ -264,46 +264,28 @@ func (a *App) Dump() ([]byte, error) {
 	return data, nil
 }
 
-// dumpDiagnostics 只读诊断: HUB 型号/页寄存器/写保护状态/NVM 窗口。
-// 关键实验: 分别在 MR11=0..7 下读两个窗口(0x00-0x07 与 0x80-0x87)的首字节,
-// 对比哪种映射能读到非零 NVM —— 定位这台 HUB 的实际访问方式。
+// dumpDiagnostics 只读诊断(压缩为单行, 完整页扫描已完成使命并移除):
+// HUB 配置/页寄存器/写保护状态, 用于远程排障。
 func (a *App) dumpDiagnostics() {
 	t := a.active
 	addr := a.dev.Addr()
-	rd := func(name string, cmd byte) {
-		if b, err := t.ReadByteData(addr, cmd); err == nil {
-			a.logf("  MR %#x = %#x (%s)", cmd, b, name)
+	type mr struct {
+		name string
+		cmd  byte
+	}
+	mrs := []mr{{"MR0", 0x00}, {"MR3", 0x03}, {"MR11", 0x0B}, {"MR29", 0x1D}, {"MR48", 0x30}}
+	var sb strings.Builder
+	for i, m := range mrs {
+		if i > 0 {
+			sb.WriteByte(' ')
+		}
+		if b, err := t.ReadByteData(addr, m.cmd); err == nil {
+			fmt.Fprintf(&sb, "%s=%02x", m.name, b)
 		} else {
-			a.logf("  MR %#x 读取失败: %v", cmd, err)
+			fmt.Fprintf(&sb, "%s=ERR", m.name)
 		}
 	}
-	rd("MR0 DeviceType", 0x00)
-	rd("MR3 Config", 0x03)
-	rd("MR11 PageReg", 0x0B)
-	rd("MR29 I2CWriteProt", 0x1D)
-	rd("MR48 Status", 0x30)
-
-	// 页扫描: 写 MR11=p → 读两个窗口各取 4 字节。
-	// 页 0 的 NVM 头部是 51 00 ?? 12..., 任何窗口出现该特征即 NVM 映射所在。
-	for p := 0; p <= 7; p++ {
-		if err := t.WriteByteData(addr, 0x0B, byte(p)); err != nil {
-			a.logf("  页 %d 设置失败: %v", p, err)
-			continue
-		}
-		var lo, hi []byte
-		for c := byte(0x00); c <= 0x03; c++ {
-			if b, err := t.ReadByteData(addr, c); err == nil {
-				lo = append(lo, b)
-			}
-		}
-		for c := byte(0x80); c <= 0x83; c++ {
-			if b, err := t.ReadByteData(addr, c); err == nil {
-				hi = append(hi, b)
-			}
-		}
-		a.logf("  页 %d: 窗口0x00=% x | 窗口0x80=% x", p, lo, hi)
-		time.Sleep(2 * time.Millisecond)
-	}
+	a.logf("HUB 诊断: %s", sb.String())
 }
 
 // SaveDump 保存到文件: 优先复用最近一次读取的缓存, 无缓存时现读。
