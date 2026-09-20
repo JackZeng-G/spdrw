@@ -498,3 +498,100 @@ func timingValue(ns float64, ok bool) string {
 	}
 	return strings.TrimRight(strings.TrimRight(strconv.FormatFloat(ns, 'f', 3, 64), "0"), ".")
 }
+
+// ---------------- JEDEC CL 掩码(不是"时间", 单独处理) ----------------
+
+// clMaskField 返回该世代的 JEDEC CL 掩码字段。
+// DDR4: bytes 20-23, bit i → CL i+7, byte23 bit7 = 高段标志(置位则 bit i → CL i+23);
+// DDR5: bytes 24-28, bit i → CL 20+2i(20..98 偶数)。
+func (e *Editor) clMaskField() (Field, bool) {
+	switch e.rt {
+	case DDR4, DDR4E, LPDDR3, LPDDR4, LPDDR4X:
+		d, err := NewDDR4(e.dump)
+		if err != nil {
+			return Field{}, false
+		}
+		return Field{
+			Key: "ddr4.cl", Name: "支持的 CAS 延迟(逗号分隔)", Group: "JEDEC 时序",
+			Kind: "string", Value: d.CasLatencies().String(), Offset: "0x14-0x17", Risk: "high",
+			Note: "bit i → CL i+7;byte23 bit7 = 高段标志(bit i → CL i+23);改错会导致开不了机",
+		}, true
+	case DDR5, LPDDR5, DDR5NVDIMMP, LPDDR5X:
+		if _, err := NewDDR5(e.dump); err != nil {
+			return Field{}, false
+		}
+		return Field{
+			Key: "ddr5.cl", Name: "支持的 CAS 延迟(逗号分隔偶数)", Group: "JEDEC 时序",
+			Kind: "string", Value: clMaskString(e.dump, ddr5OffCL, 5, true), Offset: "0x18-0x1C",
+			Risk: "high", Note: "只支持 20-98 的偶数",
+		}, true
+	}
+	return Field{}, false
+}
+
+// setJEDECCLMask 写入 JEDEC CL 掩码。
+func (e *Editor) setJEDECCLMask(value string) error {
+	switch e.rt {
+	case DDR4, DDR4E, LPDDR3, LPDDR4, LPDDR4X:
+		var cls []int
+		for _, part := range strings.Split(value, ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			cl, err := strconv.Atoi(part)
+			if err != nil {
+				return fmt.Errorf("CL 值必须是整数: %q", part)
+			}
+			cls = append(cls, cl)
+		}
+		// 高段标志(byte23 bit7)是**独立模式位**: 置位时 bit i → CL i+23, 否则 bit i → CL i+7。
+		// 所以要先沿用当前模式, 只有当前模式装不下这组 CL 时才换模式 ——
+		// 早先的实现在"低段模式但列表里有 CL≥23"时会误切高段, 把 CL10 当成非法。
+		fits := func(high bool, list []int) bool {
+			for _, cl := range list {
+				base := 7
+				if high {
+					base = 23
+				}
+				bit := cl - base
+				if bit < 0 || bit > 28 {
+					return false
+				}
+			}
+			return true
+		}
+		high := getBit(e.dump[23], 7)
+		if !fits(high, cls) {
+			if fits(!high, cls) {
+				high = !high
+			} else {
+				return fmt.Errorf("这组 CL 无法编码(低段支持 7-35, 高段支持 23-51): %v", cls)
+			}
+		}
+		for i := 0; i < 4; i++ {
+			if err := e.set(20+i, 0, "ddr4.cl", "high"); err != nil {
+				return err
+			}
+		}
+		base := 7
+		if high {
+			base = 23
+		}
+		for _, cl := range cls {
+			bit := cl - base
+			b := byte(20 + bit/8)
+			if err := e.set(int(b), e.dump[b]|(1<<(bit%8)), "ddr4.cl", "high"); err != nil {
+				return err
+			}
+		}
+		flags := e.dump[23] & 0x7F
+		if high {
+			flags |= 0x80
+		}
+		return e.set(23, flags, "ddr4.cl", "high")
+	case DDR5, LPDDR5, DDR5NVDIMMP, LPDDR5X:
+		return e.setCLMask(ddr5OffCL, 5, value, true, "JEDEC 时序")
+	}
+	return fmt.Errorf("%v 无 JEDEC CL 掩码", e.rt)
+}

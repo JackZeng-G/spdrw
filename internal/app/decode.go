@@ -249,6 +249,9 @@ func decodeDDR5(dump []byte, r *DecodeResult) {
 			withLower(ps("tCCD_L_WTR", t.TCCDLWTR), t.Limits["tCCD_L_WTR"]),
 			withLower(ps("tCCD_S_WTR", t.TCCDSWTR), t.Limits["tCCD_S_WTR"]),
 			withLower(ps("tRTP", t.TRTP), t.Limits["tRTP"]),
+			withLower(ps("tCCD_M", t.TCCDM), t.Limits["tCCD_M"]),
+			withLower(ps("tCCD_M_WR", t.TCCDMWR), t.Limits["tCCD_M_WR"]),
+			withLower(ps("tCCD_M_WTR", t.TCCDMWTR), t.Limits["tCCD_M_WTR"]),
 		}
 		r.CasLat = ""
 		for i, cl := range t.CL {
