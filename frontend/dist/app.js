@@ -5,11 +5,29 @@ const $ = (id) => document.getElementById(id);
 let currentDump = null;
 
 // ---------- Wails 绑定桥 ----------
-// Wails v2 的绑定挂在 window.go.main.App; vanilla 无 wailsjs 生成链, 直接按名调用。
+// Wails v2 绑定键 = 绑定结构体的包名.结构体名(官方模板是 main.App;
+// 本项目服务层在 app 包 → app.App)。按名解析并兜底遍历, 不依赖具体包名。
+let _appObj = undefined;
+function appObj() {
+  if (_appObj) return _appObj;
+  const g = window.go;
+  if (!g) return null;
+  const candidates = [g.main && g.main.App, g.app && g.app.App];
+  for (const c of candidates) {
+    if (c && typeof c.ListControllers === "function") return (_appObj = c);
+  }
+  for (const pkg of Object.keys(g)) {
+    for (const structName of Object.keys(g[pkg])) {
+      const o = g[pkg][structName];
+      if (o && typeof o.ListControllers === "function") return (_appObj = o);
+    }
+  }
+  return null;
+}
 function call(name, ...args) {
-  const a = window.go && window.go.main && window.go.main.App;
-  if (!a) {
-    throw new Error("Wails 绑定未注入(window.go.main.App 缺失)——请确认使用了 desktop,production 标签构建");
+  const a = appObj();
+  if (!a || typeof a[name] !== "function") {
+    throw new Error("Wails 绑定未就绪(找不到方法 " + name + ")——请确认使用了 desktop,production 标签构建");
   }
   return a[name](...args);
 }
@@ -318,7 +336,7 @@ onEvent("write:progress", (n) => { /* 进度可在此更新 */ });
 function whenBindingsReady(cb, timeoutMs = 15000) {
   const start = Date.now();
   (function poll() {
-    if (window.go && window.go.main && window.go.main.App) return cb();
+    if (appObj()) return cb();
     if (Date.now() - start > timeoutMs) {
       setWarn("Wails 绑定未就绪——请用 build.ps1(或 -tags desktop,production)构建本程序。");
       return;
