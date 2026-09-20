@@ -4,6 +4,7 @@ package app
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -142,28 +143,56 @@ func (a *App) Scan() ([]DimmInfo, error) {
 		return nil, fmt.Errorf("请先连接控制器")
 	}
 	out := []DimmInfo{}
-	for addr := byte(0x50); addr <= 0x57; addr++ {
-		// 探测: 读 SPD 字节0(比快速命令在桥接/AMD 平台上更可靠)
-		b, err := a.active.ReadByteData(addr, 0)
-		if err != nil {
-			continue
+	lastErr := map[byte]error{}
+	scanOnce := func() {
+		for addr := byte(0x50); addr <= 0x57; addr++ {
+			// 探测: 读 SPD 字节0(比快速命令在桥接/AMD 平台上更可靠)
+			b, err := a.active.ReadByteData(addr, 0)
+			if err != nil {
+				lastErr[addr] = err
+				continue
+			}
+			a.logf("探测 %#x 在线(byte0=%#x)", addr, b)
+			dev, err := eeprom.New(a.active, addr)
+			if err != nil {
+				a.logf("地址 %#x: %v", addr, err)
+				continue
+			}
+			info := DimmInfo{Addr: addr, IsDDR5: dev.IsDDR5(), Size: dev.Size()}
+			if data, err := dev.Read(0, 3); err == nil {
+				if rt, _, _ := spd.Identify(append([]byte{}, data...)); rt != spd.Unknown {
+					info.RamType = rt.String()
+				} else {
+					info.RamType = "未知"
+				}
+			}
+			out = append(out, info)
+			dev.Close()
 		}
-		a.logf("探测 %#x 在线(byte0=%#x)", addr, b)
-		dev, err := eeprom.New(a.active, addr)
-		if err != nil {
-			a.logf("地址 %#x: %v", addr, err)
-			continue
-		}
-		info := DimmInfo{Addr: addr, IsDDR5: dev.IsDDR5(), Size: dev.Size()}
-		if data, err := dev.Read(0, 3); err == nil {
-			if rt, _, _ := spd.Identify(append([]byte{}, data...)); rt != spd.Unknown {
-				info.RamType = rt.String()
-			} else {
-				info.RamType = "未知"
+	}
+	scanOnce()
+	if len(out) == 0 {
+		// 第二遍: 总线/HUB 空闲后重试(对齐原版的宽容时序)
+		time.Sleep(300 * time.Millisecond)
+		scanOnce()
+	}
+	if len(out) == 0 && len(lastErr) > 0 {
+		// 全部地址有错误响应: 分类汇报首个地址的错误, 便于定位
+		classify := func(err error) string {
+			s := err.Error()
+			switch {
+			case strings.Contains(s, "NACK"), strings.Contains(s, "无响应"):
+				return "设备无应答(NACK)"
+			case strings.Contains(s, "超时"):
+				return "事务超时(HUB 响应过慢或设备离线)"
+			case strings.Contains(s, "占用"):
+				return "总线被占用"
+			default:
+				return s
 			}
 		}
-		out = append(out, info)
-		dev.Close()
+		a.logf("扫描完成: 0 个设备(0x50: %s; 其余地址同类)", classify(lastErr[0x50]))
+		return out, nil
 	}
 	a.logf("扫描完成: %d 个设备", len(out))
 	return out, nil
