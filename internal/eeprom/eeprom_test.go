@@ -52,15 +52,22 @@ func TestNewDetectsDDR5(t *testing.T) {
 	if d.Size() != 1024 {
 		t.Fatalf("DDR5 大小 = %d, want 1024", d.Size())
 	}
-	// DDR5 页复位应写 MR11=0 而非 SPA quick
+	// 探测阶段应零写操作(页切换推迟到实际读写)
+	if len(ft.WriteLog) != 0 {
+		t.Fatalf("New 阶段不应有写操作: %+v", ft.WriteLog)
+	}
+	// 首次跨页读取时才写 MR11
+	if _, err := d.Read(0x100, 1); err != nil {
+		t.Fatalf("Read 0x100: %v", err)
+	}
 	found := false
 	for _, op := range ft.WriteLog {
-		if op.Cmd == 11 && op.Val == 0 {
+		if op.Cmd == 11 && op.Val == 2 {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatal("DDR5 页复位应写 MR11=0")
+		t.Fatalf("跨页读取应写 MR11=2: %+v", ft.WriteLog)
 	}
 }
 
@@ -80,12 +87,15 @@ func TestNewDetectsSizes(t *testing.T) {
 
 func TestDDR4Paging(t *testing.T) {
 	d, ft := newDDR4(t)
-	// 连接时复位到页 0: quick 写 0x36
-	last := ft.QuickLog[len(ft.QuickLog)-1]
-	if last.Addr != 0x36 || !last.Write {
-		t.Fatalf("复位页应为 quick 写 0x36, got %v", last)
+	// 探测阶段零写操作(无页复位); 首次同页读不应产生 quick 写
+	if _, err := d.Read(0, 1); err != nil {
+		t.Fatalf("Read: %v", err)
 	}
-	ft.QuickLog = nil
+	for _, q := range ft.QuickLog {
+		if q.Write {
+			t.Fatalf("读页 0 不应切页: %v", ft.QuickLog)
+		}
+	}
 
 	// 读页 1 (0x100) 应先 quick 写 0x37
 	if _, err := d.Read(0x100, 1); err != nil {
