@@ -138,6 +138,9 @@ func (p *pawnioTransport) xfer(addr byte, write bool, cmd byte, proto byte, data
 	in := MarshalXfer(addr, write, cmd, proto, data)
 	out := make([]uint64, XferOutSize)
 	unlock := lockSMBus()
+	if unlock == nil {
+		return nil, fmt.Errorf("SMBus 正被其他程序占用(等待 2 秒超时), 请关闭 Thaiphoon/厂家工具后重试")
+	}
 	defer unlock()
 	ret, err := p.session.execute(fnSmbusXfer, in, out)
 	if err != nil {

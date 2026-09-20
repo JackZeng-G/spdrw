@@ -147,6 +147,7 @@ func (a *App) Scan() ([]DimmInfo, error) {
 		if err := a.active.Quick(addr, false); err != nil {
 			continue
 		}
+		a.logf("探测 %#x 在线", addr)
 		dev, err := eeprom.New(a.active, addr)
 		if err != nil {
 			a.logf("地址 %#x: %v", addr, err)

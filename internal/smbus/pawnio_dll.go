@@ -172,8 +172,10 @@ func lockSMBus() func() {
 	if smbusMutex == 0 {
 		return func() {}
 	}
-	if _, err := windows.WaitForSingleObject(smbusMutex, windows.INFINITE); err != nil {
-		return func() {}
+	const lockTimeoutMs = 2000
+	if ev, err := windows.WaitForSingleObject(smbusMutex, lockTimeoutMs); err != nil || ev != windows.WAIT_OBJECT_0 {
+		// 被其他工具(如 Thaiphoon/厂家软件)长期占用: 报错而不是无限等待
+		return nil
 	}
 	return func() { _ = windows.ReleaseMutex(smbusMutex) }
 }

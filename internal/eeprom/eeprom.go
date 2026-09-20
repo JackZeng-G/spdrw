@@ -70,8 +70,8 @@ func New(t smbus.Transport, addr byte) (*Device, error) {
 		d.size = sizeByRamType(ramType)
 	}
 
-	// 页复位尽力而为: 上电默认即页0, 失败不应阻止设备创建
-	_ = d.setPage(0)
+	// 注意: 探测阶段不做任何写操作(页复位/页切换推迟到真正读写时由
+	// physOffset 执行) —— 避免探测阶段对未知设备触发写事务。
 	return d, nil
 }
 
