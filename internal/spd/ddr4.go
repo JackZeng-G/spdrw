@@ -268,14 +268,18 @@ func (d *DDR4SPD) XMPProfiles() []XMPProfile {
 		base := 384 + off
 		p.TCKmin = d.timing(base+0x0C, base+0x2F)
 		p.TAAmin = d.timing(base+0x11, base+0x2E)
+		// CL 掩码: +0x0D 起的 24 位小端, bit i → CL i+7(实测: G.Skill 3200 的 0x80 = CL14,
+		// 原实现按大端读会把 CL 表整体读错)
 		p.CasLat = CasLatencies{
-			Bitmask: uint32(d.raw[base+0x0F]) | uint32(d.raw[base+0x0E])<<8 | uint32(d.raw[base+0x0D])<<16,
+			Bitmask: uint32(d.raw[base+0x0D]) | uint32(d.raw[base+0x0E])<<8 | uint32(d.raw[base+0x0F])<<16,
 		}
 		p.TRCD = d.timing(base+0x12, base+0x2D)
 		p.TRP = d.timing(base+0x13, base+0x2C)
-		p.TRAS = d.timingLong(int(uint16(d.raw[base+0x15]) | uint16(subByteR(d.raw[base+0x14], 7, 4))<<8))
+		// 高位 nibble 位序与 JEDEC 一致: bits3:0 = tRAS MSN, bits7:4 = tRC MSN
+		// (原版 C# 把两者写反了, 实测会把 36 周期的 tRAS 读成 87)
+		p.TRAS = d.timingLong(int(uint16(d.raw[base+0x15]) | uint16(subByteR(d.raw[base+0x14], 3, 4))<<8))
 		p.TRC = Timing{
-			Medium: int(uint16(d.raw[base+0x16]) | uint16(subByteR(d.raw[base+0x14], 3, 4))<<8),
+			Medium: int(uint16(d.raw[base+0x16]) | uint16(subByteR(d.raw[base+0x14], 7, 4))<<8),
 			Fine:   int(int8(d.raw[base+0x2B])),
 		}
 		p.TFAW = d.timingLong(int(uint16(d.raw[base+0x1E]) | uint16(subByteR(d.raw[base+0x1D], 3, 4))<<8))

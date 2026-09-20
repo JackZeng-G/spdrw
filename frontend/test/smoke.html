@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<!--
+  UI 冒烟测试页(真实浏览器执行 app.js + style.css)。
+  用法(agent 浏览器):
+    1) 打开 file://<repo>/frontend/test/smoke.html
+    2) 读 window.__SMOKE:{steps:[{name,ok}], jsErrors:[]}
+    3) 全部 ok 且 jsErrors 为空即通过
+  注意: 该文件放在 dist/ 之外, 不会被 go:embed 打进 exe。
+-->
+<meta charset="UTF-8">
+<title>SPDRW UI 冒烟测试(真实浏览器)</title>
+<link rel="stylesheet" href="../dist/style.css">
+</head>
+<body>
+  <!-- 与 dist/index.html 同构的最小骨架: 直接复用真实 id, 由 app.js 驱动 -->
+  <header id="topbar">
+    <div class="brand">SPD 读写 <span class="sub">smoke</span></div>
+    <div class="bar-controls">
+      <label>控制器
+        <select id="ctl-select"><option value="-1">— 未枚举 —</option></select>
+        <button id="btn-refresh-ctl">⟳</button>
+      </label>
+      <button id="btn-scan">重扫设备</button>
+      <label>设备
+        <select id="dimm-select"><option value="-1">— 未扫描 —</option></select>
+      </label>
+    </div>
+    <div id="env-status" class="env-unknown">检测环境…</div>
+  </header>
+  <div id="warn-bar" class="hidden"></div>
+  <main id="layout">
+    <section id="hex-panel">
+      <div class="panel-title">SPD 内容 <span id="hex-meta" class="muted"></span></div>
+      <div id="hexgrid" class="hexgrid"><div class="placeholder">先连接控制器并扫描设备</div></div>
+    </section>
+    <aside id="info-panel">
+      <div class="tabs">
+        <button id="tab-info" class="tab active">SPD 信息</button>
+        <button id="tab-edit" class="tab">编辑器</button>
+      </div>
+      <div id="view-info" class="tabview">
+        <div class="panel-title">SPD 信息</div>
+        <div id="info-body" class="info-body"><div class="placeholder">读取后显示</div></div>
+        <div class="panel-title ops-title">操作</div>
+        <div class="ops">
+          <button id="btn-save" disabled>保存 dump…</button>
+          <button id="btn-load-decode" disabled>打开文件解析…</button>
+          <button id="btn-verify" disabled>校验文件…</button>
+          <button id="btn-write" disabled class="danger">写入文件…</button>
+          <input type="file" id="file-input" class="hidden">
+        </div>
+        <div class="panel-title ops-title">总线统计</div>
+        <div class="ops bus">
+          <div id="bus-stats" class="bus-stats muted">—</div>
+          <button id="btn-bus-stats" disabled>读取总线统计</button>
+          <button id="btn-bus-reset" disabled>清零计数</button>
+        </div>
+        <div class="panel-title ops-title">写保护</div>
+        <div class="ops wp">
+          <div id="wp-blocks" class="wp-blocks muted">—</div>
+          <div id="wp-summary" class="wp-summary"></div>
+          <button id="btn-wp-status" disabled>查询保护状态</button>
+          <button id="btn-wp-set" disabled class="danger">RSWP 加保护…</button>
+          <button id="btn-wp-clear" disabled>RSWP 清除</button>
+        </div>
+      </div>
+      <div id="view-edit" class="tabview hidden">
+        <div class="panel-title">编辑器 <span id="edit-state" class="muted small"></span></div>
+        <div class="ops edit-load">
+          <button id="btn-edit-load-dev" disabled>从设备载入</button>
+          <button id="btn-edit-load-file" disabled>打开 dump 文件…</button>
+          <button id="btn-edit-reset" disabled>放弃修改</button>
+          <button id="btn-edit-fixcrc" disabled>重算 CRC</button>
+          <button id="btn-edit-export" disabled>另存为…</button>
+        </div>
+        <div id="edit-fields" class="edit-fields"><div class="placeholder">先载入数据</div></div>
+        <div class="panel-title ops-title">原始 hex 编辑</div>
+        <div class="ops hexedit">
+          <label>偏移 <input id="hex-off" type="text" placeholder="0x1F0" size="6"></label>
+          <label>值 <input id="hex-val" type="text" placeholder="0x5A" size="5"></label>
+          <button id="btn-hex-apply" disabled>写入该字节</button>
+        </div>
+        <div class="panel-title ops-title">变更与写入</div>
+        <div class="ops edit-apply">
+          <div id="edit-diff" class="edit-diff muted">—</div>
+          <label class="chk"><input type="checkbox" id="chk-edit-backup"> 我已另有备份</label>
+          <label class="chk"><input type="checkbox" id="chk-edit-dryrun"> 干跑(不写入)</label>
+          <label class="chk">确认串 <input id="inp-edit-ack" type="text" placeholder="WRITE" size="10" autocomplete="off"></label>
+          <button id="btn-edit-write" class="danger" disabled>预览并写入设备…</button>
+        </div>
+      </div>
+    </aside>
+  </main>
+  <footer id="log-panel">
+    <div class="panel-title">日志</div>
+    <div id="log" class="log"></div>
+  </footer>
+  <div id="write-modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-title">写入前确认 <span id="write-target" class="muted"></span></div>
+      <div id="write-summary" class="write-summary"></div>
+      <div id="write-fields" class="write-fields"></div>
+      <details id="write-changes-wrap"><summary>逐字节 diff</summary><div id="write-changes" class="write-changes"></div></details>
+      <label class="chk"><input type="checkbox" id="chk-backup"> 我已另有备份</label>
+      <label class="chk"><input type="checkbox" id="chk-force"> 强制模式</label>
+      <label class="chk"><input type="checkbox" id="chk-dryrun"> 干跑模式</label>
+      <label class="chk">确认串 <input id="inp-ack" type="text" placeholder="WRITE" autocomplete="off"></label>
+      <div class="modal-actions">
+        <button id="btn-write-cancel">取消</button>
+        <button id="btn-write-go" class="danger" disabled>执行写入</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="stub.js"></script>
+  <script src="../dist/app.js"></script>
+  <script src="driver.js"></script>
+</body>
+</html>

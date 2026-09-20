@@ -17,6 +17,8 @@ import (
 func main() {
 	if len(os.Args) != 3 {
 		fmt.Fprintln(os.Stderr, "用法: extract_idcodes <Resources.cs> <out.json>")
+		fmt.Fprintln(os.Stderr, "  Resources.cs 来自 https://github.com/1a2m3/SPD-Reader-Writer")
+		fmt.Fprintln(os.Stderr, "  (src/SpdReaderWriterCore/Resources.cs); 详见 internal/spd/data/README.md")
 		os.Exit(2)
 	}
 	src, err := os.ReadFile(os.Args[1])
@@ -73,6 +75,29 @@ func main() {
 		tables = append(tables, clean)
 		fmt.Fprintf(os.Stderr, "block %d: %d 厂商\n", b, len(clean))
 	}
+
+	// 原资源是按"gzip 块"排列的, 而块与 JEP106 银行号并非一一对应:
+	// 块 0 = 银行 0; 块 1 里塞了银行 1 与银行 2 两段(251 条 = 126 + 125);
+	// 块 n(n≥2) = 银行 n+1。实测真实 dump 全部按这个映射才能查到正确厂商
+	// (例如 Corsair 在块 1 的第 156 条 = 银行 2 的第 30 条)。
+	banks := make([][]string, 0, len(tables)+1)
+	for b, names := range tables {
+		switch {
+		case b == 0:
+			banks = append(banks, names)
+		case b == 1:
+			// 实测对齐点: 银行 1 = 前 125 条, 银行 2 = 其余(126 条)。
+			// 这样 Corsair(银行 2, 码 30)才落在第 155 条 —— 与真实 dump 一致。
+			if len(names) > 125 {
+				banks = append(banks, names[:125], names[125:])
+			} else {
+				banks = append(banks, names)
+			}
+		default:
+			banks = append(banks, names)
+		}
+	}
+	tables = banks
 	out, _ := json.MarshalIndent(tables, "", "  ")
 	if err := os.WriteFile(os.Args[2], out, 0o644); err != nil {
 		panic(err)

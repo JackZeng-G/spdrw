@@ -17,7 +17,11 @@ type FakeTransport struct {
 	Present map[byte]bool
 	// ProtectedFrom >= 0 时模拟写保护: 对该偏移及以上的写操作 NACK(真实 EE1004 行为)。
 	ProtectedFrom int
-	Closed        bool
+	// BlockReadUnsupported 为 true 时块读返回 NACK(模拟不支持块读的设备, 用于测回退)。
+	BlockReadUnsupported bool
+	// WordReadUnsupported 为 true 时字读返回 NACK(模拟连字读都不支持的设备)。
+	WordReadUnsupported bool
+	Closed              bool
 
 	// DDR5 为 true 时按 DDR5 分页(MR11, 128 字节页, 读命令 |0x80); 否则按 DDR4(SPA quick, 256 字节页)。
 	DDR5 bool
@@ -176,7 +180,39 @@ func (f *FakeTransport) WriteByteNoData(addr byte) error {
 	return nil
 }
 
+// ReadBlockData 模拟 SMBus Block Read: 从 cmd 开始最多 32 字节, 页内自增, 不跨页。
+// 超出页尾时按设备行为只返回页内剩余字节(真实 EE1004/SPD5 也一样)。
+func (f *FakeTransport) ReadBlockData(addr byte, cmd byte) ([]byte, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.Present != nil && !f.Present[addr] {
+		return nil, fmt.Errorf("设备无响应 NACK(0xC000000E)")
+	}
+	if f.BlockReadUnsupported {
+		return nil, fmt.Errorf("设备不支持块读(0xC000000E)")
+	}
+	start, err := f.idx(cmd)
+	if err != nil {
+		return nil, err
+	}
+	e := f.page * f.pageSpan
+	end := e + f.pageSpan
+	n := ProtoBlockMax
+	if start+n > end {
+		n = end - start
+	}
+	if n <= 0 {
+		return nil, fmt.Errorf("块读越界 页=%d cmd=%#x", f.page, cmd)
+	}
+	out := make([]byte, n)
+	copy(out, f.EEProm[start:start+n])
+	return out, nil
+}
+
 func (f *FakeTransport) ReadWordData(addr byte, cmd byte) (uint16, error) {
+	if f.WordReadUnsupported {
+		return 0, fmt.Errorf("设备无响应 NACK(0xC000000E)")
+	}
 	lo, err := f.ReadByteData(addr, cmd)
 	if err != nil {
 		return 0, err

@@ -17,14 +17,23 @@ var DDR5ModuleTypeNames = map[byte]string{
 // DDR5 密度表(die 容量 Gb)。
 var ddr5DensityList = [...]byte{0, 4, 8, 12, 16, 24, 32, 48, 64}
 
-// XMP 3.0 / EXPO 布局。
+// XMP 3.0 / EXPO 布局(依据 JEDEC SPD5118 与 DDR5XMPEditor/SPD-Reader-Writer 的实测布局)。
+//
+//	0x280-0x2BF: XMP 3.0 header(64B): magic 0x0C 0x4A, version, 启用位, 3 个 profile 名,
+//	             末 2 字节(0x2BE/0x2BF)为 header CRC
+//	0x2C0/0x300/0x340/0x380/0x3C0: 5 个 XMP profile 槽(每个 64B, 末 2 字节为该槽 CRC)
+//	0x340-0x3BF: EXPO 区(128B, magic "EXPO", 含 2 个 profile, 末 2 字节 CRC)
+//	             —— 与 XMP 槽 3(0x340) 和 User1(0x380) **互斥**
 const (
-	xmp30Offset = 0x280 // 640
-	xmp30Len    = 64
-	xmp30Slots  = 5
-	expoOffset  = 0x340 // 832
-	expoLen     = 128
+	xmp30Offset    = 0x280 // XMP 3.0 header 偏移
+	xmp30HeaderLen = 64    // header 长度
+	expoOffset     = 0x340 // EXPO 偏移
+	expoLen        = 128   // EXPO 长度
 )
+
+// XMP30ProfileOffsets 是 5 个 XMP 3.0 profile 槽的偏移(旧实现误用 0x280+i*64,
+// 把 header 当成第 1 个槽, 于是漏检最后一个槽 0x3C0 且 CRC 覆盖错位)。
+var XMP30ProfileOffsets = [5]int{0x2C0, 0x300, 0x340, 0x380, 0x3C0}
 
 // DDR5 是解析后的 DDR5 SPD(1024 字节)。
 type DDR5SPD struct{ raw []byte }
@@ -155,29 +164,202 @@ func (d *DDR5SPD) EXPOPresence() bool {
 	return string(d.raw[expoOffset:expoOffset+4]) == "EXPO"
 }
 
-// XMP30Slots 返回各 XMP 槽位是否有效(magic 0x30 开头)。
-func (d *DDR5SPD) XMP30Slots() [xmp30Slots]bool {
-	var out [xmp30Slots]bool
-	for i := range out {
-		out[i] = d.raw[xmp30Offset+i*xmp30Len] == 0x30
+// XMP30SlotPresent 判断某个 XMP 3.0 槽是否是一份真实 profile。
+//
+// 判据: 槽首字节是 VPP 电压编码((ones<<5)|hundredths/5), 真实 profile 的 VPP ≥ 1.0V
+// → 首字节 ≥ 0x20。实测多份厂商 dump(TeamGroup/威刚/十铨…)在最后一个槽 0x3C0 放了
+// 非零数据但没有有效的 profile CRC —— 若按"非空白即存在"判定, 会把这些完全正常的
+// 内存条误报为 "CRC 校验失败", 并让写入预检拒绝一份合法 dump。
+func XMP30SlotPresent(dump []byte, idx int) bool {
+	if idx < 0 || idx >= len(XMP30ProfileOffsets) {
+		return false
+	}
+	off := XMP30ProfileOffsets[idx]
+	if off+64 > len(dump) {
+		return false
+	}
+	vpp := dump[off]
+	return vpp >= 0x20 && vpp != 0xFF
+}
+
+// XMP30SlotHasData 判断槽内是否有内容(62 字节非全 0/全 FF)。
+// 与 XMP30SlotPresent 的区别: 后者按 VPP 判定"是不是一份有效 profile"(用于 CRC 硬校验,
+// 免得厂商残留数据把正常内存条误报成 CRC 失败); 前者用于"要不要给这个槽重算 CRC"——
+// 用户可能只填了时序还没填 VPP, 这时写出的槽也必须带正确 CRC。
+func XMP30SlotHasData(dump []byte, idx int) bool {
+	if idx < 0 || idx >= len(XMP30ProfileOffsets) {
+		return false
+	}
+	off := XMP30ProfileOffsets[idx]
+	if off+64 > len(dump) {
+		return false
+	}
+	return !isBlank(dump[off : off+62])
+}
+
+// XMP30Slots 返回各 XMP 3.0 槽位是否存在。
+// EXPO 存在时 0x340/0x380 两槽被 EXPO 占用, 一律报 false。
+func (d *DDR5SPD) XMP30Slots() [5]bool {
+	var out [5]bool
+	expo := d.EXPOPresence()
+	for i := range XMP30ProfileOffsets {
+		if expo && (i == 2 || i == 3) {
+			continue
+		}
+		out[i] = XMP30SlotPresent(d.raw, i)
 	}
 	return out
 }
 
-// CRCOK 校验基础段 CRC(bytes 0-509,CRC 在 510-511,LSB 在前)与各 profile 段 CRC。
+// XMP30HeaderCRCOK 校验 XMP 3.0 header 段 CRC(覆盖 0x280-0x2BD, CRC 在 0x2BE/0x2BF)。
+func (d *DDR5SPD) XMP30HeaderCRCOK() bool {
+	if !d.XMPPresence() {
+		return false
+	}
+	sec := d.raw[xmp30Offset : xmp30Offset+xmp30HeaderLen]
+	return Crc16(sec[:62]) == uint16(sec[62])|uint16(sec[63])<<8
+}
+
+// DDR5 容量与身份区之后的时序布局(byte 20-102, 全部 16bit 小端)。
+//
+// 单位(依据 JEDEC DDR5 SPD / ec- DDR5XMPEditor 的实测布局):
+//   - tCKAVGmin/max、tAA/tRCD/tRP/tRAS/tRC/tWR、tRRD_L/tCCD_L/tCCD_L_WR/tCCD_L_WR2/
+//     tFAW/tCCD_L_WTR/tCCD_S_WTR/tRTP/tCCD_M*: 1ps
+//   - tRFC1/tRFC2/tRFCsb: 1ns
+//   - 每组的最后一个字节是 lower limit(计数, 非时间)
+const (
+	ddr5OffTCKMin    = 20
+	ddr5OffTCKMax    = 22
+	ddr5OffCL        = 24 // 5 字节位图: CL 20..98 偶数
+	ddr5OffTAA       = 30
+	ddr5OffTRCD      = 32
+	ddr5OffTRP       = 34
+	ddr5OffTRAS      = 36
+	ddr5OffTRC       = 38
+	ddr5OffTWR       = 40
+	ddr5OffTRFC1SLR  = 42
+	ddr5OffTRFC2SLR  = 44
+	ddr5OffTRFCSbSLR = 46
+	ddr5OffTRFC1DLR  = 48
+	ddr5OffTRFC2DLR  = 50
+	ddr5OffTRFCSbDLR = 52
+	ddr5OffTRRDL     = 70
+	ddr5OffTCCDL     = 73
+	ddr5OffTCCDLWR   = 76
+	ddr5OffTCCDLWR2  = 79
+	ddr5OffTFAW      = 82
+	ddr5OffTCCDLWTR  = 85
+	ddr5OffTCCDSWTR  = 88
+	ddr5OffTRTP      = 91
+	ddr5OffTCCDM     = 94
+	ddr5OffTCCDMWR   = 97
+	ddr5OffTCCDMWTR  = 100
+)
+
+// DDR5Timings 是 DDR5 JEDEC 标准时序(单位: 除 RFC* 为 ns 外均为 ps)。
+type DDR5Timings struct {
+	TCKMinPS int
+	TCKMaxPS int
+	CL       []int
+	TAA      int
+	TRCD     int
+	TRP      int
+	TRAS     int
+	TRC      int
+	TWR      int
+	RFC1SLR  int // ns
+	RFC2SLR  int
+	RFCSbSLR int
+	RFC1DLR  int
+	RFC2DLR  int
+	RFCSbDLR int
+	TRRDL    int
+	TCCDL    int
+	TCCDLWR  int
+	TCCDLWR2 int
+	TFAW     int
+	TCCDLWTR int
+	TCCDSWTR int
+	TRTP     int
+	TCCDM    int
+	TCCDMWR  int
+	TCCDMWTR int
+	Limits   map[string]int // 各组 lower limit(tRRD_L/tCCD_L/... 的计数下限)
+}
+
+func (d *DDR5SPD) u16(off int) int { return int(d.raw[off]) | int(d.raw[off+1])<<8 }
+
+// Timings 解析 DDR5 JEDEC 时序(byte 20-102)。
+func (d *DDR5SPD) Timings() DDR5Timings {
+	t := DDR5Timings{
+		TCKMinPS: d.u16(ddr5OffTCKMin),
+		TCKMaxPS: d.u16(ddr5OffTCKMax),
+		TAA:      d.u16(ddr5OffTAA),
+		TRCD:     d.u16(ddr5OffTRCD),
+		TRP:      d.u16(ddr5OffTRP),
+		TRAS:     d.u16(ddr5OffTRAS),
+		TRC:      d.u16(ddr5OffTRC),
+		TWR:      d.u16(ddr5OffTWR),
+		RFC1SLR:  d.u16(ddr5OffTRFC1SLR),
+		RFC2SLR:  d.u16(ddr5OffTRFC2SLR),
+		RFCSbSLR: d.u16(ddr5OffTRFCSbSLR),
+		RFC1DLR:  d.u16(ddr5OffTRFC1DLR),
+		RFC2DLR:  d.u16(ddr5OffTRFC2DLR),
+		RFCSbDLR: d.u16(ddr5OffTRFCSbDLR),
+		TRRDL:    d.u16(ddr5OffTRRDL),
+		TCCDL:    d.u16(ddr5OffTCCDL),
+		TCCDLWR:  d.u16(ddr5OffTCCDLWR),
+		TCCDLWR2: d.u16(ddr5OffTCCDLWR2),
+		TFAW:     d.u16(ddr5OffTFAW),
+		TCCDLWTR: d.u16(ddr5OffTCCDLWTR),
+		TCCDSWTR: d.u16(ddr5OffTCCDSWTR),
+		TRTP:     d.u16(ddr5OffTRTP),
+		TCCDM:    d.u16(ddr5OffTCCDM),
+		TCCDMWR:  d.u16(ddr5OffTCCDMWR),
+		TCCDMWTR: d.u16(ddr5OffTCCDMWTR),
+	}
+	// CL 掩码: 5 字节, 位 i → CL = 20 + 2i(20..98 偶数)
+	for byteIdx := 0; byteIdx < 5; byteIdx++ {
+		v := d.raw[ddr5OffCL+byteIdx]
+		for bit := 0; bit < 8; bit++ {
+			if v&(1<<bit) != 0 {
+				t.CL = append(t.CL, 20+2*(byteIdx*8+bit))
+			}
+		}
+	}
+	limits := map[string]int{}
+	for name, off := range map[string]int{
+		"tRRD_L": ddr5OffTRRDL + 2, "tCCD_L": ddr5OffTCCDL + 2,
+		"tCCD_L_WR": ddr5OffTCCDLWR + 2, "tCCD_L_WR2": ddr5OffTCCDLWR2 + 2,
+		"tFAW": ddr5OffTFAW + 2, "tCCD_L_WTR": ddr5OffTCCDLWTR + 2,
+		"tCCD_S_WTR": ddr5OffTCCDSWTR + 2, "tRTP": ddr5OffTRTP + 2,
+		"tCCD_M": ddr5OffTCCDM + 2, "tCCD_M_WR": ddr5OffTCCDMWR + 2,
+		"tCCD_M_WTR": ddr5OffTCCDMWTR + 2,
+	} {
+		limits[name] = int(d.raw[off])
+	}
+	t.Limits = limits
+	return t
+}
+
+// CRCOK 校验基础段 CRC(bytes 0-509, CRC 在 510-511)、XMP 3.0 header 与各存在的
+// profile 槽 CRC、EXPO 段 CRC。空白槽位跳过(未使用的槽常为 0x00/0xFF)。
 func (d *DDR5SPD) CRCOK() bool {
 	sec := d.raw[0:512]
 	if Crc16(sec[:510]) != uint16(sec[510])|uint16(sec[511])<<8 {
 		return false
 	}
 	if d.XMPPresence() {
-		for i := 0; i < xmp30Slots; i++ {
-			off := xmp30Offset + i*xmp30Len
-			if d.raw[off] != 0x30 {
+		if !d.XMP30HeaderCRCOK() {
+			return false
+		}
+		slots := d.XMP30Slots()
+		for i, off := range XMP30ProfileOffsets {
+			if !slots[i] {
 				continue
 			}
-			sec := d.raw[off : off+xmp30Len]
-			if Crc16(sec[:62]) != uint16(sec[62])|uint16(sec[63])<<8 {
+			s := d.raw[off : off+64]
+			if Crc16(s[:62]) != uint16(s[62])|uint16(s[63])<<8 {
 				return false
 			}
 		}
@@ -189,4 +371,21 @@ func (d *DDR5SPD) CRCOK() bool {
 		}
 	}
 	return true
+}
+
+// isBlank 判断字节段是否全 0x00 或全 0xFF(未使用的区域)。
+func isBlank(b []byte) bool {
+	if len(b) == 0 {
+		return true
+	}
+	all00, allFF := true, true
+	for _, v := range b {
+		if v != 0x00 {
+			all00 = false
+		}
+		if v != 0xFF {
+			allFF = false
+		}
+	}
+	return all00 || allFF
 }

@@ -26,11 +26,18 @@
 
   <main id="layout">
     <section id="hex-panel">
-      <div class="panel-title">SPD 内容 <span id="hex-meta" class="muted"></span></div>
+      <div class="panel-title">SPD 内容 <span id="hex-meta" class="muted"></span>
+        <span id="hex-hint" class="muted small"></span></div>
       <div id="hexgrid" class="hexgrid"><div class="placeholder">先连接控制器并扫描设备</div></div>
     </section>
 
     <aside id="info-panel">
+      <div class="tabs">
+        <button id="tab-info" class="tab active">SPD 信息</button>
+        <button id="tab-edit" class="tab">编辑器</button>
+      </div>
+
+      <div id="view-info" class="tabview">
       <div class="panel-title">SPD 信息</div>
       <div id="info-body" class="info-body"><div class="placeholder">读取后显示</div></div>
 
@@ -43,15 +50,64 @@
         <input type="file" id="file-input" class="hidden">
       </div>
 
+      <div class="panel-title ops-title">总线统计</div>
+      <div class="ops bus">
+        <div id="bus-stats" class="bus-stats muted">—</div>
+        <button id="btn-bus-stats" disabled>读取总线统计</button>
+        <button id="btn-bus-reset" disabled>清零计数</button>
+        <label class="chk"><input type="checkbox" id="chk-fastread" checked> 读加速(块读 32B / 字读 2B; 关掉则逐字节兼容)</label>
+        <div id="read-mode" class="bus-stats muted">—</div>
+        <div class="muted small">
+          真机验证"干跑不写盘"用: 干跑前后各读一次, <b>NVM 写</b>必须为 0。<br>
+          NVM 写 = 真正落到 SPD 内容区的字节写(读写流程必需的页选择/寄存器写不计入)。
+        </div>
+      </div>
+
       <div class="panel-title ops-title">写保护</div>
       <div class="ops wp">
         <div id="wp-blocks" class="wp-blocks muted">—</div>
+        <div id="wp-summary" class="wp-summary"></div>
         <button id="btn-wp-status" disabled>查询保护状态</button>
         <button id="btn-wp-set" disabled class="danger">RSWP 加保护…</button>
         <button id="btn-wp-clear" disabled>RSWP 清除</button>
         <div class="muted small">
-          PSWP(永久写保护)需要高压硬件编程器,本工具不支持;<br>
-          状态查询仅显示芯片是否已永久保护。
+          DDR5 每块 64B(MR12/MR13 位图, 置位后正常运行时不可清零, 需离线模式或断电);<br>
+          DDR4 及更早每块 128B, 无状态寄存器 → 查询会对块首做"写测试"(写入取反值再还原);<br>
+          PSWP(永久保护)只有 DDR2/DDR3 可用 SMBus 探测; DDR4/DDR5 不支持设置也不适用, 需高压编程器。
+        </div>
+      </div>
+      </div>
+
+      <div id="view-edit" class="tabview hidden">
+        <div class="panel-title">编辑器
+          <span id="edit-state" class="muted small"></span>
+        </div>
+        <div class="ops edit-load">
+          <button id="btn-edit-load-dev" disabled>从设备载入</button>
+          <button id="btn-edit-load-file" disabled>打开 dump 文件…</button>
+          <button id="btn-edit-reset" disabled>放弃修改</button>
+          <button id="btn-edit-fixcrc" disabled>重算 CRC</button>
+          <button id="btn-edit-export" disabled>另存为…</button>
+        </div>
+        <div id="edit-groups" class="edit-groups"></div>
+        <div id="edit-fields" class="edit-fields"><div class="placeholder">先载入数据</div></div>
+        <datalist id="mfg-list"></datalist>
+
+        <div class="panel-title ops-title">原始 hex 编辑</div>
+        <div class="ops hexedit">
+          <label>偏移(hex) <input id="hex-off" type="text" placeholder="204 或 0x204" size="9"></label>
+          <label>值(hex) <input id="hex-val" type="text" placeholder="5A" size="5"></label>
+          <button id="btn-hex-apply" disabled>写入该字节</button>
+          <div class="muted small">两个框都是**十六进制**(可不带 0x); 也可以直接点左侧 hex 里的字节就地修改。之后用"重算 CRC"修正校验和。</div>
+        </div>
+
+        <div class="panel-title ops-title">变更与写入</div>
+        <div class="ops edit-apply">
+          <div id="edit-diff" class="edit-diff muted">—</div>
+          <label class="chk"><input type="checkbox" id="chk-edit-backup"> 我已另有备份</label>
+          <label class="chk"><input type="checkbox" id="chk-edit-dryrun"> 干跑(不写入)</label>
+          <label class="chk">确认串 <input id="inp-edit-ack" type="text" placeholder="WRITE" size="10" autocomplete="off"></label>
+          <button id="btn-edit-write" class="danger" disabled>预览并写入设备…</button>
         </div>
       </div>
     </aside>
@@ -61,6 +117,27 @@
     <div class="panel-title">日志</div>
     <div id="log" class="log"></div>
   </footer>
+
+  <!-- 写入前确认面板: 必须看过 diff/风险并输入确认串才会执行 -->
+  <div id="write-modal" class="modal hidden">
+    <div class="modal-card">
+      <div class="modal-title">写入前确认 <span id="write-target" class="muted"></span></div>
+      <div id="write-summary" class="write-summary"></div>
+      <div id="write-fields" class="write-fields"></div>
+      <details id="write-changes-wrap">
+        <summary>逐字节 diff</summary>
+        <div id="write-changes" class="write-changes"></div>
+      </details>
+      <label class="chk"><input type="checkbox" id="chk-backup"> 我已另有备份(写入前程序还会自动备份一份到 ~/.spdrw/backups)</label>
+      <label class="chk"><input type="checkbox" id="chk-force"> 强制模式(写入全部字节, 含相同值)</label>
+      <label class="chk"><input type="checkbox" id="chk-dryrun"> 干跑模式(只做计划与校验, 一个字节都不写)</label>
+      <label class="chk">确认串 <input id="inp-ack" type="text" placeholder="WRITE" autocomplete="off"></label>
+      <div class="modal-actions">
+        <button id="btn-write-cancel">取消</button>
+        <button id="btn-write-go" class="danger" disabled>执行写入</button>
+      </div>
+    </div>
+  </div>
 
   <script src="app.js"></script>
 </body>

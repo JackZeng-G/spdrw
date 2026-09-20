@@ -1,10 +1,12 @@
 package eeprom
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
 	"spdrw/internal/smbus"
+	"spdrw/internal/spd"
 )
 
 // newDDR4 返回已连接的 DDR4 设备(EEPROM 预填 0x11)。
@@ -217,13 +219,204 @@ func TestWriteRejectsOversizeAndProtected(t *testing.T) {
 	if err := d.Write(make([]byte, 513), false, nil); err == nil {
 		t.Fatal("超尺寸应报错")
 	}
+	// 长度不足也必须报错(旧实现 dump[:size] 会切片越界 panic)
+	if err := d.Write(make([]byte, 256), false, nil); err == nil {
+		t.Fatal("长度不足应报错(不能截断/补齐)")
+	}
+	if err := d.Write(nil, false, nil); err == nil {
+		t.Fatal("空数据应报错")
+	}
 	// 模拟页 0 受保护(前 128 字节 NACK)
 	ft.ProtectedFrom = 0
 	dump := make([]byte, 512)
 	dump[0] = 0x77
 	err := d.Write(dump, false, nil)
-	if err == nil || !strings.Contains(err.Error(), "0x00") {
+	if err == nil || !strings.Contains(err.Error(), "0x000") {
 		t.Fatalf("受保护写入应报错并带偏移, got %v", err)
+	}
+	var we *WriteError
+	if !errors.As(err, &we) {
+		t.Fatalf("应返回 WriteError(带已写/未写计数), got %T", err)
+	}
+	if we.Written != 0 || we.Total == 0 {
+		t.Fatalf("WriteError 计数不对: %+v", we)
+	}
+	if !strings.Contains(we.Error(), "未写") {
+		t.Fatalf("错误应说明未写字节数: %v", we)
+	}
+}
+
+func TestPlanWriteCRCLastAndDiffOnly(t *testing.T) {
+	// CRC 字节必须排在计划最后: 写中断时留下的是"CRC 与数据不符"的 SPD
+	d, ft := newDDR4(t)
+	cur := make([]byte, 512)
+	for i := range cur {
+		cur[i] = 0x11
+	}
+	copy(ft.EEProm, cur)
+	target := make([]byte, 512)
+	copy(target, cur)
+	target[325] = 0xAB // 序列号
+	crc := spd.Crc16(target[:126])
+	target[126], target[127] = byte(crc), byte(crc>>8)
+
+	changes, err := d.PlanWrite(target, false)
+	if err != nil {
+		t.Fatalf("PlanWrite: %v", err)
+	}
+	if len(changes) != 3 {
+		t.Fatalf("应只有 3 个变更(数据 1 + CRC 2), got %d: %+v", len(changes), changes)
+	}
+	last := changes[len(changes)-1]
+	if !last.IsCRC {
+		t.Fatalf("最后一个变更必须是 CRC 字节: %+v", changes)
+	}
+	// 所有 CRC 变更必须排在所有非 CRC 变更之后
+	seenCRC := false
+	for i, c := range changes {
+		if c.IsCRC {
+			seenCRC = true
+			continue
+		}
+		if seenCRC {
+			t.Fatalf("第 %d 个非 CRC 变更出现在 CRC 之后: %+v", i, changes)
+		}
+	}
+	// 计划本身不写任何字节
+	if len(ft.WriteLog) != 0 {
+		t.Fatalf("PlanWrite 不应写字节: %+v", ft.WriteLog)
+	}
+	// 执行后内容与目标一致
+	if err := d.ApplyWrite(target, changes, nil); err != nil {
+		t.Fatalf("ApplyWrite: %v", err)
+	}
+	got, _ := d.ReadAll()
+	for i := range got {
+		if got[i] != target[i] {
+			t.Fatalf("写入后不一致 @%#x: %#x != %#x", i, got[i], target[i])
+		}
+	}
+}
+
+func TestApplyWriteAbortsWithCounts(t *testing.T) {
+	// 第 3 次写起持续失败(模拟总线故障/写保护): 必须报"已写/未写"并中止
+	rec, ft := smbus.NewRecordingFake()
+	ft.EEProm[2] = 0x0C
+	ft.Fill(0x11)
+	rec.FailWriteFrom = 3
+	d, err := New(rec, 0x50)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	target := make([]byte, 512)
+	for i := range target {
+		target[i] = 0x11
+	}
+	target[0x10], target[0x20], target[0x30], target[0x40] = 0xAA, 0xBB, 0xCC, 0xDD
+	changes, err := d.PlanWrite(target, false)
+	if err != nil {
+		t.Fatalf("PlanWrite: %v", err)
+	}
+	if len(changes) < 4 {
+		t.Fatalf("计划过短: %d", len(changes))
+	}
+	err = d.ApplyWrite(target, changes, nil)
+	var we *WriteError
+	if !errors.As(err, &we) {
+		t.Fatalf("应返回 WriteError, got %v", err)
+	}
+	if we.Written != 2 {
+		t.Fatalf("应已写 2 字节, got %d", we.Written)
+	}
+	if we.Offset != changes[2].Offset {
+		t.Fatalf("中止偏移应为 %#x, got %#x", changes[2].Offset, we.Offset)
+	}
+	if !strings.Contains(err.Error(), "已写 2") {
+		t.Fatalf("错误应带已写计数: %v", err)
+	}
+}
+
+func TestDryRunWritesNothingToBus(t *testing.T) {
+	rec, ft := smbus.NewRecordingFake()
+	ft.EEProm[2] = 0x0C
+	ft.Fill(0x11)
+	d, err := New(rec, 0x50)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := d.SetDryRun(true); err != nil {
+		t.Fatalf("SetDryRun: %v", err)
+	}
+	target := make([]byte, 512)
+	for i := range target {
+		target[i] = 0x22
+	}
+	rec.Reset() // 只统计干跑写入阶段
+	changes, err := d.PlanWrite(target, true)
+	if err != nil {
+		t.Fatalf("PlanWrite: %v", err)
+	}
+	if err := d.ApplyWrite(target, changes, nil); err != nil {
+		t.Fatalf("ApplyWrite(干跑): %v", err)
+	}
+	if n := len(rec.DataWrites()); n != 0 {
+		t.Fatalf("干跑模式不得产生数据写事务, got %d: %s", n, rec)
+	}
+	// 影子反映目标内容
+	img := d.ShadowImage()
+	if len(img) != 512 || img[0] != 0x22 {
+		t.Fatalf("影子镜像不对: len=%d", len(img))
+	}
+	// 设备真实内容未变
+	real, _ := ft.ReadByteData(0x50, 0x00)
+	if real != 0x11 {
+		t.Fatalf("干跑不得改动真实内容, got %#x", real)
+	}
+	// 关闭干跑后真实写入生效
+	if err := d.SetDryRun(false); err != nil {
+		t.Fatalf("SetDryRun(false): %v", err)
+	}
+	if err := d.Write(target, true, nil); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if !ft.Closed && ft.EEProm[0] != 0x22 {
+		t.Fatalf("真实写入未生效: %#x", ft.EEProm[0])
+	}
+}
+
+func TestCRCOffsetsTargets(t *testing.T) {
+	d4, _ := newDDR4(t)
+	dump := make([]byte, 512)
+	for i := range dump {
+		dump[i] = 0x11
+	}
+	got := d4.CRCOffsets(dump)
+	if len(got) != 4 {
+		t.Fatalf("DDR4 应有 4 个 CRC 字节, got %v", got)
+	}
+	// 空白(全 0xFF)扩展区不产生 CRC 目标
+	d5 := &Device{size: 1024, ddr5: true}
+	blank := make([]byte, 1024)
+	for i := range blank {
+		blank[i] = 0xFF
+	}
+	if got := d5.CRCOffsets(blank); len(got) != 2 {
+		t.Fatalf("空白 DDR5 只应有基础段 2 个 CRC, got %v", got)
+	}
+	// 有 XMP header 时补 header CRC
+	blank[0x280], blank[0x281] = 0x0C, 0x4A
+	got = d5.CRCOffsets(blank)
+	if len(got) != 4 {
+		t.Fatalf("DDR5 + XMP header 应有 4 个 CRC, got %v", got)
+	}
+	found := false
+	for _, o := range got {
+		if o == 0x2BE {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("应包含 XMP header CRC 0x2BE: %v", got)
 	}
 }
 
@@ -305,11 +498,14 @@ func TestRSWP(t *testing.T) {
 }
 
 func TestPSWPStatus(t *testing.T) {
-	// PSWP 检测: BYTE 无数据读 0x30|(addr&7)。
-	// 未保护: 设备 ACK → false; 已永久保护: NACK → true。
+	// PSWP 探测: BYTE_DATA 读 0x30|(addr&7)(PWPB 设备类型 0110b)。
+	// 未保护: 设备 ACK → false; 已永久保护: NACK → true。仅 DDR2/DDR3 适用。
 	ft := smbus.NewFake()
-	ft.EEProm[2] = 0x0C
+	ft.EEProm[2] = 0x0B // DDR3(256B, 适用 PWPB)
 	d, _ := New(ft, 0x50)
+	if !d.PSWPApplicable() {
+		t.Fatal("DDR3 应适用 PSWP 探测")
+	}
 	pswp, err := d.PSWPStatus()
 	if err != nil || pswp {
 		t.Fatalf("未保护: %v %v", pswp, err)
@@ -322,6 +518,133 @@ func TestPSWPStatus(t *testing.T) {
 	}
 	if !pswp {
 		t.Fatal("NACK 应判为已永久保护")
+	}
+}
+
+func TestPSWPNotApplicableDDR4DDR5(t *testing.T) {
+	// DDR4(EE1004)与 DDR5(SPD5118)没有 PWPB 设备类型: 对其探测必然 NACK,
+	// 旧实现因此把每根条都误报成"PSWP 永久保护已生效"。必须直接判为不适用。
+	d4, _ := newDDR4(t)
+	if d4.PSWPApplicable() {
+		t.Fatal("DDR4 不应适用 PSWP")
+	}
+	if _, err := d4.PSWPStatus(); err == nil {
+		t.Fatal("DDR4 调用 PSWPStatus 应报不适用")
+	}
+	d5, _ := newDDR5(t)
+	if d5.PSWPApplicable() {
+		t.Fatal("DDR5 不应适用 PSWP")
+	}
+	if _, err := d5.PSWPStatus(); err == nil {
+		t.Fatal("DDR5 调用 PSWPStatus 应报不适用")
+	}
+
+	// DDR5 状态下不得探测 0x30(真实硬件上是空地址 → 假阳性来源)
+	rec, recFake := smbus.NewRecordingFake()
+	recFake.SetDDR5(true)
+	recFake.Fill(0x51)
+	d5r, err := New(rec, 0x50)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	det, err := d5r.WPStatusDetail()
+	if err != nil {
+		t.Fatalf("WPStatusDetail: %v", err)
+	}
+	if det.PSWPApplicable || det.PSWP {
+		t.Fatalf("DDR5 不应有 PSWP 结论: %+v", det)
+	}
+	for _, op := range rec.Ops() {
+		if op.Addr == 0x30 {
+			t.Fatalf("DDR5 不应在 0x30 探测: %s", rec)
+		}
+	}
+	if det.Blocks != 16 || det.BlockSize != 64 {
+		t.Fatalf("DDR5 应为 16 块 × 64B: %+v", det)
+	}
+}
+
+func TestWPStatusDetailDDR5MRs(t *testing.T) {
+	d5, ft := newDDR5(t)
+	ft.MR[MR12] = 0x0A // 块 1、3 受保护
+	ft.MR[MR13] = 0x80 // 块 15 受保护
+	ft.MR[MR48] = 0x04 // 离线模式
+	ft.MR[MR52] = 0x40 // 写受保护块被忽略
+	det, err := d5.WPStatusDetail()
+	if err != nil {
+		t.Fatalf("WPStatusDetail: %v", err)
+	}
+	want := map[int]bool{1: true, 3: true, 15: true}
+	for i := 0; i < 16; i++ {
+		if det.Protected[i] != want[i] {
+			t.Fatalf("块 %d = %v, want %v(%+v)", i, det.Protected[i], want[i], det.Protected)
+		}
+		if !det.Known[i] {
+			t.Fatalf("DDR5 位图状态应确知: %+v", det.Known)
+		}
+	}
+	if det.MR12 != 0x0A || det.MR13 != 0x80 || det.MR48 != 0x04 || det.MR52 != 0x40 {
+		t.Fatalf("MR 原始值: %+v", det)
+	}
+	if !det.Offline || !det.ProtectionHit {
+		t.Fatalf("offline/protectionHit: %+v", det)
+	}
+	if len(det.Warnings) == 0 {
+		t.Fatal("MR12/MR13 置位应有不可清零提示")
+	}
+}
+
+func TestWPStatusDetailDDR4WriteTest(t *testing.T) {
+	// 未保护: 全部开放且状态确知, 且写测试必须把值还原
+	d4, ft := newDDR4(t)
+	ft.Fill(0x11)
+	det, err := d4.WPStatusDetail()
+	if err != nil {
+		t.Fatalf("WPStatusDetail: %v", err)
+	}
+	if det.Blocks != 4 || det.BlockSize != 128 {
+		t.Fatalf("DDR4 应为 4 块 × 128B: %+v", det)
+	}
+	for i := 0; i < 4; i++ {
+		if det.Protected[i] || !det.Known[i] {
+			t.Fatalf("块 %d 应开放且确知: %+v", i, det)
+		}
+	}
+	cur, _ := d4.ReadAll()
+	for i, b := range cur {
+		if b != 0x11 {
+			t.Fatalf("写测试未还原 @%#x = %#x", i, b)
+		}
+	}
+}
+
+func TestWPStatusDetailUnknownStateOnRestoreFailure(t *testing.T) {
+	// 还原失败必须报"状态未知"而不是假装受保护, 也绝不能静默把字节改掉。
+	rec, ft := smbus.NewRecordingFake()
+	ft.EEProm[2] = 0x0C // DDR4
+	ft.Fill(0x11)
+	// 第 1 次写(取反)成功; 第 2 次起全部失败 → 还原失败
+	rec.FailWriteFrom = 2
+	d, err := New(rec, 0x50)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	det, err := d.WPStatusDetail()
+	if err != nil {
+		t.Fatalf("WPStatusDetail 应返回结果+警告, got err=%v", err)
+	}
+	if det.Known[0] {
+		t.Fatal("还原失败时块 0 状态应为未知")
+	}
+	if !det.Protected[0] {
+		t.Fatal("状态未知时必须保守地按受保护处理")
+	}
+	joined := strings.Join(det.Warnings, "; ")
+	if !strings.Contains(joined, "状态未知") {
+		t.Fatalf("应给出状态未知警告: %v", det.Warnings)
+	}
+	if !strings.Contains(joined, "还原") {
+		t.Fatalf("应指出还原失败: %v", det.Warnings)
 	}
 }
 
@@ -370,5 +693,145 @@ func TestDDR5ResidualPage(t *testing.T) {
 	}
 	if data[128] != 0x80 || data[0x1FF] != 0xFF {
 		t.Fatalf("页 1/尾页 数据错误: %#x %#x", data[128], data[0x1FF])
+	}
+}
+
+// newPatternDDR4/DDR5 造一份每字节都不同的镜像(能暴露分页/块边界错位)。
+func newPatternDDR4(t *testing.T) (*Device, *smbus.FakeTransport, []byte) {
+	t.Helper()
+	ft := smbus.NewFake()
+	img := make([]byte, 512)
+	for i := range img {
+		img[i] = byte(i)
+	}
+	img[2] = 0x0C
+	copy(ft.EEProm, img)
+	d, err := New(ft, 0x50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d, ft, img
+}
+
+func newPatternDDR5(t *testing.T) (*Device, *smbus.FakeTransport, []byte) {
+	t.Helper()
+	ft := smbus.NewFake()
+	ft.SetDDR5(true)
+	img := make([]byte, 1024)
+	for i := range img {
+		img[i] = byte(i * 7)
+	}
+	img[0], img[1], img[2] = 0x30, 0x10, 0x12
+	copy(ft.EEProm, img)
+	d, err := New(ft, 0x50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d, ft, img
+}
+
+// TestBlockReadEqualsByteRead 块读路径必须与逐字节读给出完全一样的字节
+// (含跨页边界: DDR4 每 256B 一页, DDR5 每 128B 一页, 块读不得跨页)。
+func TestBlockReadEqualsByteRead(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mk   func(*testing.T) (*Device, *smbus.FakeTransport, []byte)
+	}{
+		{"DDR4", newPatternDDR4},
+		{"DDR5", newPatternDDR5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, _, img := tc.mk(t)
+			d.SetFastRead(true)
+			fast, err := d.ReadAll()
+			if err != nil {
+				t.Fatalf("块读 ReadAll: %v", err)
+			}
+			st := d.ReadStats()
+			if !st.BlockReadKnown || !st.BlockReadOK {
+				t.Fatalf("块读应被探测为可用: %+v", st)
+			}
+			if st.Transactions > len(img)/32+4 {
+				t.Fatalf("块读事务数应约等于 %d, got %d", len(img)/32, st.Transactions)
+			}
+			// 逐字节路径作为参照
+			d2, _, _ := tc.mk(t)
+			d2.SetFastRead(false)
+			slow, err := d2.ReadAll()
+			if err != nil {
+				t.Fatalf("逐字节 ReadAll: %v", err)
+			}
+			if len(fast) != len(slow) {
+				t.Fatalf("长度不同: %d vs %d", len(fast), len(slow))
+			}
+			for i := range fast {
+				if fast[i] != slow[i] || fast[i] != img[i] {
+					t.Fatalf("块读与逐字节不一致 @%#x: %02X vs %02X(镜像 %02X)", i, fast[i], slow[i], img[i])
+				}
+			}
+			// 边界附近单独读一遍(页尾/页首)
+			for _, off := range []uint16{0, 31, 32, 96, 127, 128, 255, 256, 257, uint16(len(img) - 1)} {
+				got, err := d.Read(off, 1)
+				if err != nil {
+					t.Fatalf("Read(%d): %v", off, err)
+				}
+				if got[0] != img[off] {
+					t.Fatalf("偏移 %d: %02X != %02X", off, got[0], img[off])
+				}
+			}
+		})
+	}
+}
+
+// TestReadFallbackChain 读路径是"块读(32B) → 字读(2B) → 逐字节(1B)"三级回退:
+// 设备支持哪一级就用哪一级, 数据必须始终正确。
+func TestReadFallbackChain(t *testing.T) {
+	// 1) 只不支持块读 → 应落到字读
+	d, ft, img := newPatternDDR5(t)
+	ft.BlockReadUnsupported = true
+	d.SetFastRead(true)
+	got, err := d.ReadAll()
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	for i := range got {
+		if got[i] != img[i] {
+			t.Fatalf("数据错 @%#x", i)
+		}
+	}
+	st := d.ReadStats()
+	if st.BlockReadOK || !st.BlockReadKnown {
+		t.Fatalf("应记住块读不可用: %+v", st)
+	}
+	if !st.WordReadOK || st.WordBytes != len(img) {
+		t.Fatalf("应回退到字读并读满整片: %+v", st)
+	}
+	if st.Transactions > len(img)/2+8 {
+		t.Fatalf("字读事务数应约等于 %d, got %d", len(img)/2, st.Transactions)
+	}
+
+	// 2) 块读与字读都不支持 → 逐字节
+	d2, ft2, img2 := newPatternDDR5(t)
+	ft2.BlockReadUnsupported = true
+	ft2.WordReadUnsupported = true
+	d2.SetFastRead(true)
+	got2, err := d2.ReadAll()
+	if err != nil {
+		t.Fatalf("逐字节 ReadAll: %v", err)
+	}
+	for i := range got2 {
+		if got2[i] != img2[i] {
+			t.Fatalf("逐字节数据错 @%#x", i)
+		}
+	}
+	st2 := d2.ReadStats()
+	if st2.WordReadOK {
+		t.Fatalf("应记住字读不可用: %+v", st2)
+	}
+	if st2.FallbackBytes != len(img2) || st2.Transactions != len(img2) {
+		t.Fatalf("逐字节回退应读满 %d 字节且事务数相同: %+v", len(img2), st2)
+	}
+	if st2.Mode == "" || st2.ElapsedMS < 0 {
+		t.Fatalf("应给出读取方式与耗时: %+v", st2)
 	}
 }

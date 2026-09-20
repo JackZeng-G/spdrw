@@ -1,0 +1,5 @@
+.gocache/
+.gopath/
+_mock.html
+*.tmp
+frontend/test/_real-page.html

@@ -51,6 +51,15 @@ func (a *App) SetContext(ctx context.Context) { a.wctx = ctx }
 // App 持有全部状态; 方法绑定到前端(Wails)。
 type App struct {
 	mu sync.Mutex
+	// opMu 串行化"会碰总线或编辑器工作副本"的操作。
+	//
+	// Wails 每个绑定方法各起一个 goroutine: 长 dump 期间点"保护状态"、连点两次"应用",
+	// 都会并发进入 eeprom 的分页状态(d.page/pageKnown)或编辑器的 map —— 前者会让分页区
+	// 读写到错误页, 后者是 Go 运行时的 concurrent map read/write 直接 fatal。
+	// 所有对外入口按"外层加锁、内部不加锁"的约定使用 lockOp。
+	opMu sync.Mutex
+	// logMu 保护日志切片(Logs 与 logf 可能来自不同 goroutine)。
+	logMu sync.Mutex
 
 	// transports 由后端枚举; Windows 上是 PawnIO, 测试中可注入。
 	transports []smbus.Transport
@@ -65,6 +74,11 @@ type App struct {
 	// 保存文件直接复用, 避免经 JS 传大数组和重读总线。
 	lastDumpAddr byte
 	lastDump     []byte
+
+	// 编辑器状态(工作副本在 spd.Editor 内)
+	editor         *spd.Editor
+	editSource     string
+	editFromDevice bool
 
 	// wctx 是 Wails 运行时上下文(OnStartup 注入), 对话框等运行时能力用。
 	wctx context.Context
@@ -83,6 +97,14 @@ type App struct {
 
 // New 构造未连接的 App。
 func New() *App { return &App{now: time.Now} }
+
+// wrapCounting 给传输套上总线计数包装(已经是计数包装则原样返回)。
+func wrapCounting(t smbus.Transport) smbus.Transport {
+	if _, ok := t.(*smbus.CountingTransport); ok {
+		return t
+	}
+	return smbus.NewCounting(t)
+}
 
 // useEnumBackends 在 Windows 上枚举 PawnIO 控制器; 非 Windows 报可读错误。
 var useEnumBackends = func() ([]smbus.Transport, error) {
@@ -133,6 +155,10 @@ func (a *App) ListControllers() ([]ControllerInfo, error) {
 		if err != nil {
 			return nil, err
 		}
+		// 套一层事务计数: 真机验证"干跑零写入"时需要从程序里读到总线事务数
+		for i, t := range ts {
+			ts[i] = wrapCounting(t)
+		}
 		a.transports = ts
 	}
 	out := make([]ControllerInfo, 0, len(a.transports))
@@ -152,12 +178,16 @@ func (a *App) ListControllers() ([]ControllerInfo, error) {
 
 // Connect 选择控制器并复位状态。
 func (a *App) Connect(index int) error {
+	defer a.lockOp()()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if index < 0 || index >= len(a.transports) {
 		return fmt.Errorf("控制器索引 %d 越界", index)
 	}
 	a.disconnectLocked()
+	// 统一在这里套总线计数(幂等): 无论传输是枚举来的还是测试注入的,
+	// 干跑/写入都能报告"总线下发了哪些事务"。
+	a.transports[index] = wrapCounting(a.transports[index])
 	a.active = a.transports[index]
 	c, err := a.active.Identity()
 	if err != nil {
@@ -170,6 +200,7 @@ func (a *App) Connect(index int) error {
 
 // Scan 扫描当前控制器的 0x50-0x57。
 func (a *App) Scan() ([]DimmInfo, error) {
+	defer a.lockOp()()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.active == nil {
@@ -233,6 +264,7 @@ func (a *App) Scan() ([]DimmInfo, error) {
 
 // Select 选定要操作的 DIMM。
 func (a *App) Select(addr byte) error {
+	defer a.lockOp()()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.active == nil {
@@ -247,6 +279,9 @@ func (a *App) Select(addr byte) error {
 	}
 	a.dev = dev
 	a.lastDump = nil // 换设备后缓存失效
+	a.editor = nil   // 换设备后编辑器内容失效(避免把 A 条的编辑写进 B 条)
+	a.editSource = ""
+	a.editFromDevice = false
 	a.dimm = &DimmInfo{Addr: addr, IsDDR5: dev.IsDDR5(), Size: dev.Size()}
 	a.logf("已选择 %#x (%s, %d 字节)", addr, map[bool]string{true: "DDR5", false: "非DDR5"}[dev.IsDDR5()], dev.Size())
 	return nil
@@ -254,15 +289,28 @@ func (a *App) Select(addr byte) error {
 
 // Dump 读取整片 SPD; progress(0..100) 经事件推送。
 func (a *App) Dump() ([]byte, error) {
+	defer a.lockOp()()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.dev == nil {
 		return nil, fmt.Errorf("请先选择设备")
 	}
+	start := time.Now()
 	data, err := a.dev.ReadAll()
 	if err != nil {
 		return nil, err
 	}
+	st := a.dev.ReadStats()
+	mode := st.Mode
+	if mode == "" {
+		mode = "未知读取方式"
+	}
+	line := fmt.Sprintf("读取 %d 字节: %s; 事务 %d 次, 耗时 %s(等待 %d ms)",
+		len(data), mode, st.Transactions, time.Since(start).Round(time.Millisecond), st.SleepMS)
+	if st.Note != "" && st.FallbackBytes > 0 {
+		line += "; 回退原因: " + st.Note
+	}
+	a.logf("%s", line)
 	a.lastDumpAddr = a.dev.Addr()
 	a.lastDump = data
 	a.emit("dump:done", len(data))
@@ -329,50 +377,8 @@ func (a *App) SaveDump(path string) error {
 	return nil
 }
 
-// WriteFromFile 从文件写入(读取文件 → eeprom.Write)。
-// force=false 跳过相同字节; verify 写后回读已内置。
-func (a *App) WriteFromFile(path string, force bool) error {
-	a.mu.Lock()
-	dev := a.dev
-	a.mu.Unlock()
-	if dev == nil {
-		return fmt.Errorf("请先选择设备")
-	}
-	dump, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("读取 %s: %w", path, err)
-	}
-	// 写前保护检查
-	status, err := dev.RSWPStatus()
-	if err == nil {
-		for i, protected := range status {
-			if protected {
-				return fmt.Errorf("块 %d 处于写保护, 写入被拒绝; 可先执行 RSWP 清除(若可逆)", i)
-			}
-		}
-	} else {
-		a.mu.Lock()
-		a.logf("保护状态查询失败(继续): %v", err)
-		a.mu.Unlock()
-	}
-	a.mu.Lock()
-	size := dev.Size()
-	a.mu.Unlock()
-	if len(dump) > size {
-		return fmt.Errorf("文件 %d 字节超过 SPD 大小 %d", len(dump), size)
-	}
-	err = dev.Write(dump[:size], force, func(written int) {
-		a.emit("write:progress", written)
-	})
-	if err != nil {
-		a.mu.Lock()
-		a.logf("写入失败: %v", err)
-		a.mu.Unlock()
-		return err
-	}
-	a.logf("写入完成: %s (%d 字节)", path, size)
-	return nil
-}
+// WriteFileDialog 已由 PickWriteFile + PreflightWrite + WriteConfirmed 取代
+// (旧实现弹框后直接写, 没有 diff/风险/备份环节), 保留此名会诱导绕过预检, 故删除。
 
 // dialogGuard 返回对话框函数是否可用(测试环境未注入时给出明确错误)。
 func (a *App) dialogGuard() error {
@@ -438,21 +444,6 @@ func (a *App) VerifyFileDialog() (string, error) {
 	return path, a.VerifyFile(path)
 }
 
-// WriteFileDialog 弹出打开对话框并把所选文件写入当前设备, 返回文件路径。
-func (a *App) WriteFileDialog(force bool) (string, error) {
-	if err := a.dialogGuard(); err != nil {
-		return "", err
-	}
-	path, err := a.OpenDialog("选择要写入的 dump 文件")
-	if err != nil {
-		return "", err
-	}
-	if path == "" {
-		return "", fmt.Errorf("已取消")
-	}
-	return path, a.WriteFromFile(path, force)
-}
-
 // SaveDumpData 把前端传入的 dump 写到文件。
 func (a *App) SaveDumpData(path string, data []byte) error {
 	if err := os.WriteFile(path, data, 0o644); err != nil {
@@ -483,6 +474,7 @@ func (a *App) ReadFileBytes(path string) ([]byte, error) {
 
 // VerifyFile 比对文件与设备内容。
 func (a *App) VerifyFile(path string) error {
+	defer a.lockOp()()
 	a.mu.Lock()
 	dev := a.dev
 	a.mu.Unlock()
@@ -503,35 +495,114 @@ func (a *App) VerifyFile(path string) error {
 	return nil
 }
 
-// WPStatus 返回各块 RSWP 状态与 PSWP 永久保护状态。
-func (a *App) WPStatus() (blocks []bool, pswp bool, offline bool, err error) {
+// WPStatusResult 是写保护状态的完整结果。
+//
+// 注意: Wails v2 绑定方法**最多 2 个返回值**, 3 个以上会被静默序列化成 null
+// (见 internal/binding/boundMethod.go 的 Call 只处理 OutputCount 1/2) ——
+// 旧实现 `WPStatus() (blocks, pswp, offline, err)` 因此在 UI 侧永远拿到 null。
+// 这里必须打包成单结构体。
+type WPStatusResult struct {
+	DDR5           bool     `json:"ddr5"`
+	Generation     string   `json:"generation"`
+	Blocks         int      `json:"blocks"`
+	BlockSize      int      `json:"blockSize"`
+	Protected      []bool   `json:"protected"`
+	Known          []bool   `json:"known"`
+	MR11           byte     `json:"mr11"`
+	MR12           byte     `json:"mr12"`
+	MR13           byte     `json:"mr13"`
+	MR29           byte     `json:"mr29"`
+	MR48           byte     `json:"mr48"`
+	MR52           byte     `json:"mr52"`
+	ProtectionHit  bool     `json:"protectionHit"`
+	Offline        bool     `json:"offline"`
+	PSWPApplicable bool     `json:"pswpApplicable"`
+	PSWP           bool     `json:"pswp"`
+	Warnings       []string `json:"warnings"`
+}
+
+// WPStatus 返回各块 RSWP 状态、原始寄存器与永久保护状态(单结构体返回)。
+func (a *App) WPStatus() (*WPStatusResult, error) {
+	defer a.lockOp()()
 	a.mu.Lock()
 	dev := a.dev
 	a.mu.Unlock()
 	if dev == nil {
-		return nil, false, false, fmt.Errorf("请先选择设备")
+		return nil, fmt.Errorf("请先选择设备")
 	}
-	blocks, err = dev.RSWPStatus()
+	det, err := dev.WPStatusDetail()
 	if err != nil {
-		return nil, false, false, err
+		return nil, err
 	}
-	pswp, _ = dev.PSWPStatus()
-	if dev.IsDDR5() {
-		offline, _ = dev.OfflineMode()
+	res := &WPStatusResult{
+		DDR5: det.DDR5, Generation: dev.Generation(),
+		Blocks: det.Blocks, BlockSize: det.BlockSize,
+		Protected: det.Protected, Known: det.Known,
+		MR11: det.MR11, MR12: det.MR12, MR13: det.MR13,
+		MR29: det.MR29, MR48: det.MR48, MR52: det.MR52,
+		ProtectionHit: det.ProtectionHit, Offline: det.Offline,
+		PSWPApplicable: det.PSWPApplicable, PSWP: det.PSWP,
+		Warnings: det.Warnings,
 	}
-	return blocks, pswp, offline, nil
+	a.logf("保护状态: %s", summarizeWP(res))
+	for _, w := range res.Warnings {
+		a.logf("保护状态提示: %s", w)
+	}
+	return res, nil
+}
+
+// summarizeWP 生成一行人类可读的保护状态摘要(用于日志)。
+func summarizeWP(r *WPStatusResult) string {
+	var sb strings.Builder
+	for i := 0; i < r.Blocks; i++ {
+		if i > 0 {
+			sb.WriteByte(' ')
+		}
+		state := "开放"
+		switch {
+		case !r.Known[i]:
+			state = "未知"
+		case r.Protected[i]:
+			state = "保护"
+		}
+		fmt.Fprintf(&sb, "B%d=%s", i, state)
+	}
+	if r.DDR5 {
+		fmt.Fprintf(&sb, " | MR12=%#02x MR13=%#02x", r.MR12, r.MR13)
+		if r.Offline {
+			sb.WriteString(" 离线模式")
+		}
+	} else if r.PSWPApplicable {
+		if r.PSWP {
+			sb.WriteString(" | PSWP 永久保护已生效")
+		} else {
+			sb.WriteString(" | PSWP 未设置")
+		}
+	} else {
+		sb.WriteString(" | PSWP 不适用")
+	}
+	return sb.String()
 }
 
 // WPSet 设置指定块 RSWP; blocks 为块号列表。
-func (a *App) WPSet(blocks []byte) error {
+// 参数必须是 []int: Wails v2 用 json.Unmarshal 解参数, JS 数组解不进 []byte
+// ([]byte 只能从 base64 字符串解出), 旧签名 []byte 会让"加保护"必然失败。
+func (a *App) WPSet(blocks []int) error {
+	defer a.lockOp()()
 	a.mu.Lock()
 	dev := a.dev
 	a.mu.Unlock()
 	if dev == nil {
 		return fmt.Errorf("请先选择设备")
 	}
+	if len(blocks) == 0 {
+		return fmt.Errorf("未指定块号")
+	}
 	for _, b := range blocks {
-		if err := dev.RSWPSet(b); err != nil {
+		if b < 0 || b > 255 {
+			return fmt.Errorf("块号 %d 无效", b)
+		}
+		if err := dev.RSWPSet(byte(b)); err != nil {
 			a.mu.Lock()
 			a.logf("RSWP 设置块 %d 失败: %v", b, err)
 			a.mu.Unlock()
@@ -544,6 +615,7 @@ func (a *App) WPSet(blocks []byte) error {
 
 // WPClear 清除全部可逆写保护。
 func (a *App) WPClear() error {
+	defer a.lockOp()()
 	a.mu.Lock()
 	dev := a.dev
 	a.mu.Unlock()
@@ -562,6 +634,7 @@ func (a *App) WPClear() error {
 
 // Decode 解析当前设备或给定 dump 的 SPD, 供信息面板展示。
 func (a *App) Decode(dump []byte) (*DecodeResult, error) {
+	defer a.lockOp()()
 	if len(dump) == 0 {
 		a.mu.Lock()
 		dev := a.dev
@@ -580,6 +653,7 @@ func (a *App) Decode(dump []byte) (*DecodeResult, error) {
 
 // Close 释放全部传输。
 func (a *App) Close() {
+	defer a.lockOp()()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.disconnectLocked()
@@ -587,6 +661,13 @@ func (a *App) Close() {
 		_ = t.Close()
 	}
 	a.transports = nil
+}
+
+// lockOp 取得操作锁, 用法: defer a.lockOp()()。
+// 只允许在对外入口调用; 内部函数假定调用方已持锁(否则会自锁死)。
+func (a *App) lockOp() func() {
+	a.opMu.Lock()
+	return a.opMu.Unlock
 }
 
 func (a *App) disconnectLocked() {
@@ -602,6 +683,7 @@ func (a *App) disconnectLocked() {
 
 // CloseDevice 仅断开设备选择。
 func (a *App) CloseDevice() {
+	defer a.lockOp()()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.dev != nil {
@@ -613,8 +695,8 @@ func (a *App) CloseDevice() {
 
 // Logs 返回全部日志。
 func (a *App) Logs() []LogEntry {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.logMu.Lock()
+	defer a.logMu.Unlock()
 	out := make([]LogEntry, len(a.logs))
 	copy(out, a.logs)
 	return out
@@ -622,7 +704,9 @@ func (a *App) Logs() []LogEntry {
 
 func (a *App) logf(format string, args ...interface{}) {
 	entry := LogEntry{Time: a.now().Format("15:04:05"), Text: fmt.Sprintf(format, args...)}
+	a.logMu.Lock()
 	a.logs = append(a.logs, entry)
+	a.logMu.Unlock()
 	if a.Emit != nil {
 		a.Emit("log", entry)
 	}
@@ -632,4 +716,81 @@ func (a *App) emit(event string, data ...interface{}) {
 	if a.Emit != nil {
 		a.Emit(event, data...)
 	}
+}
+
+// BusStats 返回当前控制器自上次 Reset 以来的总线事务计数, 外加"对 SPD NVM 的字节写"
+// 数量(按当前设备的世代判定)。真机验证干跑时用这个作为"确实没写"的证据。
+func (a *App) BusStats() (*BusStatsResult, error) {
+	defer a.lockOp()()
+	a.mu.Lock()
+	dev := a.dev
+	active := a.active
+	a.mu.Unlock()
+	c, ok := active.(*smbus.CountingTransport)
+	if !ok {
+		return nil, fmt.Errorf("当前控制器没有总线计数(未连接或非枚举得到的控制器)")
+	}
+	st := c.Stats()
+	ddr5 := dev != nil && dev.IsDDR5()
+	nvm := smbus.NVMWrites(c.WriteLog(), ddr5)
+	res := &BusStatsResult{
+		Reads: st.Reads, QuickWrites: st.QuickWrites,
+		ByteDataWrites: st.ByteDataWrites, ByteWrites: st.ByteWrites,
+		NVMWrites: len(nvm),
+	}
+	if dev != nil {
+		res.Generation = dev.Generation()
+	}
+	return res, nil
+}
+
+// ResetBusStats 清零总线计数(真机验证前后各调一次即可看到本次操作的净事务数)。
+func (a *App) ResetBusStats() error {
+	defer a.lockOp()()
+	a.mu.Lock()
+	active := a.active
+	a.mu.Unlock()
+	c, ok := active.(*smbus.CountingTransport)
+	if !ok {
+		return fmt.Errorf("当前控制器没有总线计数")
+	}
+	c.Reset()
+	return nil
+}
+
+// BusStatsResult 是总线事务统计。
+type BusStatsResult struct {
+	Generation     string `json:"generation"`
+	Reads          int    `json:"reads"`
+	QuickWrites    int    `json:"quickWrites"`
+	ByteDataWrites int    `json:"byteDataWrites"`
+	ByteWrites     int    `json:"byteWrites"`
+	NVMWrites      int    `json:"nvmWrites"`
+}
+
+// SetFastRead 开关块读加速(默认开)。关掉可对照"逐字节"的兼容模式。
+func (a *App) SetFastRead(on bool) (bool, error) {
+	defer a.lockOp()()
+	a.mu.Lock()
+	dev := a.dev
+	a.mu.Unlock()
+	if dev == nil {
+		return false, fmt.Errorf("请先选择设备")
+	}
+	dev.SetFastRead(on)
+	a.logf("块读加速: %v", map[bool]string{true: "开启(快)", false: "关闭(逐字节兼容)"}[on])
+	return dev.FastRead(), nil
+}
+
+// ReadStats 返回当前设备的读取方式统计(界面显示"这次是快读还是慢读")。
+func (a *App) ReadStats() (*eeprom.ReadStats, error) {
+	defer a.lockOp()()
+	a.mu.Lock()
+	dev := a.dev
+	a.mu.Unlock()
+	if dev == nil {
+		return nil, fmt.Errorf("请先选择设备")
+	}
+	st := dev.ReadStats()
+	return &st, nil
 }

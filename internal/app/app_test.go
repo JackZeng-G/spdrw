@@ -3,6 +3,7 @@ package app
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"spdrw/internal/smbus"
@@ -148,12 +149,34 @@ func TestDecodeDumpDDR3(t *testing.T) {
 	}
 }
 
-func TestWriteFromFileFlow(t *testing.T) {
+// ddr4Fixture 构造一份 CRC 有效的 DDR4(512B) 内容。
+func ddr4Fixture() []byte {
+	d := make([]byte, 512)
+	for i := range d {
+		d[i] = 0x11
+	}
+	d[2] = 0x0C // DDR4
+	d[3] = 0x02 // UDIMM
+	d[325] = 0x01
+	spd.FixCRC(d)
+	return d
+}
+
+func writeTempFile(t *testing.T, data []byte) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "dump.bin")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func newWriteTestApp(t *testing.T) (*App, *smbus.FakeTransport) {
+	t.Helper()
 	f := smbus.NewFake()
-	d4 := make([]byte, 512)
-	d4[2] = 0x0C
-	copy(f.EEProm, d4)
+	copy(f.EEProm, ddr4Fixture())
 	a := New()
+	a.Emit = nil
 	a.transports = []smbus.Transport{f}
 	if err := a.Connect(0); err != nil {
 		t.Fatal(err)
@@ -161,41 +184,224 @@ func TestWriteFromFileFlow(t *testing.T) {
 	if err := a.Select(0x50); err != nil {
 		t.Fatal(err)
 	}
+	return a, f
+}
 
-	// 目标 dump: 与内容一致 + 一个不同字节(芯片内容同为 0x11 基线)
-	want := make([]byte, 512)
-	for i := range want {
-		want[i] = 0x11
-		f.EEProm[i] = 0x11
+func TestWriteFlowWithPreflight(t *testing.T) {
+	a, f := newWriteTestApp(t)
+	cur := ddr4Fixture()
+
+	// 目标: 改序列号(第 3 段, 不参与 CRC) + 改 1 个主时序字节(第 1 段, 需重算 CRC)
+	want := append([]byte{}, cur...)
+	want[325] = 0xAB
+	want[20] = 0x0F
+	spd.FixCRC(want)
+	path := writeTempFile(t, want)
+
+	pf, err := a.PreflightWrite(path, false)
+	if err != nil {
+		t.Fatalf("PreflightWrite: %v", err)
 	}
-	want[0x10] = 0x99
-	path := filepath.Join(t.TempDir(), "dump.bin")
-	if err := os.WriteFile(path, want, 0o644); err != nil {
-		t.Fatal(err)
+	if pf.Blocked {
+		t.Fatalf("不应被阻断: %s", pf.BlockReason)
+	}
+	if !pf.SizeOK || !pf.TargetCRCValid {
+		t.Fatalf("预检基本项失败: %+v", pf)
+	}
+	// 变更 = 序列号 1 + 主时序 1 + 第 1 段 CRC 2
+	if pf.ChangeCount != 4 {
+		t.Fatalf("变更数 = %d: %+v", pf.ChangeCount, pf.Changes)
+	}
+	// 序列号区域被正确归类为低风险
+	found := false
+	for _, fl := range pf.Fields {
+		if fl.Region == "序列号" {
+			found = true
+			if fl.Risk != "low" {
+				t.Fatalf("序列号应为低风险: %+v", fl)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("未归类出序列号区域: %+v", pf.Fields)
+	}
+	// CRC 变更排在最后
+	if !pf.Changes[len(pf.Changes)-1].IsCRC {
+		t.Fatalf("CRC 应最后写: %+v", pf.Changes)
 	}
 
-	// 更新模式: 只写差异字节(写前保护检查会产生 4 次 WriteTest 探测写)
-	if err := a.WriteFromFile(path, false); err != nil {
-		t.Fatalf("WriteFromFile: %v", err)
+	// 确认串错误 → 拒绝
+	if _, err := a.WriteConfirmed(path, false, false, "yes"); err == nil {
+		t.Fatal("确认串错误应被拒绝")
 	}
+	// 正确确认 → 写入
+	res, err := a.WriteConfirmed(path, false, false, "WRITE")
+	if err != nil {
+		t.Fatalf("WriteConfirmed: %v", err)
+	}
+	if !res.Verified || res.Written != 4 {
+		t.Fatalf("写入结果: %+v", res)
+	}
+	if res.BackupPath == "" {
+		t.Fatal("真实写入必须先生成备份")
+	}
+	if _, err := os.Stat(res.BackupPath); err != nil {
+		t.Fatalf("备份文件不存在: %v", err)
+	}
+	// 设备内容 = 目标
+	got, _ := a.Dump()
+	for i := range got {
+		if got[i] != want[i] {
+			t.Fatalf("内容不一致 @%#x: %#x != %#x", i, got[i], want[i])
+		}
+	}
+	// 只写了差异字节(cmd 325 出现 1 次)
 	n := 0
 	for _, w := range f.WriteLog {
-		if w.Cmd == 0x10 {
+		if w.Cmd == 0x45 { // 偏移 325 = 0x145 → 页 1 的页内偏移 0x45
 			n++
 		}
 	}
 	if n != 1 {
-		t.Fatalf("update 模式应只写 cmd=0x10 一次, got %d (总写 %d)", n, len(f.WriteLog))
+		t.Fatalf("应只写序列号 1 次, got %d(总写 %d)", n, len(f.WriteLog))
 	}
-	// 校验
-	if err := a.VerifyFile(path); err != nil {
-		t.Fatalf("VerifyFile: %v", err)
+}
+
+func TestWritePreflightBlocks(t *testing.T) {
+	a, f := newWriteTestApp(t)
+	cur := ddr4Fixture()
+
+	// 1) 长度不符
+	short := writeTempFile(t, make([]byte, 256))
+	pf, err := a.PreflightWrite(short, false)
+	if err != nil {
+		t.Fatalf("PreflightWrite: %v", err)
+	}
+	if !pf.Blocked || pf.SizeOK {
+		t.Fatalf("长度不符必须阻断: %+v", pf)
+	}
+	if _, err := a.WriteConfirmed(short, false, false, "WRITE"); err == nil {
+		t.Fatal("长度不符必须拒绝写入")
 	}
 
-	// 保护状态可查询
-	blocks, _, _, err := a.WPStatus()
-	if err != nil || len(blocks) != 4 {
-		t.Fatalf("WPStatus: %v %v", blocks, err)
+	// 2) 目标 CRC 不通过
+	bad := append([]byte{}, cur...)
+	bad[200] = 0x77 // 改动数据但不修 CRC
+	badPath := writeTempFile(t, bad)
+	pf, err = a.PreflightWrite(badPath, false)
+	if err != nil {
+		t.Fatalf("PreflightWrite: %v", err)
+	}
+	if pf.TargetCRCValid || !pf.Blocked {
+		t.Fatalf("CRC 不通过必须阻断: %+v", pf)
+	}
+	if !strings.Contains(pf.BlockReason, "CRC") {
+		t.Fatalf("阻断原因应提到 CRC: %s", pf.BlockReason)
+	}
+
+	// 3) 受保护块包含变更 → 真实写入必须被拒绝
+	//
+	// 注意: 预览用的 PreflightWrite 不做写保护探测(DDR4 的探测要真写一个字节),
+	// 所以它把保护状态报成"未知"; 真正的判定发生在写入路径上。
+	f.ProtectedFrom = 0 // 全部块 NACK
+	pf, err = a.PreflightWrite(badPath, false)
+	if err != nil {
+		t.Fatalf("PreflightWrite: %v", err)
+	}
+	if len(pf.UnknownBlocks) == 0 {
+		t.Fatalf("预览应把保护状态报成未知(不写测试): %+v", pf)
+	}
+	if _, err := a.WriteConfirmed(badPath, false, false, "WRITE"); err == nil {
+		t.Fatal("受保护块有变更时真实写入必须被拒绝")
+	} else if !strings.Contains(err.Error(), "写保护") && !strings.Contains(err.Error(), "CRC") {
+		t.Fatalf("拒绝原因应可解释: %v", err)
+	}
+	// 受保护块内容不得被改动
+	if f.EEProm[200] == 0x77 {
+		t.Fatal("受保护块被写入")
+	}
+}
+
+func TestWritePreflightHighRiskFields(t *testing.T) {
+	a, _ := newWriteTestApp(t)
+	cur := ddr4Fixture()
+	// 改 byte4(密度/封装)—— 高危字段
+	want := append([]byte{}, cur...)
+	want[4] = 0x21
+	spd.FixCRC(want)
+	path := writeTempFile(t, want)
+
+	pf, err := a.PreflightWrite(path, false)
+	if err != nil {
+		t.Fatalf("PreflightWrite: %v", err)
+	}
+	if pf.HighRiskCount == 0 {
+		t.Fatalf("应识别出高危字节: %+v", pf.Fields)
+	}
+	// 高危不阻断(用户可能确实要改), 但必须有警告
+	if pf.Blocked {
+		t.Fatalf("高危字段不应直接阻断: %s", pf.BlockReason)
+	}
+	joined := strings.Join(pf.Warnings, "; ")
+	if !strings.Contains(joined, "高危") {
+		t.Fatalf("应有高危警告: %v", pf.Warnings)
+	}
+}
+
+func TestWriteDryRunNoBusDataWrites(t *testing.T) {
+	rec, f := smbus.NewRecordingFake()
+	copy(f.EEProm, ddr4Fixture())
+	a := New()
+	a.transports = []smbus.Transport{rec}
+	if err := a.Connect(0); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Select(0x50); err != nil {
+		t.Fatal(err)
+	}
+	want := append([]byte{}, ddr4Fixture()...)
+	want[325] = 0xCD
+	spd.FixCRC(want)
+	path := writeTempFile(t, want)
+
+	pf, err := a.PreflightWrite(path, false)
+	if err != nil {
+		t.Fatalf("PreflightWrite: %v", err)
+	}
+	if _, err := a.SetDryRun(true); err != nil {
+		t.Fatalf("SetDryRun: %v", err)
+	}
+	// 只统计干跑写入阶段(预检里的 DDR4 块首写测试本身会写字节, 不属干跑范围)
+	rec.Reset()
+	res, err := a.writeWithPreflight(pf, want, false, true)
+	if err != nil {
+		t.Fatalf("干跑写入: %v", err)
+	}
+	if !res.DryRun || res.Written == 0 {
+		t.Fatalf("干跑结果: %+v", res)
+	}
+	if res.BackupPath != "" {
+		t.Fatal("干跑不应写备份文件")
+	}
+	if n := len(rec.DataWrites()); n != 0 {
+		t.Fatalf("干跑不得产生数据写事务, got %d: %s", n, rec)
+	}
+	// 完整入口(含预检)同样不得写入目标字节
+	rec.Reset()
+	if _, err := a.WriteConfirmed(path, false, true, "DRYRUN"); err != nil {
+		t.Fatalf("WriteConfirmed(干跑): %v", err)
+	}
+	for _, w := range rec.DataWrites() {
+		if w.Cmd == 0x45 || w.Cmd == 0x14 { // 0x145=序列号页内偏移, 0x14=byte20
+			t.Fatalf("干跑写到了目标字节: %+v", w)
+		}
+	}
+	// 干跑时真实写入必须被拒绝
+	if _, err := a.WriteConfirmed(path, false, false, "WRITE"); err == nil {
+		t.Fatal("干跑模式下真实写入应被拒绝")
+	}
+	if err := func() error { _, e := a.SetDryRun(false); return e }(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -209,7 +415,7 @@ func TestWPSetClear(t *testing.T) {
 	_ = a.Connect(0)
 	_ = a.Select(0x50)
 
-	if err := a.WPSet([]byte{2}); err != nil {
+	if err := a.WPSet([]int{2}); err != nil {
 		t.Fatalf("WPSet: %v", err)
 	}
 	// DDR4 RSWPSet(2) 应发出 SWP2 quick 命令(写 0x35)与 CWP(0x33)
@@ -225,14 +431,17 @@ func TestWPSetClear(t *testing.T) {
 	// 保护状态由芯片侧 NACK 模拟: 页0 内 cmd>=128 NACK → 块1(0x80)与块3(页1 cmd 0x80)只读;
 	// 块2 位于页1 cmd 0,不受影响 —— 验证状态检测确实按块区分。
 	f.ProtectedFrom = 128
-	blocks, _, _, err := a.WPStatus()
+	st, err := a.WPStatus()
 	if err != nil {
 		t.Fatalf("WPStatus: %v", err)
 	}
 	want := []bool{false, true, false, true}
 	for i, w := range want {
-		if blocks[i] != w {
-			t.Fatalf("blocks = %v, want %v", blocks, want)
+		if st.Protected[i] != w {
+			t.Fatalf("blocks = %v, want %v", st.Protected, want)
+		}
+		if !st.Known[i] {
+			t.Fatalf("块 %d 状态应确知: %v", i, st.Known)
 		}
 	}
 	if err := a.WPClear(); err != nil {
@@ -268,4 +477,216 @@ func TestCloseDevice(t *testing.T) {
 		t.Fatal("CloseDevice 后 Dump 应报错")
 	}
 	a.Close()
+}
+
+// ---------------- 编辑器服务层 ----------------
+
+func TestEditorFlow(t *testing.T) {
+	a, _ := newWriteTestApp(t)
+
+	st, err := a.EditLoadFromDevice()
+	if err != nil {
+		t.Fatalf("EditLoadFromDevice: %v", err)
+	}
+	if st.Generation != "DDR4" || st.Size != 512 || !st.CanWrite || st.Dirty {
+		t.Fatalf("初始状态: %+v", st)
+	}
+	if !st.CRCOK {
+		t.Fatal("初始 CRC 应通过")
+	}
+
+	fields, err := a.EditFields()
+	if err != nil || len(fields) < 10 {
+		t.Fatalf("EditFields: %v len=%d", err, len(fields))
+	}
+
+	// 改部件号 + 序列号
+	if _, err := a.EditSetField("partNumber", "EDITED-PN"); err != nil {
+		t.Fatalf("EditSetField: %v", err)
+	}
+	if _, err := a.EditSetField("serial", "AABBCCDD"); err != nil {
+		t.Fatalf("EditSetField(serial): %v", err)
+	}
+	st, _ = a.EditState()
+	if !st.Dirty || st.ChangeCount == 0 {
+		t.Fatalf("应有变更: %+v", st)
+	}
+
+	d, err := a.EditDiff()
+	if err != nil {
+		t.Fatalf("EditDiff: %v", err)
+	}
+	if d.ChangeCount == 0 || len(d.Changes) == 0 {
+		t.Fatalf("diff 为空: %+v", d)
+	}
+	// 序列号在 bytes 325-328, 改 4 字节 → 变更数 >= 4
+	if d.ChangeCount < 4 {
+		t.Fatalf("变更数偏少: %d", d.ChangeCount)
+	}
+	for _, fl := range d.Fields {
+		if fl.Region == "序列号" && fl.Count != 4 {
+			t.Fatalf("序列号区域字节数应为 4: %+v", fl)
+		}
+	}
+
+	// 原始 hex 编辑
+	if _, err := a.EditSetByte(500, 0x5A); err != nil {
+		t.Fatalf("EditSetByte: %v", err)
+	}
+	if _, err := a.EditSetByte(500, 300); err == nil {
+		t.Fatal("越界字节值应被拒")
+	}
+
+	// 导出到文件
+	dir := t.TempDir()
+	out := filepath.Join(dir, "edited.bin")
+	a.SaveDialog = func(title, def string) (string, error) { return out, nil }
+	a.OpenDialog = func(title string) (string, error) { return out, nil }
+	path, err := a.EditExportDialog()
+	if err != nil {
+		t.Fatalf("EditExportDialog: %v", err)
+	}
+	if path != out {
+		t.Fatalf("导出路径: %s", path)
+	}
+	saved, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("读取导出文件: %v", err)
+	}
+	got, _ := a.EditBytes()
+	for i := range saved {
+		if saved[i] != got[i] {
+			t.Fatalf("导出内容不一致 @%#x", i)
+		}
+	}
+
+	// 放弃修改
+	st, err = a.EditReset()
+	if err != nil {
+		t.Fatalf("EditReset: %v", err)
+	}
+	if st.Dirty || st.ChangeCount != 0 {
+		t.Fatalf("Reset 后应无变更: %+v", st)
+	}
+}
+
+func TestEditorApplyToDevice(t *testing.T) {
+	a, f := newWriteTestApp(t)
+	if _, err := a.EditLoadFromDevice(); err != nil {
+		t.Fatal(err)
+	}
+	// 改序列号并重算 CRC(第 3 段不参与 CRC, 所以还要改一个 base 区字节)
+	if _, err := a.EditSetField("serial", "11223344"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.EditSetField("ddr4.tAA", "15.0"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.EditFixCRC(); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := a.EditState(); !st.CRCOK {
+		t.Fatalf("重算后 CRC 应通过: %+v", st)
+	}
+
+	// 确认串错误 → 拒绝
+	if _, err := a.EditApplyToDevice(false, false, "nope"); err == nil {
+		t.Fatal("确认串错误应被拒")
+	}
+	// 干跑: 不写总线数据
+	res, err := a.EditApplyToDevice(false, true, "DRYRUN")
+	if err != nil {
+		t.Fatalf("干跑: %v", err)
+	}
+	if !res.DryRun || res.Written == 0 {
+		t.Fatalf("干跑结果: %+v", res)
+	}
+	// 真实写入
+	res, err = a.EditApplyToDevice(false, false, "WRITE")
+	if err != nil {
+		t.Fatalf("写入: %v", err)
+	}
+	if !res.Verified || res.BackupPath == "" {
+		t.Fatalf("写入结果: %+v", res)
+	}
+	// 设备内容 = 编辑器内容
+	cur, _ := a.Dump()
+	want, _ := a.EditBytes()
+	for i := range cur {
+		if cur[i] != want[i] {
+			t.Fatalf("设备内容未同步 @%#x", i)
+		}
+	}
+	// 设备内容 CRC 通过
+	ok, err := spd.CRCOK(cur)
+	if err != nil || !ok {
+		t.Fatalf("写入后 CRC 应通过: %v %v", ok, err)
+	}
+	_ = f
+}
+
+func TestEditorBlocksWriteWhenFileStale(t *testing.T) {
+	a, _ := newWriteTestApp(t)
+	// 未载入编辑器就写
+	if _, err := a.EditApplyToDevice(false, false, "WRITE"); err == nil {
+		t.Fatal("未载入编辑器应拒绝")
+	}
+	// 从文件载入 → 不允许写设备
+	dump := ddr4Fixture()
+	path := writeTempFile(t, dump)
+	if _, err := a.EditLoadPath(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.EditApplyToDevice(false, false, "WRITE"); err == nil {
+		t.Fatal("来自文件的内容不应允许写设备")
+	}
+	// 换设备后编辑器失效
+	if _, err := a.EditLoadFromDevice(); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Select(0x50); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.EditState(); err == nil {
+		t.Fatal("重新 Select 后编辑器应失效")
+	}
+}
+
+// TestEditExportDefaultName 从文件载入编辑器时, "另存为"的默认文件名必须是干净的
+// 文件名 —— 早先用字符串拼接会把整条路径塞进去(Windows 上会被当成子路径)。
+func TestEditExportDefaultName(t *testing.T) {
+	a, _ := newWriteTestApp(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "my-dump.bin")
+	if err := os.WriteFile(src, ddr4Fixture(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var gotName string
+	a.SaveDialog = func(title, def string) (string, error) {
+		gotName = def
+		return filepath.Join(dir, "out.bin"), nil
+	}
+	a.OpenDialog = func(string) (string, error) { return src, nil }
+	if _, err := a.EditLoadPath(src); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.EditExportDialog(); err != nil {
+		t.Fatalf("EditExportDialog: %v", err)
+	}
+	if gotName != "my-dump-edited.bin" {
+		t.Fatalf("默认文件名 = %q, 期望 my-dump-edited.bin", gotName)
+	}
+	if strings.ContainsAny(gotName, `/\`) {
+		t.Fatalf("默认文件名不应含路径分隔符: %q", gotName)
+	}
+	// 从设备载入时沿用原来的命名
+	if _, err := a.EditLoadFromDevice(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.EditExportDialog(); err != nil {
+		t.Fatal(err)
+	}
+	if gotName != "spd-edited-512.bin" {
+		t.Fatalf("设备来源的默认文件名 = %q", gotName)
+	}
 }

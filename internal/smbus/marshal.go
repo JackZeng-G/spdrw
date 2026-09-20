@@ -128,3 +128,26 @@ func win32Err(code uint16) error {
 		return fmt.Errorf("SMBus 操作失败(Win32 错误 %d)", code)
 	}
 }
+
+// ProtoBlockMax 是 SMBus Block 传输的最大数据字节数(协议限定 32)。
+const ProtoBlockMax = 32
+
+// UnmarshalBlockRead 解包块读的返回: 模块把 out_data[33](首字节为长度, 其后为数据)
+// 按字节小端打包进输出 cells, 所以 out 至少要有 5 格(33 字节)。
+func UnmarshalBlockRead(cells []uint64) ([]byte, error) {
+	var raw [ProtoBlockMax + 1]byte
+	for i := range raw {
+		cell := i / 8
+		if cell >= len(cells) {
+			return nil, fmt.Errorf("smbus: 块读输出不足(%d 格)", len(cells))
+		}
+		raw[i] = byte(cells[cell] >> (8 * uint(i%8)))
+	}
+	n := int(raw[0])
+	if n <= 0 || n > ProtoBlockMax {
+		return nil, fmt.Errorf("smbus: 块读长度非法(%d)", n)
+	}
+	out := make([]byte, n)
+	copy(out, raw[1:1+n])
+	return out, nil
+}

@@ -144,17 +144,22 @@ func syncOnce() func() {
 }
 
 // ManufacturerName 由 continuation code + 厂商码查询厂商名。
-// 忽略 MSB 奇偶位; 码 0 或越界返回空串。
+//
+// 两个字节的 bit7 都是 **奇校验位**(JEP106): 实测 Micron/Samsung/SK Hynix 的
+// continuation 字节是 0x80(计数 0 + 校验位)、Kingston 是 0x01(计数 1)、
+// Crucial 0x85(计数 5)、Corsair 0x02(计数 2) —— 全都是"计数 | 校验位"。
+// 不屏蔽 bit7 会把这些厂商全部查不到名字(旧实现就把 cont=0x80 当越界直接返回空串)。
 func ManufacturerName(cont, code byte) string {
 	idcodesOnce()
-	if idcodesErr != nil || cont >= byte(len(idcodesTable)) {
+	bank := cont & 0x7F
+	if idcodesErr != nil || bank >= byte(len(idcodesTable)) {
 		return ""
 	}
 	idx := int(code & 0x7F)
 	if idx == 0 {
 		return ""
 	}
-	names := idcodesTable[cont]
+	names := idcodesTable[bank]
 	if idx <= len(names) {
 		return names[idx-1]
 	}
@@ -171,11 +176,15 @@ func FindManufacturer(name string) (cont, code byte, ok bool) {
 		for j, n := range names {
 			if strings.EqualFold(n, name) {
 				cc := byte(j + 1)
-				// 原版: code | (奇校验 << 7)
+				// 厂商码与 continuation 字节都带奇校验位(实测数据一致)
 				if parityOdd(cc) {
 					cc |= 0x80
 				}
-				return byte(i), cc, true
+				cont := byte(i)
+				if parityOdd(cont) {
+					cont |= 0x80
+				}
+				return cont, cc, true
 			}
 		}
 	}
@@ -189,4 +198,34 @@ func parityOdd(b byte) bool {
 		n++
 	}
 	return n%2 == 0 // 1 的个数已是奇数则 MSB=0; 偶数则 MSB=1
+}
+
+// ManufacturerIDNote 在厂商 ID 无法解析时给出可读原因(空串表示解析成功)。
+// 真实 dump 里出现过续延字节校验位不成立、银行号超范围的情况(如 KLEVV 实物条
+// 写成 cont=0x18/code=0x98), 与其静默显示空白, 不如把原因告诉用户。
+func ManufacturerIDNote(cont, code byte) string {
+	if ManufacturerName(cont, code) != "" {
+		return ""
+	}
+	switch {
+	case cont == 0 && code == 0:
+		return "厂商 ID 未写入(0x00/0x00)"
+	case code&0x7F == 0:
+		return fmt.Sprintf("厂商码为 0(原始 %#02x/%#02x)", cont, code)
+	}
+	bank := cont & 0x7F
+	if !parityOK(cont) {
+		return fmt.Sprintf("厂商 ID %#02x/%#02x 无法定位: 续延字节 %#02x 的奇校验不成立(应为 %#02x), 推得的银行号 %d 超出 JEP106 表范围",
+			cont, code, cont, cont|0x80, bank)
+	}
+	return fmt.Sprintf("厂商 ID %#02x/%#02x 不在当前 JEP106 表内(银行 %d, 厂商码 %d)", cont, code, bank, code&0x7F)
+}
+
+// parityOK 报告字节是否满足 JEP106 的奇校验(1 的个数为奇数)。
+func parityOK(b byte) bool {
+	n := 0
+	for v := b; v != 0; v &= v - 1 {
+		n++
+	}
+	return n%2 == 1
 }
