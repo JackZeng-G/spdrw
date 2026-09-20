@@ -324,6 +324,9 @@ func (a *App) EditExportDialog() (string, error) {
 }
 
 // EditApplyToDevice 把编辑器内容写入设备。要求确认串 WRITE(真实写入)或 DRYRUN(干跑)。
+//
+// 与 WriteConfirmed 同一套顺序: 确认串 → 备份(**早于**任何探测) → 预检 → 探测后复核 →
+// 写入 → 校验 → 失败回滚。DDR4 及更早的写保护探测是真实写, 备份必须排在它前面。
 func (a *App) EditApplyToDevice(force, dryRun bool, ack string) (*WriteResult, error) {
 	defer a.lockOp()()
 	want := "WRITE"
@@ -342,21 +345,31 @@ func (a *App) EditApplyToDevice(force, dryRun bool, ack string) (*WriteResult, e
 		return nil, err
 	}
 	defer restore()
-	a.resetBusCounter() // 统计窗口覆盖预检(与 WriteConfirmed 一致)
 	a.mu.Lock()
 	fromDev := a.editFromDevice
+	dev := a.dev
 	a.mu.Unlock()
 	if !fromDev {
 		return nil, fmt.Errorf("当前编辑器内容来自文件, 请用“写入文件…”流程或先“从设备载入”")
 	}
+	if dev == nil {
+		return nil, fmt.Errorf("请先选择设备")
+	}
 	dump := make([]byte, len(ed.Bytes()))
 	copy(dump, ed.Bytes())
-	label := "编辑器内容"
-	pf, err := a.buildPreflight(label, dump, force, true)
+	img, backup, err := a.backupIfNeeded(dev, dryRun)
+	if err != nil {
+		return nil, fmt.Errorf("写入前备份失败, 已中止: %w", err)
+	}
+	a.resetBusCounter() // 统计窗口覆盖预检(与 WriteConfirmed 一致)
+	pf, err := a.buildPreflight("编辑器内容", dump, force, true)
 	if err != nil {
 		return nil, err
 	}
-	return a.writeWithPreflight(pf, dump, force, dryRun)
+	if err := a.afterProbeCheck(dev, img); err != nil {
+		return nil, err
+	}
+	return a.writeWithPreflight(pf, dump, force, dryRun, img, backup)
 }
 
 // MfgSearch 在 JEP106 厂商表中搜索(编辑器厂商下拉用)。

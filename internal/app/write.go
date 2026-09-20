@@ -48,6 +48,7 @@ type WritePreflight struct {
 	ProtectedBlocks  []int               `json:"protectedBlocks"`
 	UnknownBlocks    []int               `json:"unknownBlocks"`
 	PSWP             bool                `json:"pswp"`
+	TargetGeneration string              `json:"targetGeneration"`
 	TargetCRCValid   bool                `json:"targetCrcValid"`
 	CurrentCRCValid  bool                `json:"currentCrcValid"`
 	DryRun           bool                `json:"dryRun"`
@@ -220,12 +221,21 @@ func (a *App) PreflightWrite(path string, force bool) (*WritePreflight, error) {
 // preflightNoLock 假定调用方已持操作锁(WriteConfirmed 内部用, 不能再次加锁)。
 // probeProtection=true 时允许做写测试(仅在真正写入的路径上)。
 func (a *App) preflightNoLock(path string, force, probeProtection bool) (*WritePreflight, error) {
+	dump, err := readDumpFile(path)
+	if err != nil {
+		return nil, err
+	}
 	a.resetBusCounter()
+	return a.buildPreflight(path, dump, force, probeProtection)
+}
+
+// readDumpFile 读入待写入的 dump 文件(TOCTOU: 调用方必须把**同一份字节**一路用到写完)。
+func readDumpFile(path string) ([]byte, error) {
 	dump, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("读取 %s: %w", path, err)
 	}
-	return a.buildPreflight(path, dump, force, probeProtection)
+	return dump, nil
 }
 
 // beginDryRunIfRequested 在"用户要求干跑"时, **先**把设备切到干跑模式再走预检。
@@ -252,6 +262,17 @@ func (a *App) beginDryRunIfRequested(dryRun bool) (func(), error) {
 	}
 	a.logf("干跑模式: 已开启(本次操作不会向 SPD 写入任何字节)")
 	return func() { _ = dev.SetDryRun(false) }, nil
+}
+
+// controllerInfo 返回当前控制器的信息(用于 BIOS SPD 写禁止位这类门禁)。
+func (a *App) controllerInfo() (smbus.Controller, error) {
+	a.mu.Lock()
+	ctl := a.ctrl
+	a.mu.Unlock()
+	if ctl.Name == "" {
+		return smbus.Controller{}, fmt.Errorf("尚未连接控制器")
+	}
+	return ctl, nil
 }
 
 // resetBusCounter 清零当前控制器的总线计数(若已套计数包装)。
@@ -289,15 +310,41 @@ func (a *App) buildPreflight(label string, dump []byte, force, probeProtection b
 		return pf, nil
 	}
 
+	// 世代必须一致: 长度相同的世代不止一个(256: DDR2/DDR3; 512: DDR4/LPDDR4;
+	// 1024: DDR5/LPDDR5), 写错世代(如给 DDR2 条写 DDR3 的 SPD)基本等于该条不 POST。
+	// 这一条只靠 dump 自己的 byte2 判定, 必须与设备自己识别出的世代对照。
+	if !dev.TypeKnown() {
+		pf.Blocked, pf.BlockKind = true, "generation"
+		pf.BlockReason = "无法识别该设备的 SPD 器件类型(byte2 不在已知类型里): " +
+			"为避免写错世代, 拒绝写入; 请确认这条 SPD 是否被工具正确识别"
+	} else if rt, _, ierr := spd.Identify(dump); ierr != nil {
+		pf.Blocked, pf.BlockKind = true, "generation"
+		pf.BlockReason = fmt.Sprintf("无法识别目标内容的 SPD 世代: %v", ierr)
+	} else if drt := dev.RamType(); drt != rt {
+		pf.Blocked, pf.BlockKind = true, "generation"
+		pf.BlockReason = fmt.Sprintf(
+			"世代不一致: 目标是 %v, 设备是 %v —— 长度相同也不允许跨世代写入", rt, drt)
+	} else {
+		pf.TargetGeneration = rt.String()
+	}
+
 	// 目标 dump 必须自身 CRC 有效: 写入一份 CRC 不符的 SPD 等于让主板按错时序启动
 	if ok, cerr := spd.CRCOK(dump); cerr != nil {
 		pf.Warnings = append(pf.Warnings, fmt.Sprintf("目标文件无法校验: %v", cerr))
 	} else {
 		pf.TargetCRCValid = ok
 	}
-	if !pf.TargetCRCValid {
+	if !pf.TargetCRCValid && !pf.Blocked {
 		pf.Blocked, pf.BlockKind = true, "crc"
 		pf.BlockReason = "目标文件 CRC 校验不通过(先用编辑器修复 CRC 或重新生成 dump)"
+	}
+
+	// BIOS 的 SPD Write Disable 打开时, 所有写入都会被拦在控制器一级 —— 提前说清楚,
+	// 别让用户走到"备份→写→失败→回滚"才看到原因。
+	if ctl, cerr := a.controllerInfo(); cerr == nil && ctl.WpKnown && !ctl.NoSpdWp {
+		pf.Blocked, pf.BlockKind = true, "bios"
+		pf.BlockReason = fmt.Sprintf(
+			"BIOS 的 SPD Write Disable 处于打开状态(控制器 %s): 请在 BIOS 中关闭后再写入", ctl.Name)
 	}
 
 	// 当前内容 CRC(仅提示, 不阻断)
@@ -310,13 +357,14 @@ func (a *App) buildPreflight(label string, dump []byte, force, probeProtection b
 	}
 
 	// 保护状态
-	if !probeProtection {
-		// 预览: 临时干跑, 使写测试不写总线(状态会显示为"未知")
-		if !dev.DryRun() {
-			if err := dev.SetDryRun(true); err == nil {
-				defer func() { _ = dev.SetDryRun(false) }()
-			}
+	// 预览(probeProtection=false)必须先进入干跑: DDR4 及更早的写保护探测是**真实写测试**。
+	// 干跑影子建立失败时绝不能继续探测 —— 旧实现吞掉 SetDryRun 的错误, 于是"预览"在
+	// 一个连整片都读不出来的设备上照样下发了 8 次数据写(审计 M5)。
+	if !probeProtection && !dev.DryRun() {
+		if err := dev.SetDryRun(true); err != nil {
+			return nil, fmt.Errorf("无法进入干跑模式(需要先整片读取建立影子): %w; 预览已中止, 未下发任何写测试", err)
 		}
+		defer func() { _ = dev.SetDryRun(false) }()
 	}
 	det, werr := dev.WPStatusDetail()
 	if werr != nil {
@@ -505,11 +553,15 @@ func (a *App) backupCurrent(dev *eeprom.Device) ([]byte, string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, "", fmt.Errorf("创建备份目录 %s: %w", dir, err)
 	}
-	name := fmt.Sprintf("spd-%#x-%s.bin", dev.Addr(), time.Now().Format("20060102-150405"))
+	// 纳秒 + 地址: 同一秒内连续两次真实写入不能互相覆盖(第一次的备份才是"原始内容")
+	name := fmt.Sprintf("spd-%#x-%s.bin", dev.Addr(), time.Now().Format("20060102-150405.000000000"))
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, img, 0o644); err != nil {
 		return nil, "", fmt.Errorf("写备份 %s: %w", path, err)
 	}
+	a.mu.Lock()
+	a.lastBackupPath = path
+	a.mu.Unlock()
 	a.logf("已备份当前 SPD: %s (%d 字节)", path, len(img))
 	return img, path, nil
 }
@@ -530,6 +582,70 @@ func (a *App) restoreImage(dev *eeprom.Device, img []byte) (int, error) {
 		return len(changes), fmt.Errorf("回滚后整片校验不通过: %w", err)
 	}
 	return len(changes), nil
+}
+
+// backupIfNeeded 在**任何可能写设备的动作之前**做整片备份(内存镜像 + 文件)。
+//
+// B1(审计阻断项): DDR4 及更早世代的"写保护探测"本身就是真实 NVM 写(块首取反写→还原)。
+// 旧顺序是"先探测、后备份", 于是还原写一旦失败: byte0 被永久改坏、备份里存的也是坏值、
+// 之后回滚拿坏值当"原始内容"比对自己, 还报告"无需回滚"。备份必须排在最前。
+func (a *App) backupIfNeeded(dev *eeprom.Device, dryRun bool) ([]byte, string, error) {
+	if dryRun {
+		return nil, "", nil // 干跑全程零写, 不需要回滚源
+	}
+	return a.backupCurrent(dev)
+}
+
+// afterProbeCheck 在写保护探测之后、真正写入之前, 复核设备内容仍与备份一致。
+// 不一致说明探测的"还原写"失败了 —— 立即回滚并中止本次写入(继续写只会更糟)。
+func (a *App) afterProbeCheck(dev *eeprom.Device, img []byte) error {
+	if img == nil {
+		return nil
+	}
+	err := dev.Verify(img)
+	if err == nil {
+		return nil
+	}
+	a.logf("警告: 写保护探测后设备内容与备份不一致(%v), 正在用备份回滚…", err)
+	n, rerr := a.restoreImage(dev, img)
+	if rerr != nil {
+		return fmt.Errorf("写保护探测改动了设备内容且回滚失败: %v; "+
+			"请立即用备份文件重写该条 SPD, 不要继续写入", rerr)
+	}
+	if n == 0 {
+		return fmt.Errorf("写保护探测的还原写失败(设备内容读回异常), 但重新比对已一致; " +
+			"为安全起见本次写入已中止, 请重试或换个时段再试")
+	}
+	a.logf("已回滚写保护探测造成的改动(%d 字节, 校验通过)", n)
+	return fmt.Errorf("写保护探测期间还原失败, 设备内容一度被改动(已自动回滚 %d 字节并通过校验); "+
+		"本次写入已中止 —— 总线不稳定, 请重试", n)
+}
+
+// gateDump 复检待写内容: 长度、世代、CRC 全部合格才允许写入。
+//
+// writeWithPreflight 不信任调用方传来的 pf(M4: 预检与实际写入之间文件可能被替换),
+// 所以在这里独立重算一遍 —— 没有这道门, 传一份 CRC 已破坏的字节进来也会"写成功"。
+func gateDump(dev *eeprom.Device, dump []byte) error {
+	if len(dump) != dev.Size() {
+		return fmt.Errorf("待写内容 %d 字节与设备 %d 字节不一致", len(dump), dev.Size())
+	}
+	rt, size, err := spd.Identify(dump)
+	if err != nil {
+		return fmt.Errorf("无法识别待写内容的 SPD 世代: %w", err)
+	}
+	if len(dump) != size {
+		return fmt.Errorf("待写内容长度 %d 与 %v 的 SPD 大小 %d 不一致", len(dump), rt, size)
+	}
+	if !dev.TypeKnown() {
+		return fmt.Errorf("无法识别设备的 SPD 器件类型, 拒绝写入")
+	}
+	if drt := dev.RamType(); drt != rt {
+		return fmt.Errorf("世代不一致: 待写内容是 %v, 设备是 %v", rt, drt)
+	}
+	if ok, cerr := spd.CRCOK(dump); cerr != nil || !ok {
+		return fmt.Errorf("待写内容 CRC 校验不通过(拒绝写入): %v", cerr)
+	}
+	return nil
 }
 
 // rollbackAfterFailure 写入/校验失败后用写入前镜像自动回滚。
@@ -564,6 +680,14 @@ func backupDir() (string, error) {
 }
 
 // WriteConfirmed 执行写入。必须带确认串: 真实写入要求 "WRITE", 干跑要求 "DRYRUN"。
+//
+// 顺序(每一步都是有原因的, 别调换):
+//  1. 确认串;
+//  2. 读文件**一次** —— 预检与写入必须用同一份字节(M4);
+//  3. **备份**(真实写入时) —— 必须早于任何探测, 因为 DDR4 的写保护探测是真写(B1);
+//  4. 预检(含写保护探测);
+//  5. 探测后整片复核, 与备份不一致 → 回滚 + 中止;
+//  6. 写入(CRC 最后) → 逐字节回读 → 整片校验 → 失败自动回滚。
 func (a *App) WriteConfirmed(path string, force, dryRun bool, ack string) (*WriteResult, error) {
 	defer a.lockOp()()
 	want := "WRITE"
@@ -578,26 +702,43 @@ func (a *App) WriteConfirmed(path string, force, dryRun bool, ack string) (*Writ
 		return nil, err
 	}
 	defer restore()
-	pf, err := a.preflightNoLock(path, force, true)
+	dump, err := readDumpFile(path)
 	if err != nil {
 		return nil, err
 	}
-	dump, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("读取 %s: %w", path, err)
+	a.mu.Lock()
+	dev := a.dev
+	a.mu.Unlock()
+	if dev == nil {
+		return nil, fmt.Errorf("请先选择设备")
 	}
-	return a.writeWithPreflight(pf, dump, force, dryRun)
+	img, backup, err := a.backupIfNeeded(dev, dryRun)
+	if err != nil {
+		return nil, fmt.Errorf("写入前备份失败, 已中止: %w", err)
+	}
+	a.resetBusCounter() // 统计窗口覆盖预检(与干跑报告一致)
+	pf, err := a.buildPreflight(path, dump, force, true)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.afterProbeCheck(dev, img); err != nil {
+		return nil, err
+	}
+	return a.writeWithPreflight(pf, dump, force, dryRun, img, backup)
 }
 
 // writeWithPreflight 在预检通过后执行写入(文件写入、编辑器写入与测试共用)。
-func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun bool) (*WriteResult, error) {
+//
+// img/backup: 写入前的镜像与备份路径。真实写入必须由调用方**在探测之前**准备好
+// (B1); 直接调用本函数(测试)时 img 为 nil 会在这里补做备份。干跑不需要。
+func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun bool, img []byte, backup string) (*WriteResult, error) {
 	// 注意: 不在这里清零总线计数 —— 统计窗口从"预检开始"算起,
 	// 这样干跑报告里的数字覆盖了预检(含可能发生的写保护探测), 不会漏报。
 
 	if pf.Blocked {
-		// 干跑只是内存演算, 不碰硬件: 只有"数据本身不合格"(长度/CRC)才拒绝,
-		// 写保护/PSWP 这类"硬件此刻不接受"的原因允许继续(结果里带警示)。
-		hardwareGate := pf.BlockKind == "protected" || pf.BlockKind == "pswp"
+		// 干跑只是内存演算, 不碰硬件: 只有"数据本身不合格"(长度/世代/CRC)才拒绝,
+		// 写保护/PSWP/BIOS 这类"硬件此刻不接受"的原因允许继续(结果里带警示)。
+		hardwareGate := pf.BlockKind == "protected" || pf.BlockKind == "pswp" || pf.BlockKind == "bios"
 		if !(dryRun && hardwareGate) {
 			return nil, fmt.Errorf("写入被拒绝: %s", pf.BlockReason)
 		}
@@ -608,11 +749,16 @@ func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun 
 	if dev == nil {
 		return nil, fmt.Errorf("请先选择设备")
 	}
+	// M4: 不信任调用方 —— 长度/世代/CRC 在这里独立复检一遍(预检与实际写入之间
+	// 文件可能已被替换, 而这条路径会真的写设备)。
+	if err := gateDump(dev, dump); err != nil {
+		return nil, fmt.Errorf("写入被拒绝: %w", err)
+	}
 	res := &WriteResult{DryRun: dryRun}
+	counter, _ := a.activeTransport().(*smbus.CountingTransport)
 
 	// 干跑: 不改动设备状态, 只把结果算进影子
 	if dryRun {
-		counter, _ := a.activeTransport().(*smbus.CountingTransport)
 		if !dev.DryRun() {
 			if err := dev.SetDryRun(true); err != nil {
 				return nil, err
@@ -630,15 +776,15 @@ func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun 
 		res.Message = fmt.Sprintf("干跑完成: 将写入 %d 字节", len(changes))
 		if counter != nil {
 			st := counter.Stats()
-			nvm := smbus.NVMWrites(counter.WriteLog(), dev.IsDDR5())
+			nvm := counter.NVMWriteCount()
 			res.BusStats = &BusStatsResult{
 				Generation: dev.Generation(), Reads: st.Reads, QuickWrites: st.QuickWrites,
-				ByteDataWrites: st.ByteDataWrites, ByteWrites: st.ByteWrites, NVMWrites: len(nvm),
+				ByteDataWrites: st.ByteDataWrites, ByteWrites: st.ByteWrites, NVMWrites: nvm,
 			}
-			res.NVMWrites = len(nvm)
+			res.NVMWrites = nvm
 			res.Message += fmt.Sprintf("; 期间总线事务: 读 %d 次 / 页选择与命令写 %d 次 / 字节写 %d 次, 其中对 SPD NVM 的数据写 %d 次",
-				st.Reads, st.QuickWrites+st.ByteWrites, st.ByteDataWrites, len(nvm))
-			if len(nvm) == 0 {
+				st.Reads, st.QuickWrites+st.ByteWrites, st.ByteDataWrites, nvm)
+			if nvm == 0 {
 				res.Message += "(零写入)"
 			} else {
 				res.Message += " —— 警告: 干跑模式出现了 NVM 写, 请勿在真机使用!"
@@ -653,27 +799,37 @@ func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun 
 		return res, nil
 	}
 
-	// 真实写入: 先备份(镜像留在内存里当回滚源) → 写(CRC 排在最后) → 整片校验
-	// 任何一步失败都自动回滚到写入前内容: 半写的 SPD 可能让主板拒绝该条。
+	// 真实写入: 计划 → (必要时)备份 → 写(CRC 排在最后) → 逐字节回读 → 整片校验
 	if dev.DryRun() {
 		return nil, fmt.Errorf("设备处于干跑模式, 本次不会真正写入; 请先关闭干跑模式再执行真实写入")
 	}
-	counter, _ := a.activeTransport().(*smbus.CountingTransport)
-	img, backup, err := a.backupCurrent(dev)
-	if err != nil {
-		return nil, fmt.Errorf("写入前备份失败, 已中止: %w", err)
-	}
-	res.BackupPath = backup
 	changes, err := dev.PlanWrite(dump, force)
 	if err != nil {
 		return nil, err
 	}
 	res.Total = len(changes)
+	if len(changes) == 0 {
+		// 设备内容已与目标一致: 不写、也不浪费一份备份(L14)
+		res.Message = "设备内容已与目标一致, 无需写入(未做备份)"
+		a.logf("%s", res.Message)
+		return res, nil
+	}
+	if img == nil {
+		img, backup, err = a.backupCurrent(dev)
+		if err != nil {
+			return nil, fmt.Errorf("写入前备份失败, 已中止: %w", err)
+		}
+	}
+	res.BackupPath = backup
 
 	var fail error
 	if err := dev.ApplyWrite(dump, changes, func(w, t int) { a.emit("write:progress", w, t) }); err != nil {
 		fail = err
 	} else if err := dev.Verify(dump); err != nil {
+		fail = &eeprom.WriteError{Stage: "verify", Written: len(changes), Total: len(changes), Err: err}
+	} else if err := dev.VerifyChangedByteWise(dump, changes); err != nil {
+		// L11: 逐字节回读与整片校验共用同一条(块读/字读)读路径, 系统性读偏差会让两者
+		// 一起"同意"。这里用**逐字节**读法把改动过的字节再核对一遍(只有几个字节, 很快)。
 		fail = &eeprom.WriteError{Stage: "verify", Written: len(changes), Total: len(changes), Err: err}
 	}
 
@@ -719,11 +875,11 @@ func (a *App) attachBusStats(res *WriteResult, dev *eeprom.Device, counter *smbu
 		return
 	}
 	st := counter.Stats()
-	nvm := smbus.NVMWrites(counter.WriteLog(), dev.IsDDR5())
-	res.NVMWrites = len(nvm)
+	nvm := counter.NVMWriteCount() // 独立累计, 不受写日志上限截断(M7)
+	res.NVMWrites = nvm
 	res.BusStats = &BusStatsResult{
 		Generation: dev.Generation(), Reads: st.Reads, QuickWrites: st.QuickWrites,
-		ByteDataWrites: st.ByteDataWrites, ByteWrites: st.ByteWrites, NVMWrites: len(nvm),
+		ByteDataWrites: st.ByteDataWrites, ByteWrites: st.ByteWrites, NVMWrites: nvm,
 	}
-	res.Message += fmt.Sprintf("; 总线: 读 %d / 字节写 %d(其中 NVM %d)", st.Reads, st.ByteDataWrites, len(nvm))
+	res.Message += fmt.Sprintf("; 总线: 读 %d / 字节写 %d(其中 NVM %d)", st.Reads, st.ByteDataWrites, nvm)
 }

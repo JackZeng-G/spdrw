@@ -194,7 +194,7 @@ func TestWriteAbortKeepsCRCStale(t *testing.T) {
 	rec.FailWriteFrom = nonCRC + 1 // 数据写完, 第一个 CRC 字节开始失败
 	// 只对 NVM 写计数/注入: 切页 MR11 写不算数据写
 	rec.FailWriteCmdFilter = func(cmd byte) bool { return cmd&0x80 != 0 }
-	res, werr := a.writeWithPreflight(pf, target, false, false)
+	res, werr := a.writeWithPreflight(pf, target, false, false, nil, "")
 	if werr == nil {
 		t.Fatal("注入故障后写入应失败")
 	}
@@ -269,7 +269,7 @@ func TestWriteAutoRollbackOnTransientFailure(t *testing.T) {
 	rec.FailWriteOnce = nonCRC + 1
 	rec.FailWriteCmdFilter = func(cmd byte) bool { return cmd&0x80 != 0 }
 
-	res, werr := a.writeWithPreflight(pf, target, false, false)
+	res, werr := a.writeWithPreflight(pf, target, false, false, nil, "")
 	if werr == nil {
 		t.Fatal("注入一次故障后写入应失败")
 	}
@@ -323,7 +323,7 @@ func TestWriteAutoRollbackOnVerifyFailure(t *testing.T) {
 	// 让 0x2C0 起的写"被接受但不生效"(槽内容不落盘)
 	ft.IgnoreFrom = 0x2C0
 	rec.Reset()
-	res, werr := a.writeWithPreflight(pf, target, false, false)
+	res, werr := a.writeWithPreflight(pf, target, false, false, nil, "")
 	if werr == nil {
 		t.Fatal("写被忽略时写入应失败")
 	}

@@ -73,6 +73,16 @@ func Identify(dump []byte) (RamType, int, error) {
 	return rt, rt.SPDSize(), nil
 }
 
+// RamTypeFromByte 把 SPD byte2(器件类型) 映射成 RamType; 未知类型返回 Unknown。
+// 设备侧只有这一个字节可用来判定世代, 写入前必须与待写内容的世代对照。
+func RamTypeFromByte(b byte) RamType {
+	rt := RamType(b)
+	if _, ok := ramTypeNames[rt]; !ok {
+		return Unknown
+	}
+	return rt
+}
+
 // ValidateSpd 校验 dump 是否像一份合法 SPD(长度与类型匹配)。
 func ValidateSpd(dump []byte) bool {
 	if len(dump) < 256 {

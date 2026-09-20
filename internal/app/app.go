@@ -73,7 +73,9 @@ type App struct {
 	// lastDump 缓存最近一次成功读取的整片数据(按设备绑定, Select 时失效),
 	// 保存文件直接复用, 避免经 JS 传大数组和重读总线。
 	lastDumpAddr byte
-	lastDump     []byte
+	// lastBackupPath 是最近一次写入前备份的路径(日志/界面回显, 也是失败时的手动恢复源)
+	lastBackupPath string
+	lastDump       []byte
 
 	// 编辑器状态(工作副本在 spd.Editor 内)
 	editor         *spd.Editor
@@ -278,6 +280,9 @@ func (a *App) Select(addr byte) error {
 		a.dev.Close()
 	}
 	a.dev = dev
+	if c, ok := a.active.(*smbus.CountingTransport); ok {
+		c.SetDDR5(dev.IsDDR5()) // NVM 写的判据随世代不同(cmd bit7)
+	}
 	a.lastDump = nil // 换设备后缓存失效
 	a.editor = nil   // 换设备后编辑器内容失效(避免把 A 条的编辑写进 B 条)
 	a.editSource = ""
@@ -522,6 +527,11 @@ type WPStatusResult struct {
 }
 
 // WPStatus 返回各块 RSWP 状态、原始寄存器与永久保护状态(单结构体返回)。
+//
+// 注意: DDR4 及更早世代**没有**保护状态寄存器, 状态只能靠"对块首取反写一字节再还原"
+// 的写测试得出 —— 也就是说"查询保护状态"这个按钮本身会写设备。因此这里在探测前
+// 先做整片备份, 探测后再整片复核; 一旦还原写失败(内容与备份不一致)立即回滚并报错,
+// 绝不让用户拿着一份被探测写坏的条继续操作。
 func (a *App) WPStatus() (*WPStatusResult, error) {
 	defer a.lockOp()()
 	a.mu.Lock()
@@ -530,8 +540,18 @@ func (a *App) WPStatus() (*WPStatusResult, error) {
 	if dev == nil {
 		return nil, fmt.Errorf("请先选择设备")
 	}
+	img, backup, err := a.backupIfNeeded(dev, dev.DryRun())
+	if err != nil {
+		return nil, fmt.Errorf("查询保护状态需要先备份当前内容(该世代用写测试探测): %w", err)
+	}
+	if img != nil {
+		a.logf("保护状态查询: 会做写测试, 已先备份当前内容(%s)", backup)
+	}
 	det, err := dev.WPStatusDetail()
 	if err != nil {
+		return nil, err
+	}
+	if err := a.afterProbeCheck(dev, img); err != nil {
 		return nil, err
 	}
 	res := &WPStatusResult{
@@ -584,11 +604,16 @@ func summarizeWP(r *WPStatusResult) string {
 	return sb.String()
 }
 
-// WPSet 设置指定块 RSWP; blocks 为块号列表。
-// 参数必须是 []int: Wails v2 用 json.Unmarshal 解参数, JS 数组解不进 []byte
-// ([]byte 只能从 base64 字符串解出), 旧签名 []byte 会让"加保护"必然失败。
-func (a *App) WPSet(blocks []int) error {
+// WPSet 设置指定块 RSWP; blocks 为块号列表。必须带确认串 "RSWP"。
+//
+// RSWP 在部分平台上是**不可逆**的(清零需要离线模式或断电), 且 EE1004 的 SWP/CWP
+// 命令需要 WP 引脚上的 VHV —— 器件可能照样 ACK 但忽略命令, 所以下发后必须回读复核,
+// 不能"命令没报错"就当成功。
+func (a *App) WPSet(blocks []int, ack string) error {
 	defer a.lockOp()()
+	if strings.ToUpper(strings.TrimSpace(ack)) != "RSWP" {
+		return fmt.Errorf("确认串不正确(设置写保护应输入 RSWP)")
+	}
 	a.mu.Lock()
 	dev := a.dev
 	a.mu.Unlock()
@@ -599,37 +624,101 @@ func (a *App) WPSet(blocks []int) error {
 		return fmt.Errorf("未指定块号")
 	}
 	for _, b := range blocks {
-		if b < 0 || b > 255 {
+		if b < 0 || b >= 256 {
 			return fmt.Errorf("块号 %d 无效", b)
 		}
+	}
+	img, backup, err := a.backupIfNeeded(dev, dev.DryRun())
+	if err != nil {
+		return fmt.Errorf("设置写保护前备份失败, 已中止: %w", err)
+	}
+	if img != nil {
+		a.logf("RSWP 设置: 已先备份当前内容(%s)", backup)
+	}
+	for _, b := range blocks {
 		if err := dev.RSWPSet(byte(b)); err != nil {
-			a.mu.Lock()
 			a.logf("RSWP 设置块 %d 失败: %v", b, err)
-			a.mu.Unlock()
 			return err
 		}
-		a.logf("RSWP: 已保护块 %d", b)
+		a.logf("RSWP: 已下发保护命令 块 %d", b)
 	}
+	if err := a.afterProbeCheck(dev, img); err != nil {
+		return err
+	}
+	if ok, note := a.verifyProtection(dev, blocks, true); !ok {
+		a.logf("RSWP 复核: %s", note)
+		return fmt.Errorf("写保护命令已下发但回读显示未生效: %s", note)
+	}
+	a.logf("RSWP: 块 %v 已确认受保护(回读复核通过)", blocks)
 	return nil
 }
 
-// WPClear 清除全部可逆写保护。
-func (a *App) WPClear() error {
+// WPClear 清除全部可逆写保护。必须带确认串 "CLEAR"。
+func (a *App) WPClear(ack string) error {
 	defer a.lockOp()()
+	if strings.ToUpper(strings.TrimSpace(ack)) != "CLEAR" {
+		return fmt.Errorf("确认串不正确(清除写保护应输入 CLEAR)")
+	}
 	a.mu.Lock()
 	dev := a.dev
 	a.mu.Unlock()
 	if dev == nil {
 		return fmt.Errorf("请先选择设备")
 	}
+	img, backup, err := a.backupIfNeeded(dev, dev.DryRun())
+	if err != nil {
+		return fmt.Errorf("清除写保护前备份失败, 已中止: %w", err)
+	}
+	if img != nil {
+		a.logf("RSWP 清除: 已先备份当前内容(%s)", backup)
+	}
 	if err := dev.RSWPClear(); err != nil {
-		a.mu.Lock()
 		a.logf("RSWP 清除失败: %v", err)
-		a.mu.Unlock()
 		return err
 	}
-	a.logf("RSWP: 已清除全部块保护")
+	if err := a.afterProbeCheck(dev, img); err != nil {
+		return err
+	}
+	all := make([]int, 0, 16)
+	for i := 0; i < dev.WPBlockCount(); i++ {
+		all = append(all, i)
+	}
+	if ok, note := a.verifyProtection(dev, all, false); !ok {
+		a.logf("RSWP 清除复核: %s", note)
+		return fmt.Errorf("清除命令已下发但回读显示仍有块受保护: %s", note)
+	}
+	a.logf("RSWP: 已确认全部块可写(回读复核通过)")
 	return nil
+}
+
+// verifyProtection 回读复核保护状态(want=true 期望受保护)。
+func (a *App) verifyProtection(dev *eeprom.Device, blocks []int, want bool) (bool, string) {
+	det, err := dev.WPStatusDetail()
+	if err != nil {
+		return false, fmt.Sprintf("回读保护状态失败: %v", err)
+	}
+	var bad []string
+	for _, b := range blocks {
+		if b < 0 || b >= det.Blocks {
+			continue
+		}
+		if !det.Known[b] {
+			bad = append(bad, fmt.Sprintf("块 %d 状态未知(写测试失败)", b))
+			continue
+		}
+		if det.Protected[b] != want {
+			got := "未受保护"
+			if det.Protected[b] {
+				got = "受保护"
+			}
+			bad = append(bad, fmt.Sprintf("块 %d 实际%s", b, got))
+		}
+	}
+	if len(bad) > 0 {
+		return false, strings.Join(bad, "; ") +
+			"(EE1004 的 SWP/CWP 需要 WP 引脚 VHV, 器件可能 ACK 但忽略命令)"
+	}
+	return true, ""
 }
 
 // Decode 解析当前设备或给定 dump 的 SPD, 供信息面板展示。
@@ -731,12 +820,12 @@ func (a *App) BusStats() (*BusStatsResult, error) {
 		return nil, fmt.Errorf("当前控制器没有总线计数(未连接或非枚举得到的控制器)")
 	}
 	st := c.Stats()
-	ddr5 := dev != nil && dev.IsDDR5()
-	nvm := smbus.NVMWrites(c.WriteLog(), ddr5)
+	// NVM 写用**独立累计**的计数(M7): WriteLog 有上限, force 写 1024 字节时
+	// 从日志里数会少报, 而这是真机"干跑零写入"的唯一证据。
 	res := &BusStatsResult{
 		Reads: st.Reads, QuickWrites: st.QuickWrites,
 		ByteDataWrites: st.ByteDataWrites, ByteWrites: st.ByteWrites,
-		NVMWrites: len(nvm),
+		NVMWrites: c.NVMWriteCount(),
 	}
 	if dev != nil {
 		res.Generation = dev.Generation()

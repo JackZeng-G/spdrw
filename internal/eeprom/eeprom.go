@@ -20,10 +20,15 @@ import (
 
 // DDR4 EE1004 命令设备地址(原版 EepromCommand >> 1)。
 const (
-	spa0   = 0x36 // 选择页 0
-	spa1   = 0x37 // 选择页 1
-	cwp    = 0x33 // 清除写保护
-	pswpID = 0x30 // PSWP 设备类型标识基址(PWPB<<3)
+	spa0 = 0x36 // 选择页 0
+	spa1 = 0x37 // 选择页 1
+	cwp  = 0x33 // 清除写保护
+	// pswpProbeAddr 是探测 PSWP 用的设备地址基址((PWPB<<3)|SA)。
+	//
+	// 注意: 它和 swpCmds[3] 的数值都是 0x30, 但语义完全不同 —— 这里是**地址**
+	// (PSWP 器件不再应答这个地址), 那边是 DDR4 SWP3 的**命令**。当前靠
+	// PSWPApplicable() 只在 256B(DDR2/DDR3)器件上探测才没串味, 改名以免误读。
+	pswpProbeAddr = 0x30
 )
 
 // swpCmds[block] = DDR4 设置 RSWP 的 quick 命令地址(SWP0-3)。
@@ -52,6 +57,7 @@ type Device struct {
 	ddr5      bool
 	size      int
 	ramType   byte // SPD byte2(DDR2=0x08/0x09/0x0A, DDR3=0x0B, DDR4=0x0C...)
+	typeKnown bool // byte2 是否落在已知器件类型里(未知 → 拒绝写入)
 	page      int  // 当前页(DDR4: 0-1; DDR5: 0-7)
 	pageKnown bool // false = 未知(HUB 的 MR11 可能有 BIOS 残留值), 首次切页前须回读
 
@@ -86,6 +92,13 @@ func New(t smbus.Transport, addr byte) (*Device, error) {
 	// DDR5 检测(对齐 RAMSPDToolkit DDR5Accessor.IsAvailable):
 	// 读 MR0(Device Type, cmd=0, bit7=0 → 寄存器区) == 0x51 即 DDR5。
 	// MR0 是寄存器不受 MR11 页残留影响, 比读 NVM 字节更可靠。
+	// 探测阶段**只读**: 不做任何"选页 0 再重读"的补救写。
+	//
+	// 曾经想按 linux spd5118.c 的做法(页寄存器非 0 时先选页 0 再重读 MR0)来救
+	// "MR0 读作 0"的 hub, 但那在**非 DDR5** 器件上 cmd 0x0B 就是 NVM 字节 11 ——
+	// 探测本身就把别人的 SPD 写坏了(实测: DDR4 镜像 byte 0x0B 被写成 0)。
+	// 误判的后果由别处兜住: 待写内容的世代/长度/CRC 门禁(gateDump)会拒绝把
+	// DDR5 的 1024B 内容写进一个被判成 256B 的设备, 类型未知时直接拒绝写入。
 	ddr5 := false
 	if b, err2 := t.ReadByteData(addr, 0); err2 == nil && b == 0x51 {
 		ddr5 = true
@@ -106,6 +119,7 @@ func New(t smbus.Transport, addr byte) (*Device, error) {
 		}
 		d.ramType = ramType
 		d.size = sizeByRamType(ramType)
+		d.typeKnown = spd.RamTypeFromByte(ramType) != spd.Unknown
 	}
 
 	// 注意: 探测阶段不做任何写操作(页复位/页切换推迟到真正读写时由
@@ -135,6 +149,34 @@ func (d *Device) Addr() byte { return d.addr }
 // IsDDR5 报告是否为 DDR5(SPD5 hub)。
 func (d *Device) IsDDR5() bool { return d.ddr5 }
 
+// RamType 返回设备自己识别出的 SPD 世代。
+//
+// DDR5 系由探测得出(器件类型字节在 MR 区, 读不到), 其余按 byte2 映射。
+// 写入前必须用它和待写内容的世代对照: 长度相同的世代不止一个(256/512/1024 各有多个),
+// 光比长度会把 DDR3 的镜像写进 DDR2 条里。
+func (d *Device) RamType() spd.RamType {
+	if d.ddr5 {
+		return spd.DDR5
+	}
+	return spd.RamTypeFromByte(d.ramType)
+}
+
+// WPBlockCount 返回写保护块数(DDR5 16×64B / DDR4 4×128B / DDR3 1×128B)。
+func (d *Device) WPBlockCount() int {
+	n, err := d.blockCount()
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// TypeKnown 报告设备自己报出的器件类型是否可识别(不可识别时禁止写入)。
+func (d *Device) TypeKnown() bool { return d.ddr5 || d.typeKnown }
+
+// NeedsWriteTest 报告该器件的写保护探测是否需要"取反写一字节再还原"的真实写测试
+// (DDR5 读 MR12/MR13 位图即可, 不需要写)。需要写测试的路径必须先备份。
+func (d *Device) NeedsWriteTest() bool { return !d.ddr5 }
+
 // pageSize 返回每页字节数。
 func (d *Device) pageSize() int {
 	if d.ddr5 {
@@ -158,10 +200,17 @@ func (d *Device) setPage(p int) error {
 			if attempt > 0 {
 				time.Sleep(2 * time.Millisecond)
 			}
-			if err = d.t.WriteByteData(d.addr, MR11, byte(p)); err != nil {
+			// 读-改-写: MR11 只写整字节会清掉 bit7:4 与 bit3(内核 spd5118.c 用
+			// selector_mask=GENMASK(2,0) 并保留 bit3 —— 那是寻址模式位, 清掉它
+			// 会在个别 hub 上静默切换寻址模式)。读不到就退回只写低 3 位。
+			val := byte(p & 0x07)
+			if cur, rerr := d.t.ReadByteData(d.addr, MR11); rerr == nil {
+				val = (cur & 0xF8) | byte(p&0x07)
+			}
+			if err = d.t.WriteByteData(d.addr, MR11, val); err != nil {
 				continue
 			}
-			// 回读校验(只读, 不落 NVM)
+			// 回读校验(只读, 不落 NVM): 低 3 位必须是目标页
 			if cur, rerr := d.t.ReadByteData(d.addr, MR11); rerr == nil && int(cur&0x07) == p {
 				d.page, d.pageKnown = p, true
 				return nil
@@ -632,13 +681,14 @@ func (d *Device) ApplyWrite(dump []byte, changes []ByteChange, progress Progress
 		if err := d.writeOne(uint16(ch.Offset), ch.New); err != nil {
 			return &WriteError{Offset: ch.Offset, Written: i, Total: total, Err: err, Stage: "write"}
 		}
+		// 注意计数: 到这里字节**已经写下去了**, 所以"已写"是 i+1(旧实现按 i 少算 1)
 		back, err := d.readBack(uint16(ch.Offset))
 		if err != nil {
-			return &WriteError{Offset: ch.Offset, Written: i, Total: total, Err: err, Stage: "read"}
+			return &WriteError{Offset: ch.Offset, Written: i + 1, Total: total, Err: err, Stage: "read"}
 		}
 		if back != ch.New {
 			return &WriteError{
-				Offset: ch.Offset, Written: i, Total: total, Stage: "verify",
+				Offset: ch.Offset, Written: i + 1, Total: total, Stage: "verify",
 				Err: fmt.Errorf("回读 %#x 与目标 %#x 不一致(该块可能受写保护, 写被忽略)", back, ch.New),
 			}
 		}
@@ -700,6 +750,30 @@ func (d *Device) Verify(dump []byte) error {
 	for i := range cur {
 		if cur[i] != dump[i] {
 			return fmt.Errorf("内容不一致 @ 0x%03X: 设备 %#x 文件 %#x", i, cur[i], dump[i])
+		}
+	}
+	return nil
+}
+
+// VerifyChangedByteWise 用**最原始的逐字节读法**复核改动过的字节。
+//
+// 为什么需要: 每字节回读与整片 Verify 都走同一条读路径(优先块读/字读), 一旦该路径
+// 有系统性偏差, 两者会一起"同意"而报成功。改动字节通常只有几个, 用逐字节读法再核一遍
+// 几乎不花时间(真机上每字节一次事务, 几个字节 = 几十毫秒)。
+func (d *Device) VerifyChangedByteWise(dump []byte, changes []ByteChange) error {
+	if err := d.checkDumpLen(dump); err != nil {
+		return err
+	}
+	fast, word := d.fastRead, d.wordRead
+	d.fastRead, d.wordRead = false, false
+	defer func() { d.fastRead, d.wordRead = fast, word }()
+	for _, ch := range changes {
+		got, err := d.readOne(uint16(ch.Offset))
+		if err != nil {
+			return fmt.Errorf("逐字节复核 %#x 失败: %w", ch.Offset, err)
+		}
+		if got != dump[ch.Offset] {
+			return fmt.Errorf("逐字节复核不一致 @ 0x%03X: 设备 %#x 目标 %#x", ch.Offset, got, dump[ch.Offset])
 		}
 	}
 	return nil
@@ -1051,7 +1125,7 @@ func (d *Device) PSWPStatus() (bool, error) {
 	if !d.PSWPApplicable() {
 		return false, fmt.Errorf("%s 不支持 PSWP 探测(仅 DDR2/DDR3 定义 PWPB 设备类型)", d.Generation())
 	}
-	_, err := d.t.ReadByteData(pswpID|(d.addr&7), 0)
+	_, err := d.t.ReadByteData(pswpProbeAddr|(d.addr&7), 0)
 	if err == nil {
 		return false, nil
 	}

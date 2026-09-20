@@ -70,20 +70,45 @@ test("点击查询保护状态: 走绑定并写日志, 不再抛 null 解构错"
   assert.match(log, /保护状态/);
 });
 
-test("WPSet 传数字数组([]int 契约, 旧 []byte 会解码失败)", async () => {
+test("WPSet 传数字数组 + 确认串([]int 契约, 且不可逆操作必须带 ack)", async () => {
   const { stub, calls } = makeAppStub({ WPStatus: () => ddr5Status });
   const { el, ctx } = loadApp({ appStub: stub });
   await flush();
   ctx.prompt = () => "1, 15";
   ctx.confirm = () => true;
-  // 让 app.js 内部读到的 prompt/confirm 生效: 它们取自 vm 上下文
+
+  // 没输确认串 → 不得调用后端(RSWP 在部分颗粒上不可逆)
   await el("btn-wp-set").onclick();
   await flush();
+  assert.equal(calls.some((c) => c.name === "WPSet"), false, "缺少确认串时不得下发");
+  assert.match(el("log").text(), /RSWP/, "应提示需要确认串");
 
+  el("inp-wp-ack").value = "rswp"; // 大小写不敏感
+  await el("btn-wp-set").onclick();
+  await flush();
   const call = calls.find((c) => c.name === "WPSet");
   assert.ok(call, "应调用 WPSet");
-  assert.equal(Array.isArray(call.args[0]), true, "WPSet 参数必须是 JS 数组");
+  assert.equal(Array.isArray(call.args[0]), true, "WPSet 第一个参数必须是 JS 数组");
   // 跨 vm realm 的数组原型不同, 展开后比较
   assert.deepEqual([...call.args[0]], [1, 15]);
   assert.equal(typeof call.args[0][0], "number", "元素必须是 number(→ Go []int)");
+  assert.equal(call.args[1], "RSWP", "第二个参数必须是确认串(Go 侧再校验一次)");
+});
+
+test("WPClear 也必须带 CLEAR 确认串", async () => {
+  const { stub, calls } = makeAppStub({ WPStatus: () => ddr5Status });
+  const { el, ctx } = loadApp({ appStub: stub });
+  await flush();
+  ctx.confirm = () => true;
+
+  await el("btn-wp-clear").onclick();
+  await flush();
+  assert.equal(calls.some((c) => c.name === "WPClear"), false, "缺少确认串时不得清除");
+
+  el("inp-wp-ack").value = "CLEAR";
+  await el("btn-wp-clear").onclick();
+  await flush();
+  const call = calls.find((c) => c.name === "WPClear");
+  assert.ok(call, "应调用 WPClear");
+  assert.deepEqual([...call.args], ["CLEAR"]);
 });

@@ -17,8 +17,15 @@ type CountingTransport struct {
 	quickW   int
 	byteData int
 	byteNoD  int
-	// writeLog 记录最近若干次写事务(地址/cmd), 用于分类"是不是 NVM 写"。
+	// writeLog 记录最近若干次写事务(地址/cmd), 用于事后排查"到底写了哪些字节"。
 	writeLog []WriteOp
+	// nvmWrites 是**独立累计**的 NVM 字节写计数。
+	//
+	// 不能只靠 writeLog 去数: 日志有上限(countingWriteLogLimit), force 模式写
+	// 1024 字节时末尾会被截掉, 于是"NVM 写"这个证据会少报(M7 审计项)。
+	nvmWrites int
+	// ddr5 决定 NVM 判据(cmd bit7); SetDDR5 由设备层同步。
+	ddr5 bool
 }
 
 const countingWriteLogLimit = 512
@@ -50,7 +57,35 @@ func (c *CountingTransport) Stats() BusStats {
 func (c *CountingTransport) Reset() {
 	c.mu.Lock()
 	c.reads, c.quickW, c.byteData, c.byteNoD = 0, 0, 0, 0
+	c.nvmWrites = 0
 	c.writeLog = nil
+	c.mu.Unlock()
+}
+
+// SetDDR5 同步"当前设备是不是 DDR5", 用于按正确判据累计 NVM 写。
+func (c *CountingTransport) SetDDR5(on bool) {
+	c.mu.Lock()
+	c.ddr5 = on
+	c.mu.Unlock()
+}
+
+// NVMWriteCount 返回**精确累计**的 NVM 字节写次数(不受日志截断影响)。
+func (c *CountingTransport) NVMWriteCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.nvmWrites
+}
+
+// noteNVM 按世代判据在写事务发生时累计 NVM 写。
+func (c *CountingTransport) noteNVM(cmd byte) {
+	c.mu.Lock()
+	if c.ddr5 {
+		if cmd&0x80 != 0 {
+			c.nvmWrites++
+		}
+	} else {
+		c.nvmWrites++ // 调用点只对 0x50-0x57 的 byte-data 写调用
+	}
 	c.mu.Unlock()
 }
 
@@ -96,6 +131,9 @@ func (c *CountingTransport) WriteByteData(addr byte, cmd byte, val byte) error {
 	c.byteData++
 	c.mu.Unlock()
 	c.logWrite(addr, cmd, val)
+	if addr >= 0x50 && addr <= 0x57 {
+		c.noteNVM(cmd)
+	}
 	return c.Inner.WriteByteData(addr, cmd, val)
 }
 

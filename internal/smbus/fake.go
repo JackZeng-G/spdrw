@@ -19,6 +19,11 @@ type FakeTransport struct {
 	ProtectedFrom int
 	// IgnoreFrom >= 0 时模拟"写了但不生效"(不报错也不落值): 用来触发回读校验失败。
 	IgnoreFrom int
+	// FailReads 为 true 时所有读事务报错(模拟总线读不出来)。
+	FailReads bool
+	// BlockReadOverride 非 nil 时, 块读返回这份镜像的内容而不是 EEProm 里的真实值 ——
+	// 用来模拟"读路径本身有系统性偏差"(逐字节读仍读真值)。
+	BlockReadOverride []byte
 	// BlockReadUnsupported 为 true 时块读返回 NACK(模拟不支持块读的设备, 用于测回退)。
 	BlockReadUnsupported bool
 	// WordReadUnsupported 为 true 时字读返回 NACK(模拟连字读都不支持的设备)。
@@ -130,6 +135,9 @@ func (f *FakeTransport) mrRead(cmd byte) (byte, bool) {
 }
 
 func (f *FakeTransport) ReadByteData(addr byte, cmd byte) (byte, error) {
+	if f.FailReads {
+		return 0, fmt.Errorf("设备无响应 NACK(0xC000000E)")
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.Present != nil && !f.Present[addr] {
@@ -194,6 +202,9 @@ func (f *FakeTransport) ReadBlockData(addr byte, cmd byte) ([]byte, error) {
 	if f.Present != nil && !f.Present[addr] {
 		return nil, fmt.Errorf("设备无响应 NACK(0xC000000E)")
 	}
+	if f.FailReads {
+		return nil, fmt.Errorf("设备无响应 NACK(0xC000000E)")
+	}
 	if f.BlockReadUnsupported {
 		return nil, fmt.Errorf("设备不支持块读(0xC000000E)")
 	}
@@ -210,12 +221,19 @@ func (f *FakeTransport) ReadBlockData(addr byte, cmd byte) ([]byte, error) {
 	if n <= 0 {
 		return nil, fmt.Errorf("块读越界 页=%d cmd=%#x", f.page, cmd)
 	}
+	src := f.EEProm
+	if f.BlockReadOverride != nil && start+n <= len(f.BlockReadOverride) {
+		src = f.BlockReadOverride
+	}
 	out := make([]byte, n)
-	copy(out, f.EEProm[start:start+n])
+	copy(out, src[start:start+n])
 	return out, nil
 }
 
 func (f *FakeTransport) ReadWordData(addr byte, cmd byte) (uint16, error) {
+	if f.FailReads {
+		return 0, fmt.Errorf("设备无响应 NACK(0xC000000E)")
+	}
 	if f.WordReadUnsupported {
 		return 0, fmt.Errorf("设备无响应 NACK(0xC000000E)")
 	}

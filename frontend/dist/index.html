@@ -71,6 +71,11 @@
         <button id="btn-wp-status" disabled>查询保护状态</button>
         <button id="btn-wp-set" disabled class="danger">RSWP 加保护…</button>
         <button id="btn-wp-clear" disabled>RSWP 清除</button>
+        <label class="chk">确认串 <input id="inp-wp-ack" type="text" placeholder="RSWP / CLEAR" size="12" autocomplete="off"></label>
+        <div class="muted small">
+          加保护要输入 <b>RSWP</b>, 清除要输入 <b>CLEAR</b>;两者都会真写设备,
+          下发后程序会**回读复核**是否真的生效(EE1004 的 SWP/CWP 需要 WP 引脚 VHV, 器件可能 ACK 但忽略)。
+        </div>
         <div class="muted small">
           DDR5 每块 64B(MR12/MR13 位图, 置位后正常运行时不可清零, 需离线模式或断电);<br>
           DDR4 及更早每块 128B, 无状态寄存器 → 查询会对块首做"写测试"(写入取反值再还原);<br>

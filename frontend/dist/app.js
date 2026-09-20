@@ -712,26 +712,47 @@ function renderWP(st) {
     (st.pswpApplicable ? (st.pswp ? " · PSWP 永久保护" : " · PSWP 未设置") : " · PSWP 不适用"));
 }
 
+// RSWP 加保护/清除都需要确认串(后端也校验): 这两个动作会真写设备, 而且在部分颗粒上
+// "加保护"是不可逆的;清除命令还可能在 VHV 缺失时被器件 ACK 而忽略, 所以后端会回读复核。
+function wpAck(s) { return String(s || "").trim().toUpperCase(); }
+
 $("btn-wp-set").onclick = async () => {
   const inp = prompt("输入要保护的块号(0-15, 逗号分隔):", "0");
   if (!inp) return;
   const blocks = inp.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
   if (!blocks.length) { addLog("", "未输入有效块号"); return; }
-  if (!confirm("确定对这些块启用 RSWP 写保护?\n" + blocks.join(",") + "\n\n注意: 部分颗粒的 RSWP 不可逆!")) return;
+  if (wpAck($("inp-wp-ack").value) !== "RSWP") {
+    addLog("", 'RSWP 加保护需要确认串: 请在"写保护"面板的确认串框里输入 RSWP');
+    return;
+  }
+  if (!confirm("确定对这些块启用 RSWP 写保护?\n" + blocks.join(",") +
+    "\n\n注意: 部分颗粒的 RSWP 不可逆!")) return;
   try {
-    await call("WPSet", blocks);
-    addLog("", "RSWP 已设置: " + blocks.join(","));
+    await call("WPSet", blocks, wpAck($("inp-wp-ack").value));
+    addLog("", "RSWP 已设置并回读确认: " + blocks.join(","));
+    $("inp-wp-ack").value = "";
     await refreshWP().catch(() => {});
-  } catch (e) { addLog("", "RSWP 设置失败: " + e); }
+  } catch (e) {
+    addLog("", "RSWP 设置失败: " + e);
+    await refreshWP().catch(() => {});
+  }
 };
 
 $("btn-wp-clear").onclick = async () => {
+  if (wpAck($("inp-wp-ack").value) !== "CLEAR") {
+    addLog("", 'RSWP 清除需要确认串: 请在"写保护"面板的确认串框里输入 CLEAR');
+    return;
+  }
   if (!confirm("确定清除全部可逆写保护 (RSWP)?")) return;
   try {
-    await call("WPClear");
-    addLog("", "RSWP 已清除");
+    await call("WPClear", wpAck($("inp-wp-ack").value));
+    addLog("", "RSWP 已清除并回读确认");
+    $("inp-wp-ack").value = "";
     await refreshWP().catch(() => {});
-  } catch (e) { addLog("", "RSWP 清除失败: " + e); }
+  } catch (e) {
+    addLog("", "RSWP 清除失败: " + e);
+    await refreshWP().catch(() => {});
+  }
 };
 
 // ---------- 事件 ----------

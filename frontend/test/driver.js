@@ -40,6 +40,15 @@
     step("块显示字节范围", $("wp-blocks").textContent.includes("0x000-0x07F"));
     step("B0 显示锁定", $("wp-blocks").children[0].className.includes("on"));
     step("PSWP 文案(DDR4 适用)", $("wp-summary").textContent.includes("PSWP 未设置"));
+    // RSWP 加保护/清除都是真写设备且可能不可逆 → 必须带确认串(后端也校验)
+    step("写保护确认串输入框存在", !!document.getElementById("inp-wp-ack"));
+    step("缺确认串时 RSWP 不下发", (() => {
+      window.prompt = () => "1";
+      window.confirm = () => true;
+      $("inp-wp-ack").value = "";
+      $("btn-wp-set").onclick();
+      return !window.__CALLS.some((c) => c.name === "WPSet");
+    })());
 
     // 编辑器标签页
     $("tab-edit").onclick();

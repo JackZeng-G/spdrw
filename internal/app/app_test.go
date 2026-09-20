@@ -373,7 +373,7 @@ func TestWriteDryRunNoBusDataWrites(t *testing.T) {
 	}
 	// 只统计干跑写入阶段(预检里的 DDR4 块首写测试本身会写字节, 不属干跑范围)
 	rec.Reset()
-	res, err := a.writeWithPreflight(pf, want, false, true)
+	res, err := a.writeWithPreflight(pf, want, false, true, nil, "")
 	if err != nil {
 		t.Fatalf("干跑写入: %v", err)
 	}
@@ -415,10 +415,17 @@ func TestWPSetClear(t *testing.T) {
 	_ = a.Connect(0)
 	_ = a.Select(0x50)
 
-	if err := a.WPSet([]int{2}); err != nil {
-		t.Fatalf("WPSet: %v", err)
+	// 确认串不对必须拒绝(RSWP 在部分平台不可逆, 不能一句话就下发)
+	if err := a.WPSet([]int{2}, "WRONG"); err == nil {
+		t.Fatal("确认串不正确时应拒绝")
 	}
-	// DDR4 RSWPSet(2) 应发出 SWP2 quick 命令(写 0x35)与 CWP(0x33)
+	// DDR4 RSWPSet(2) 应发出 SWP2 quick 命令(写 0x35)与 CWP(0x33);
+	// 这个 Fake 的保护是"偏移 >=128 之后 NACK", 与 RSWP 命令无关 —— 因此回读复核
+	// 必须如实报告"命令下发了但没生效"(审计 H3: 器件 ACK 但忽略命令的情况)
+	werr := a.WPSet([]int{2}, "RSWP")
+	if werr == nil || !strings.Contains(werr.Error(), "回读") {
+		t.Fatalf("应报回读复核未生效: %v", werr)
+	}
 	found := false
 	for _, q := range f.QuickLog {
 		if q.Write && q.Addr == 0x35 {
@@ -444,8 +451,10 @@ func TestWPSetClear(t *testing.T) {
 			t.Fatalf("块 %d 状态应确知: %v", i, st.Known)
 		}
 	}
-	if err := a.WPClear(); err != nil {
-		t.Fatalf("WPClear: %v", err)
+	// 清除: Fake 里块 1/3 仍因 ProtectedFrom 而 NACK → 复核必须报"仍有块受保护"
+	cerr := a.WPClear("CLEAR")
+	if cerr == nil || !strings.Contains(cerr.Error(), "回读") {
+		t.Fatalf("清除后复核应报仍有块受保护: %v", cerr)
 	}
 }
 
