@@ -300,10 +300,9 @@ $("btn-save").onclick = async () => {
     DefaultFilename: `spd-${Date.now()}.bin`,
   });
   if (!path) return;
-  // 先存临时路径由后端读取: 直接传 dump 数组写文件
+  // 走后端缓存保存(不经 JS 传数据)
   try {
-    await call("SaveDumpData", path, currentDump);
-    addLog("", "已保存 " + path);
+    await call("SaveDump", path);
   } catch (e) { addLog("", "保存失败: " + e); }
 };
 

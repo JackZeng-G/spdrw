@@ -57,6 +57,11 @@ type App struct {
 
 	logs []LogEntry
 
+	// lastDump 缓存最近一次成功读取的整片数据(按设备绑定, Select 时失效),
+	// 保存文件直接复用, 避免经 JS 传大数组和重读总线。
+	lastDumpAddr byte
+	lastDump     []byte
+
 	// Emit 由 main.go 注入(wailsjs runtime events); tests 置 nil。
 	Emit func(event string, data ...interface{})
 
@@ -229,6 +234,7 @@ func (a *App) Select(addr byte) error {
 		a.dev.Close()
 	}
 	a.dev = dev
+	a.lastDump = nil // 换设备后缓存失效
 	a.dimm = &DimmInfo{Addr: addr, IsDDR5: dev.IsDDR5(), Size: dev.Size()}
 	a.logf("已选择 %#x (%s, %d 字节)", addr, map[bool]string{true: "DDR5", false: "非DDR5"}[dev.IsDDR5()], dev.Size())
 	return nil
@@ -245,6 +251,8 @@ func (a *App) Dump() ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	a.lastDumpAddr = a.dev.Addr()
+	a.lastDump = data
 	a.emit("dump:done", len(data))
 	a.logf("读取 %d 字节", len(data))
 	// DDR5 诊断: 关键 MR 寄存器 + NVM 前 4 字节直读, 用于定位页/NVM 访问问题
@@ -298,16 +306,32 @@ func (a *App) dumpDiagnostics() {
 	}
 }
 
-// SaveDump 读取并保存到文件。
+// SaveDump 保存到文件: 优先复用最近一次读取的缓存, 无缓存时现读。
 func (a *App) SaveDump(path string) error {
-	data, err := a.Dump()
-	if err != nil {
-		return err
+	a.mu.Lock()
+	if a.dev == nil {
+		a.mu.Unlock()
+		return fmt.Errorf("请先选择设备")
 	}
-	if err := os.WriteFile(path, data, 0o644); err != nil {
+	var data []byte
+	if a.lastDump != nil && a.lastDumpAddr == a.dev.Addr() {
+		data = a.lastDump
+	} else {
+		// 无缓存: 现读(释放锁让 Dump() 正常加锁)
+		a.mu.Unlock()
+		var err error
+		if data, err = a.Dump(); err != nil {
+			return err
+		}
+		a.mu.Lock()
+	}
+	c := make([]byte, len(data))
+	copy(c, data)
+	a.mu.Unlock()
+	if err := os.WriteFile(path, c, 0o644); err != nil {
 		return fmt.Errorf("写入 %s: %w", path, err)
 	}
-	a.logf("已保存 %s", path)
+	a.logf("已保存 %s (%d 字节)", path, len(c))
 	return nil
 }
 
