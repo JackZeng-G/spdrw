@@ -76,7 +76,7 @@ type App struct {
 	logs []LogEntry
 
 	// lastDump 缓存最近一次成功读取的整片数据(按设备绑定, Select 时失效),
-	// 保存文件直接复用, 避免经 JS 传大数组和重读总线。
+	// 编辑器"从设备载入"/写入后复核直接复用, 避免经 JS 传大数组和重读总线。
 	lastDumpAddr byte
 	// lastBackupPath 是最近一次写入前备份的路径(日志/界面回显, 也是失败时的手动恢复源)
 	lastBackupPath string
@@ -362,7 +362,7 @@ func (a *App) Select(addr byte) error {
 	return nil
 }
 
-// Dump 读取整片 SPD; progress(0..100) 经事件推送。
+// Dump 读取整片 SPD; 完成后发 dump:done 事件(字节数), 逐字节进度不推送。
 func (a *App) Dump() ([]byte, error) {
 	defer a.lockOp()()
 	return a.dumpLocked()
@@ -459,8 +459,9 @@ func (a *App) dumpDiagnostics() {
 	a.logf("HUB 诊断: %s", sb.String())
 }
 
-// WriteFileDialog 已由 PickWriteFile + PreflightWrite + WriteConfirmed 取代
-// (旧实现弹框后直接写, 没有 diff/风险/备份环节), 保留此名会诱导绕过预检, 故删除。
+// 按文件路径写入的旧入口(WriteFileDialog → PickWriteFile + preflightWrite + writeConfirmed)
+// 已收敛为包内未导出函数: 旧实现弹框后直接写, 没有 diff/风险/备份环节;
+// 保留可导出的按路径写入会诱导前端绕过编辑器, 故删除。
 
 // dialogGuard 返回对话框函数是否可用(测试环境未注入时给出明确错误)。
 func (a *App) dialogGuard() error {

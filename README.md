@@ -4,10 +4,7 @@
 
 用 Go 写的 SPD 读写工具: Windows 桌面程序, 通过 **PawnIO** 内核驱动直连芯片组 SMBus, 读取/解析/编辑/写入内存条 SPD。
 
-**独立实现, 未使用上游代码。** 编码 SPD 字段与时序语义时参考了
-[1a2m3/SPD-Reader-Writer](https://github.com/1a2m3/SPD-Reader-Writer)(C# WinForms)的字段定义与操作思路,
-仅此而已: 代码、架构、构建与验证流程都是本项目自己的; 唯一从那边取用的**数据**是 JEP106 厂商表
-(见「仓库布局说明」)。本项目的范围取舍: 只走芯片组 SMBus(不做 Arduino 串口通道); 内核访问用开源签名驱动
+本项目的范围取舍: 只走芯片组 SMBus; 内核访问用开源签名驱动
 **PawnIO**(namazso, OpenRGB/LibreHardwareMonitor 同款), 不用 CPU-Z 驱动。
 
 ## 功能
@@ -28,7 +25,7 @@
 - **解析**:
   - DDR4/LPDDR3/4/4X: 模块类型、密度/ banks /行列、组织、位宽、容量、全部主时序(中+细粒度)、CAS 掩码、双段 CRC(含修复)、厂商/日期/序列号/部件号、**XMP 2.0 双 Profile**(时序换算+电压)
   - DDR5/LPDDR5(X): 密度/组织/通道/位宽/容量、身份区、**完整 JEDEC 时序**(byte 20-102, ps/ns + lower limit)、CRC(**基础段 + XMP 3.0 header/各槽 + EXPO**)、按规范修正的 XMP 3.0 槽位(0x2C0..0x3C0)
-  - DDR2/DDR3: 容量/组织/部件号/厂商/日期/序列号/校验(DDR2 按 JEDEC 修正了总线与芯片位宽偏移)
+  - DDR3: 容量/组织/部件号/厂商/日期/序列号/校验(DDR2 按 JEDEC 修正了总线与芯片位宽偏移)
 - **SPD 编辑器**(内存中编辑, 不落盘不写设备):
   - 常用信息: 厂商(JEP106 反查/搜索)、厂商码、生产地点、日期、序列号、部件号、修订码、DRAM 厂商/stepping
   - JEDEC 时序: DDR4 medium+fine、DDR5 16bit(ps/ns, 含 lower limit)、DDR3 MTB/FTB、DDR2 BCD(含扩展码)
@@ -94,7 +91,7 @@ exe 的**图标**和**属性里的版本/版权**(`by jackzeng 2026`)来自仓�
 export GOPATH=$PWD/.gopath GOMODCACHE=$PWD/.gopath/pkg/mod GOCACHE=$PWD/.gocache   # 容器内需自定
 go test ./internal/...                          # 149 个顶层用例
 CGO_ENABLED=1 go test -race ./internal/...      # 并发/死锁问题只有 race 抓得到
-node --test "frontend/test/*.test.mjs"          # 前端契约与漂移守卫(37 条)
+node --test "frontend/test/*.test.mjs"          # 前端契约与漂移守卫(38 条)
 go test ./internal/app/ -run TestBuiltExe -v    # 产物自检(需先构建: 前端/PawnIO/图标/版本信息)
 ```
 
@@ -116,9 +113,6 @@ go test ./internal/app/ -run TestBuiltExe -v    # 产物自检(需先构建: 前
 
 本仓库**自带全部可复现材料**, 不含任何外部项目的代码:
 
-- 参考项目 SPD-Reader-Writer(1a2m3) 只用于对照字段语义, 没有复制其代码。唯一取用的**数据**是
-  JEP106 厂商表, 已提取为 `internal/spd/data/idcodes.json`; 出处与重建流程记在
-  `internal/spd/data/README.md`(上游 URL + 取用 commit + 为什么必须拆成 15 个银行 + 三步重建命令)。
 - 第三方二进制(PawnIO 模块与 DLL)出处与许可证见 `third_party/pawnio/README.md`。
 - 真实 dump 语料(67 份)与其来源清单见 `testdata/spd/MANIFEST.md`。
 - `build/` **不全是构建产物**: `build/icon/`(图标源)与 `build/winres/`(Windows 资源与版本信息
@@ -131,7 +125,7 @@ go test ./internal/app/ -run TestBuiltExe -v    # 产物自检(需先构建: 前
 - **[docs/实现文档.md](docs/实现文档.md)** — 实现细节:分层架构、SMBus/DDR4/DDR5 协议语义、Wails 绑定要点、测试体系、真机调试经验(踩坑实录)
 - **[docs/验证清单.md](docs/验证清单.md)** — 真机逐项验证步骤
 - **[docs/离线验证报告.md](docs/离线验证报告.md)** — 上线前我们到底验过什么、结论是什么、还剩什么必须真机确认(含可重跑命令与实测数字)
-- **[docs/写入操作手册.md](docs/写入操作手册.md)** — 真机写入的照做顺序(干跑→首写→校验)、失败处理与恢复路径
+- **[docs/写入操作手册.md](docs/写入操作手册.md)** — 真机写入的照做顺序(预检→首写→校验)、失败处理与恢复路径
 - **[docs/真机实测记录.md](docs/真机实测记录.md)** — 真机回帖的原始证据(读取档位/事务数/耗时、编辑器、还差哪些验证)
 - **[docs/superpowers/specs/](docs/superpowers/specs/)** — 设计文档(需求与范围)
 
