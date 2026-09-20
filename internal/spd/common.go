@@ -199,3 +199,33 @@ func parityOdd(b byte) bool {
 	}
 	return n%2 == 0 // 1 的个数已是奇数则 MSB=0; 偶数则 MSB=1
 }
+
+// ManufacturerIDNote 在厂商 ID 无法解析时给出可读原因(空串表示解析成功)。
+// 真实 dump 里出现过续延字节校验位不成立、银行号超范围的情况(如 KLEVV 实物条
+// 写成 cont=0x18/code=0x98), 与其静默显示空白, 不如把原因告诉用户。
+func ManufacturerIDNote(cont, code byte) string {
+	if ManufacturerName(cont, code) != "" {
+		return ""
+	}
+	switch {
+	case cont == 0 && code == 0:
+		return "厂商 ID 未写入(0x00/0x00)"
+	case code&0x7F == 0:
+		return fmt.Sprintf("厂商码为 0(原始 %#02x/%#02x)", cont, code)
+	}
+	bank := cont & 0x7F
+	if !parityOK(cont) {
+		return fmt.Sprintf("厂商 ID %#02x/%#02x 无法定位: 续延字节 %#02x 的奇校验不成立(应为 %#02x), 推得的银行号 %d 超出 JEP106 表范围",
+			cont, code, cont, cont|0x80, bank)
+	}
+	return fmt.Sprintf("厂商 ID %#02x/%#02x 不在当前 JEP106 表内(银行 %d, 厂商码 %d)", cont, code, bank, code&0x7F)
+}
+
+// parityOK 报告字节是否满足 JEP106 的奇校验(1 的个数为奇数)。
+func parityOK(b byte) bool {
+	n := 0
+	for v := b; v != 0; v &= v - 1 {
+		n++
+	}
+	return n%2 == 1
+}

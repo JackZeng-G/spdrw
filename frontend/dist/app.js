@@ -250,7 +250,8 @@ function renderInfo(r) {
   html += kv("类型", escapeHtml(r.ramType) + (r.moduleType ? ` · ${escapeHtml(r.moduleType)}` : ""));
   html += kv("容量", escapeHtml(r.totalHuman || `${r.totalMib} MiB`));
   if (r.ranks) html += kv("组织", `${r.ranks} Rank × ${r.deviceWidth}bit · 总线 ${r.busWidth}bit`);
-  html += kv("厂商", escapeHtml(r.manufacturer || "—"));
+  html += kv("厂商", escapeHtml(r.manufacturer || "—") +
+    (r.manufacturerNote ? `<br><span class="muted small">${escapeHtml(r.manufacturerNote)}</span>` : ""));
   html += kv("部件号", escapeHtml(r.partNumber || "—"));
   if (r.dateYear) html += kv("生产日期", `${r.dateYear} 年第 ${r.dateWeek} 周`);
   if (r.serialHex) html += kv("序列号", `0x${r.serialHex}`);

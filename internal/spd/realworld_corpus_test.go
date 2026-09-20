@@ -398,3 +398,70 @@ func TestCorruptSamplesHandledSafely(t *testing.T) {
 	}
 	t.Logf("负样本处理: %d 份, 无 panic", n)
 }
+
+// TestRealDumpManufacturerNames 语料里的厂商 ID 必须解析成正确厂商名。
+// 期望值来自 JEP106 与实物条品牌(不依赖本仓库的表, 避免"表错则测试也错")。
+func TestRealDumpManufacturerNames(t *testing.T) {
+	dir := filepath.Join("..", "..", "testdata", "spd")
+	want := map[string]string{
+		"ddr3-micron-8ktf51264hz-1g6e1-1600mhz-eloaders.bin":            "Micron Technology",
+		"ddr3-samsung-m471b2873fhs-ch9-0x61cf1261-1333mhz-eloaders.bin": "Samsung",
+		"ddr3-hynixafr-baboomerang.bin":                                 "SK Hynix",
+		"ddr3-kingston-kvr13ls9s6-2-017-a00lf-eloaders.bin":             "Kingston",
+		"ddr4-micron_4gib_dimm_mta9asf51272pz-2g1a2-coreboot.bin":       "Micron Technology",
+		"ddr4-samsung-k4aag165wa-bctd-coreboot.bin":                     "Samsung",
+		"ddr4-hynix-h5anag6namr-uh-coreboot.bin":                        "SK Hynix",
+		"ddr4-gskill-flarex-3200-2x8g-samsungb-eloaders.spd":            "G.Skill Intl",
+		"ddr4-micron-ballistix-elite-4000-4x8g-eloaders.spd":            "Crucial Technology",
+		"ddr4-patriot-viper4-blackout-3200-2x8g-hynixcjr-eloaders.spd":  "Patriot Memory (PDP Systems)",
+		"ddr5-corsair-cmk32gx5m2b5600z40-cityson.bin":                   "Corsair",
+		"ddr5-crucial-ct16g56c46u5-cityson.bin":                         "Crucial Technology",
+		"ddr5-geil-d5-8000-cl38-cityson.bin":                            "Golden Empire",
+		"ddr5-gskill-f5-6000j3636f16g-cityson.bin":                      "G.Skill Intl",
+		"ddr5-samsung-m323r1gb4pb0-cityson.bin":                         "Samsung",
+		"ddr5-teamgroup-ud5-6000-omi.spd":                               "Team Group Inc",
+		"ddr5-tforce-ud5-6000-cityson.bin":                              "Team Group Inc",
+		"ddr5-oloy-d5u0852382b-k69-djchumpguy.spd":                      "OLOy Technology",
+	}
+	checked := 0
+	for name, exp := range want {
+		dump, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Errorf("缺少样本 %s: %v", name, err)
+			continue
+		}
+		var cont, code byte
+		switch len(dump) {
+		case 256:
+			cont, code = dump[117], dump[118]
+		case 512:
+			cont, code = dump[320], dump[321]
+		case 1024:
+			cont, code = dump[512], dump[513]
+		}
+		got := ManufacturerName(cont, code)
+		if got != exp {
+			t.Errorf("%s: 厂商 = %q, 期望 %q(cont=%#02x code=%#02x, 说明 %q)",
+				name, got, exp, cont, code, ManufacturerIDNote(cont, code))
+			continue
+		}
+		checked++
+	}
+	t.Logf("厂商名核对: %d/%d 通过", checked, len(want))
+}
+
+// TestManufacturerNoteForMalformedID 续延字节校验位不成立时给出可读原因(而非静默空白)。
+func TestManufacturerNoteForMalformedID(t *testing.T) {
+	// KLEVV 实物条: cont=0x18(奇校验不成立) / code=0x98
+	if n := ManufacturerIDNote(0x18, 0x98); n == "" {
+		t.Fatal("异常厂商 ID 应给出说明")
+	} else if !strings.Contains(n, "奇校验") {
+		t.Fatalf("说明应提到校验位: %q", n)
+	}
+	if n := ManufacturerIDNote(0x00, 0x00); !strings.Contains(n, "未写入") {
+		t.Fatalf("0/0 应说明未写入: %q", n)
+	}
+	if n := ManufacturerIDNote(0x80, 0xCE); n != "" {
+		t.Fatalf("可解析的 ID 不应有说明: %q", n)
+	}
+}
