@@ -5,12 +5,18 @@ const $ = (id) => document.getElementById(id);
 let currentDump = null;
 
 // ---------- Wails 绑定桥 ----------
-// 生成 wailsjs 绑定不可用(vanilla 无构建链), 直接走 call-by-name:
+// Wails v2 的绑定挂在 window.go.main.App; vanilla 无 wailsjs 生成链, 直接按名调用。
 function call(name, ...args) {
-  return window.go.bindings.App[name](...args);
+  const a = window.go && window.go.main && window.go.main.App;
+  if (!a) {
+    throw new Error("Wails 绑定未注入(window.go.main.App 缺失)——请确认使用了 desktop,production 标签构建");
+  }
+  return a[name](...args);
 }
 function onEvent(name, cb) {
-  window.runtime.EventsOn(name, cb);
+  if (window.runtime && window.runtime.EventsOn) {
+    window.runtime.EventsOn(name, cb);
+  }
 }
 
 // ---------- 环境/启动 ----------
