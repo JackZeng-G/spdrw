@@ -194,16 +194,9 @@ $("btn-scan").onclick = async () => {
     await call("Connect", idx); // 重复连接无害, 保证状态就绪
     const dimms = (await call("Scan")) || [];
     fillDimmSelect(dimms);
-    addLog("", `发现 ${dimms.length} 个 SPD 设备`);
-    // 若之前选中的设备仍在, 自动恢复选择并读取
-    if (selectedAddr != null && dimms.some((d) => d.addr === selectedAddr)) {
-      $("dimm-select").value = String(selectedAddr);
-      $("dimm-select").onchange();
-    }
+    addLog("", `重扫完成: ${dimms.length} 个 SPD 设备(选择设备后才会读取)`);
   } catch (e) { addLog("", "扫描失败: " + e); }
 };
-
-$("btn-dump").onclick = () => doDump().catch((e) => addLog("", "读取失败: " + e));
 
 // ---------- 十六进制视图 ----------
 function renderHexB64(b64) {
