@@ -3,3 +3,4 @@
 _mock.html
 *.tmp
 frontend/test/_real-page.html
+bin/
