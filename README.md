@@ -84,6 +84,7 @@ go test ./...
 
 - **[docs/实现文档.md](docs/实现文档.md)** — 实现细节:分层架构、SMBus/DDR4/DDR5 协议语义、Wails 绑定要点、测试体系、真机调试经验(踩坑实录)
 - **[docs/验证清单.md](docs/验证清单.md)** — 真机逐项验证步骤
+- **[docs/离线验证报告.md](docs/离线验证报告.md)** — 上线前我们到底验过什么、结论是什么、还剩什么必须真机确认(含可重跑命令与实测数字)
 - **[docs/superpowers/specs/](docs/superpowers/specs/)** — 设计文档(需求与范围)
 
 ## 架构
