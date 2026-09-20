@@ -5,6 +5,7 @@ package smbus
 import (
 	"fmt"
 	"sort"
+	"time"
 
 	"spdrw/internal/assets"
 )
@@ -153,25 +154,21 @@ func (p *pawnioTransport) xfer(addr byte, write bool, cmd byte, proto byte, data
 		}
 	}
 
-	// 失败自动重试一次(AMD FCH 偶发首事务超时)
-	// 注: execute 层错误(DLL/驱动级)不重试; 事务状态错误(NACK/超时)重试一次。
+	// 失败自动重试(对齐原版工具的宽容时序): PawnIO 模块单次事务 64ms 硬超时,
+	// 而 DDR5 SPD5 HUB/I3C 桥在空闲后的首次访问可能更慢; 原版轮询 1000ms 所以
+	// "慢但能读"。这里对状态错误(NACK/超时)重试, 多数 HUB 重试一次即可恢复。
 	var ret uint64
 	var err error
-	for attempt := 0; attempt < 2; attempt++ {
-		// 重试前清空上次输出
-		for i := range out {
-			out[i] = 0
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(5 * time.Millisecond)
+			for i := range out {
+				out[i] = 0
+			}
 		}
 		ret, err = p.session.execute(fnSmbusXfer, in, out)
-		if err != nil {
+		if err == nil {
 			break
-		}
-		if len(out) > 0 && out[0] != 0 {
-			break // 首单元非 0 —— 具体状态由 UnmarshalOut 解析
-		}
-		// out[0]==0 且无输出: 对读事务可能是 NACK; 重试一次
-		if attempt == 0 && !wantOut {
-			break // 写/快速事务无输出可判, 交给上层
 		}
 	}
 	if err != nil {
@@ -186,7 +183,6 @@ func (p *pawnioTransport) xfer(addr byte, write bool, cmd byte, proto byte, data
 	}
 	return out[:n], nil
 }
-
 
 func (p *pawnioTransport) Quick(addr byte, write bool) error {
 	_, err := p.xfer(addr, write, 0, ProtoQuick, nil, false)
@@ -205,13 +201,25 @@ func (p *pawnioTransport) ReadByteData(addr byte, cmd byte) (byte, error) {
 	return b[0], nil
 }
 
+// eepromWriteDelay 与原版一致: 对 EEPROM 地址的写事务后固定等待 25ms
+// (EE1004/SPD5 写周期), 是原版工具"慢但稳"的关键来源之一。
+const eepromWriteDelay = 25 * time.Millisecond
+
+func isEepromAddr(addr byte) bool { return addr >= 0x50 && addr <= 0x57 }
+
 func (p *pawnioTransport) WriteByteData(addr byte, cmd byte, val byte) error {
 	_, err := p.xfer(addr, true, cmd, ProtoByteData, []byte{val}, false)
+	if err == nil && isEepromAddr(addr) {
+		time.Sleep(eepromWriteDelay)
+	}
 	return err
 }
 
 func (p *pawnioTransport) WriteByteNoData(addr byte) error {
 	_, err := p.xfer(addr, true, 0, ProtoByte, nil, false)
+	if err == nil && isEepromAddr(addr) {
+		time.Sleep(eepromWriteDelay)
+	}
 	return err
 }
 

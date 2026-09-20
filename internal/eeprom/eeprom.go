@@ -115,7 +115,12 @@ func (d *Device) setPage(p int) error {
 	if d.ddr5 {
 		err = d.t.WriteByteData(d.addr, MR11, byte(p))
 	} else {
+		// DDR4 页切换: 首选 Quick 写(EE1004 SPA), 失败回退 BYTE 写
+		// (与原版一致的退化路径, 部分控制器对 Quick 支持不佳)
 		err = d.t.Quick(byte(spa0+p), true)
+		if err != nil {
+			err = d.t.WriteByteNoData(byte(spa0 + p))
+		}
 	}
 	if err != nil {
 		return err
