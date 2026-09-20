@@ -250,7 +250,10 @@ function renderHexB64(b64) {
 $("hexgrid").onclick = (ev) => {
   const t = ev.target;
   if (!t || !t.classList || !t.classList.contains("hexbyte")) return;
-  if (!editorLoaded) { addLog("", "左侧 hex 需先在编辑器标签页载入数据后才能直接修改"); return; }
+  if (!editorLoaded) {
+    addLog("", '左侧 hex 要能直接改, 需先在"编辑器"里点"从设备载入"或"打开 dump 文件…"');
+    return;
+  }
   if (t.querySelector && t.querySelector("input")) return; // 已在编辑中
   const off = parseInt(t.getAttribute("data-off"), 10);
   const cur = (t.textContent || "").trim();
@@ -281,7 +284,16 @@ $("hexgrid").onclick = (ev) => {
       await refreshEditBytes();   // 先让左侧视图拿到新字节
       await refreshEditDiff();    // 再按新字节 + 改动分类刷新校验状态
       addLog("", `修改 ${hex(off, 3)} = ${hex(nv, 2)}${st && st.crcStale ? "(该改动影响校验, 记得\"重算 CRC\")" : "(不影响校验, 无需重算)"}`);
-    } catch (e) { addLog("", "原始编辑失败: " + e); }
+    } catch (e) {
+      const msg = String(e);
+      if (msg.includes("编辑器尚未载入")) {
+        // 典型场景: 切换过设备(后端编辑器已清空)或程序刚启动
+        addLog("", '修改失败: 编辑器尚未载入数据 —— 请先在"编辑器"里点"从设备载入"或"打开 dump 文件…"');
+        resetEditorState();
+      } else {
+        addLog("", "修改失败: " + msg);
+      }
+    }
   };
   inp.onkeydown = (e) => {
     if (e.key === "Enter") { e.preventDefault(); finish(true); }
