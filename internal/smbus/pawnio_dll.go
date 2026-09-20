@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -161,6 +162,11 @@ var (
 	smbusMutexOnce sync.Once
 )
 
+// lockSMBus 获取跨进程 SMBus 仲裁互斥。
+// 关键: WaitForSingleObject 与 ReleaseMutex 必须在同一 OS 线程上执行
+// (Windows mutex 的所有权属于线程), 否则 Go 调度器在两次 syscall 之间
+// 把 goroutine 换到别的线程时 ReleaseMutex 报 ERROR_NOT_OWNER,
+// 互斥被遗弃, 之后所有等待都误报"被占用"。故 LockOSThread 包住临界区。
 func lockSMBus() func() {
 	smbusMutexOnce.Do(func() {
 		name, _ := syscall.UTF16PtrFromString(`Global\Access_SMBUS.HTP.Method`)
@@ -172,10 +178,22 @@ func lockSMBus() func() {
 	if smbusMutex == 0 {
 		return func() {}
 	}
+	runtime.LockOSThread()
 	const lockTimeoutMs = 2000
-	if ev, err := windows.WaitForSingleObject(smbusMutex, lockTimeoutMs); err != nil || ev != windows.WAIT_OBJECT_0 {
-		// 被其他工具(如 Thaiphoon/厂家软件)长期占用: 报错而不是无限等待
+	ev, err := windows.WaitForSingleObject(smbusMutex, lockTimeoutMs)
+	switch {
+	case err != nil:
+		runtime.UnlockOSThread()
+		return nil
+	case ev == windows.WAIT_OBJECT_0, ev == windows.WAIT_ABANDONED:
+		// WAIT_ABANDONED: 前任 owner 线程已死, 系统把所有权让渡给本线程;
+		// SMBus 事务是短临界区, 视为获取成功。
+		return func() {
+			_ = windows.ReleaseMutex(smbusMutex)
+			runtime.UnlockOSThread()
+		}
+	default: // WAIT_TIMEOUT: 被其他工具长期占用
+		runtime.UnlockOSThread()
 		return nil
 	}
-	return func() { _ = windows.ReleaseMutex(smbusMutex) }
 }
