@@ -3,6 +3,7 @@ package spd
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -463,5 +464,76 @@ func TestManufacturerNoteForMalformedID(t *testing.T) {
 	}
 	if n := ManufacturerIDNote(0x80, 0xCE); n != "" {
 		t.Fatalf("可解析的 ID 不应有说明: %q", n)
+	}
+}
+
+// TestRealDumpXMP2TimingsMatchVendorSpec 用厂商公布的 XMP 规格核对 XMP 2.0 时序解析。
+//
+// 这条测试是为了锁住一个真实缺陷: 原版 C# 把 XMP profile 里 byte+0x14 的高位 nibble
+// 位序写反了(tRAS/tRC 互换), 于是 Viper4 3200 的 tRAS 被读成 87 周期(真实 36),
+// 而 tRC 只剩低字节(12.8 周期, 真实 64)。编辑器↔解析器的交叉校验抓不到这种错 ——
+// 两边用的是同一个错误约定 —— 只有拿厂商规格做外部参照才行。
+func TestRealDumpXMP2TimingsMatchVendorSpec(t *testing.T) {
+	dir := filepath.Join("..", "..", "testdata", "spd")
+	cases := []struct {
+		file string
+		tRAS int // 周期
+		tRC  int
+	}{
+		{"ddr4-patriot-viper4-blackout-3200-2x8g-hynixcjr-eloaders.spd", 36, 64},
+		{"ddr4-micron-ballistix-elite-4000-4x8g-eloaders.spd", 39, 64},
+		{"ddr4-gskill-flarex-3200-2x8g-samsungb-eloaders.spd", 34, 48},
+	}
+	for _, c := range cases {
+		dump, err := os.ReadFile(filepath.Join(dir, c.file))
+		if err != nil {
+			t.Errorf("缺少样本 %s: %v", c.file, err)
+			continue
+		}
+		d, err := NewDDR4(dump)
+		if err != nil {
+			t.Fatalf("%s: %v", c.file, err)
+		}
+		tb := d.Timebase()
+		prof := d.XMPProfiles()[0]
+		if !prof.Enabled {
+			t.Errorf("%s: XMP profile 1 应启用", c.file)
+			continue
+		}
+		gotRAS := prof.TRAS.ClockCycles(tb, prof.TCKmin)
+		gotRC := prof.TRC.ClockCycles(tb, prof.TCKmin)
+		if gotRAS != c.tRAS || gotRC != c.tRC {
+			t.Errorf("%s: XMP tRAS/tRC = %d/%d 周期, 期望 %d/%d(厂商规格)",
+				c.file, gotRAS, gotRC, c.tRAS, c.tRC)
+		}
+		// 编辑器字段必须与解析器给出同一个值
+		ed, err := NewEditor(dump)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fields := editorFieldValues(ed)
+		for key, want := range map[string]int{"xmp.p1.tRAS": c.tRAS, "xmp.p1.tRC": c.tRC} {
+			ns, err := strconv.ParseFloat(fields[key], 64)
+			if err != nil {
+				t.Errorf("%s: 编辑器 %s = %q: %v", c.file, key, fields[key], err)
+				continue
+			}
+			cyc := int(ns/prof.TCKmin.NanoSeconds(tb) + 0.001)
+			if cyc != want {
+				t.Errorf("%s: 编辑器 %s = %d 周期, 期望 %d", c.file, key, cyc, want)
+			}
+		}
+		// 写回同值不得改动字节(tRC 的高位必须被正确保留)
+		before := append([]byte{}, ed.Bytes()...)
+		for _, key := range []string{"xmp.p1.tRAS", "xmp.p1.tRC"} {
+			if err := ed.SetField(key, fields[key]); err != nil {
+				t.Errorf("%s: 设回 %s=%s: %v", c.file, key, fields[key], err)
+			}
+		}
+		for i, b := range ed.Bytes() {
+			if b != before[i] {
+				t.Fatalf("%s: 设回 XMP 时序却改了字节 @%#x", c.file, i)
+			}
+		}
 	}
 }

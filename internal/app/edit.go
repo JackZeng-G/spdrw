@@ -39,6 +39,7 @@ type EditDiff struct {
 
 // EditLoadFromDevice 把当前选中设备的整片内容读进编辑器。
 func (a *App) EditLoadFromDevice() (*EditState, error) {
+	defer a.lockOp()()
 	a.mu.Lock()
 	dev := a.dev
 	a.mu.Unlock()
@@ -59,11 +60,12 @@ func (a *App) EditLoadFromDevice() (*EditState, error) {
 	a.editFromDevice = true
 	a.mu.Unlock()
 	a.logf("编辑器载入设备 %#x(%d 字节, %s)", dev.Addr(), len(dump), dev.Generation())
-	return a.EditState()
+	return a.editStateLocked()
 }
 
 // EditLoadPath 从文件载入编辑器(用于离线修改 dump)。
 func (a *App) EditLoadPath(path string) (*EditState, error) {
+	defer a.lockOp()()
 	dump, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("读取 %s: %w", path, err)
@@ -78,7 +80,7 @@ func (a *App) EditLoadPath(path string) (*EditState, error) {
 	a.editFromDevice = false
 	a.mu.Unlock()
 	a.logf("编辑器载入 %s(%d 字节)", path, len(dump))
-	return a.EditState()
+	return a.editStateLocked()
 }
 
 // EditLoadFileDialog 通过对话框选择文件载入编辑器。
@@ -96,8 +98,14 @@ func (a *App) EditLoadFileDialog() (*EditState, error) {
 	return a.EditLoadPath(path)
 }
 
-// EditState 返回编辑器状态。
+// EditState 返回编辑器状态(对外入口, 持操作锁)。
 func (a *App) EditState() (*EditState, error) {
+	defer a.lockOp()()
+	return a.editStateLocked()
+}
+
+// editStateLocked 假定调用方已持操作锁。
+func (a *App) editStateLocked() (*EditState, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.editor == nil {
@@ -127,6 +135,7 @@ func (a *App) editLocked() (*spd.Editor, error) {
 
 // EditFields 返回全部可编辑字段(当前值/范围/风险)。
 func (a *App) EditFields() ([]spd.Field, error) {
+	defer a.lockOp()()
 	ed, err := a.editLocked()
 	if err != nil {
 		return nil, err
@@ -136,6 +145,7 @@ func (a *App) EditFields() ([]spd.Field, error) {
 
 // EditSetField 修改一个字段(值非法时返回错误, 编辑器保持原样)。
 func (a *App) EditSetField(key, value string) (*EditState, error) {
+	defer a.lockOp()()
 	ed, err := a.editLocked()
 	if err != nil {
 		return nil, err
@@ -143,11 +153,12 @@ func (a *App) EditSetField(key, value string) (*EditState, error) {
 	if err := ed.SetField(key, value); err != nil {
 		return nil, err
 	}
-	return a.EditState()
+	return a.editStateLocked()
 }
 
 // EditSetByte 原始 hex 编辑: 直接改一个字节(高风险)。
 func (a *App) EditSetByte(offset, value int) (*EditState, error) {
+	defer a.lockOp()()
 	ed, err := a.editLocked()
 	if err != nil {
 		return nil, err
@@ -158,11 +169,12 @@ func (a *App) EditSetByte(offset, value int) (*EditState, error) {
 	if err := ed.SetByte(offset, byte(value)); err != nil {
 		return nil, err
 	}
-	return a.EditState()
+	return a.editStateLocked()
 }
 
 // EditFixCRC 重算全部 CRC/校验和。
 func (a *App) EditFixCRC() (*EditState, error) {
+	defer a.lockOp()()
 	ed, err := a.editLocked()
 	if err != nil {
 		return nil, err
@@ -172,22 +184,24 @@ func (a *App) EditFixCRC() (*EditState, error) {
 		return nil, err
 	}
 	a.logf("编辑器: 已重算 CRC(改动 %d 字节)", n)
-	return a.EditState()
+	return a.editStateLocked()
 }
 
 // EditReset 放弃全部编辑。
 func (a *App) EditReset() (*EditState, error) {
+	defer a.lockOp()()
 	ed, err := a.editLocked()
 	if err != nil {
 		return nil, err
 	}
 	ed.Reset()
 	a.logf("编辑器: 已放弃全部修改")
-	return a.EditState()
+	return a.editStateLocked()
 }
 
 // EditDiff 返回变更列表(按区域聚合 + 高风险计数)。
 func (a *App) EditDiff() (*EditDiff, error) {
+	defer a.lockOp()()
 	ed, err := a.editLocked()
 	if err != nil {
 		return nil, err
@@ -224,6 +238,7 @@ func (a *App) EditDiff() (*EditDiff, error) {
 
 // EditBytes 返回编辑器当前内容的 base64(前端刷新 hex 视图用)。
 func (a *App) EditBytes() ([]byte, error) {
+	defer a.lockOp()()
 	ed, err := a.editLocked()
 	if err != nil {
 		return nil, err
@@ -235,6 +250,7 @@ func (a *App) EditBytes() ([]byte, error) {
 
 // EditExportDialog 把编辑器内容另存为文件(不写设备)。
 func (a *App) EditExportDialog() (string, error) {
+	defer a.lockOp()()
 	if err := a.dialogGuard(); err != nil {
 		return "", err
 	}
@@ -265,6 +281,7 @@ func (a *App) EditExportDialog() (string, error) {
 
 // EditApplyToDevice 把编辑器内容写入设备。要求确认串 WRITE(真实写入)或 DRYRUN(干跑)。
 func (a *App) EditApplyToDevice(force, dryRun bool, ack string) (*WriteResult, error) {
+	defer a.lockOp()()
 	want := "WRITE"
 	if dryRun {
 		want = "DRYRUN"
@@ -276,6 +293,12 @@ func (a *App) EditApplyToDevice(force, dryRun bool, ack string) (*WriteResult, e
 	if err != nil {
 		return nil, err
 	}
+	restore, err := a.beginDryRunIfRequested(dryRun)
+	if err != nil {
+		return nil, err
+	}
+	defer restore()
+	a.resetBusCounter() // 统计窗口覆盖预检(与 WriteConfirmed 一致)
 	a.mu.Lock()
 	fromDev := a.editFromDevice
 	a.mu.Unlock()
@@ -302,6 +325,7 @@ func (a *App) MfgSearch(query string, limit int) ([]spd.MfgEntry, error) {
 
 // EditVerifyFile 把编辑器内容与设备当前内容比对(不写入)。
 func (a *App) EditVerifyFile() (*EditDiff, error) {
+	defer a.lockOp()()
 	ed, err := a.editLocked()
 	if err != nil {
 		return nil, err
@@ -316,9 +340,15 @@ func (a *App) EditVerifyFile() (*EditDiff, error) {
 	if err != nil {
 		return nil, err
 	}
+	want := ed.Bytes()
+	if len(want) != len(cur) {
+		// 编辑器内容来自文件(可能是另一代的 dump): 长度不同直接报错, 不能按索引访问
+		return nil, fmt.Errorf("编辑器内容 %d 字节与设备 %d 字节不一致, 无法比对(请先从设备载入)",
+			len(want), len(cur))
+	}
 	d := &EditDiff{CRCOK: ed.CRCOK()}
 	for i, b := range cur {
-		want := ed.Bytes()[i]
+		want := want[i]
 		if b != want {
 			d.Changes = append(d.Changes, spd.EditChange{Offset: i, Old: b, New: want, Field: "与设备不一致", Risk: "medium"})
 			if len(d.Changes) >= 500 {

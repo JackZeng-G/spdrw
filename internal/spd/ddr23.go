@@ -92,7 +92,9 @@ func parseDDR3(dump []byte) (*Basic, error) {
 	if mtbDen > 0 {
 		b.TCKminNS = float64(dump[12]) * float64(mtbNum) / float64(mtbDen)
 	}
-	b.TCKminNS += float64(int8(dump[34])) / 1000
+	// byte34 是 FTB 粒度的修正量, FTB 可能是分数(如 5/2 = 2.5ps)
+	_, finePS := ddr3TimebaseF(dump)
+	b.TCKminNS += float64(int8(dump[34])) * finePS / 1000
 
 	// byte34-38 是 FTB 粒度的修正量(单位 ps), 上面已把 byte34 计入 tCKmin
 	return b, nil

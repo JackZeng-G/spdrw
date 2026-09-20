@@ -51,6 +51,15 @@ func (a *App) SetContext(ctx context.Context) { a.wctx = ctx }
 // App 持有全部状态; 方法绑定到前端(Wails)。
 type App struct {
 	mu sync.Mutex
+	// opMu 串行化"会碰总线或编辑器工作副本"的操作。
+	//
+	// Wails 每个绑定方法各起一个 goroutine: 长 dump 期间点"保护状态"、连点两次"应用",
+	// 都会并发进入 eeprom 的分页状态(d.page/pageKnown)或编辑器的 map —— 前者会让分页区
+	// 读写到错误页, 后者是 Go 运行时的 concurrent map read/write 直接 fatal。
+	// 所有对外入口按"外层加锁、内部不加锁"的约定使用 lockOp。
+	opMu sync.Mutex
+	// logMu 保护日志切片(Logs 与 logf 可能来自不同 goroutine)。
+	logMu sync.Mutex
 
 	// transports 由后端枚举; Windows 上是 PawnIO, 测试中可注入。
 	transports []smbus.Transport
@@ -169,6 +178,7 @@ func (a *App) ListControllers() ([]ControllerInfo, error) {
 
 // Connect 选择控制器并复位状态。
 func (a *App) Connect(index int) error {
+	defer a.lockOp()()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if index < 0 || index >= len(a.transports) {
@@ -190,6 +200,7 @@ func (a *App) Connect(index int) error {
 
 // Scan 扫描当前控制器的 0x50-0x57。
 func (a *App) Scan() ([]DimmInfo, error) {
+	defer a.lockOp()()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.active == nil {
@@ -253,6 +264,7 @@ func (a *App) Scan() ([]DimmInfo, error) {
 
 // Select 选定要操作的 DIMM。
 func (a *App) Select(addr byte) error {
+	defer a.lockOp()()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.active == nil {
@@ -277,6 +289,7 @@ func (a *App) Select(addr byte) error {
 
 // Dump 读取整片 SPD; progress(0..100) 经事件推送。
 func (a *App) Dump() ([]byte, error) {
+	defer a.lockOp()()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.dev == nil {
@@ -449,6 +462,7 @@ func (a *App) ReadFileBytes(path string) ([]byte, error) {
 
 // VerifyFile 比对文件与设备内容。
 func (a *App) VerifyFile(path string) error {
+	defer a.lockOp()()
 	a.mu.Lock()
 	dev := a.dev
 	a.mu.Unlock()
@@ -497,6 +511,7 @@ type WPStatusResult struct {
 
 // WPStatus 返回各块 RSWP 状态、原始寄存器与永久保护状态(单结构体返回)。
 func (a *App) WPStatus() (*WPStatusResult, error) {
+	defer a.lockOp()()
 	a.mu.Lock()
 	dev := a.dev
 	a.mu.Unlock()
@@ -561,6 +576,7 @@ func summarizeWP(r *WPStatusResult) string {
 // 参数必须是 []int: Wails v2 用 json.Unmarshal 解参数, JS 数组解不进 []byte
 // ([]byte 只能从 base64 字符串解出), 旧签名 []byte 会让"加保护"必然失败。
 func (a *App) WPSet(blocks []int) error {
+	defer a.lockOp()()
 	a.mu.Lock()
 	dev := a.dev
 	a.mu.Unlock()
@@ -587,6 +603,7 @@ func (a *App) WPSet(blocks []int) error {
 
 // WPClear 清除全部可逆写保护。
 func (a *App) WPClear() error {
+	defer a.lockOp()()
 	a.mu.Lock()
 	dev := a.dev
 	a.mu.Unlock()
@@ -605,6 +622,7 @@ func (a *App) WPClear() error {
 
 // Decode 解析当前设备或给定 dump 的 SPD, 供信息面板展示。
 func (a *App) Decode(dump []byte) (*DecodeResult, error) {
+	defer a.lockOp()()
 	if len(dump) == 0 {
 		a.mu.Lock()
 		dev := a.dev
@@ -623,6 +641,7 @@ func (a *App) Decode(dump []byte) (*DecodeResult, error) {
 
 // Close 释放全部传输。
 func (a *App) Close() {
+	defer a.lockOp()()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.disconnectLocked()
@@ -630,6 +649,13 @@ func (a *App) Close() {
 		_ = t.Close()
 	}
 	a.transports = nil
+}
+
+// lockOp 取得操作锁, 用法: defer a.lockOp()()。
+// 只允许在对外入口调用; 内部函数假定调用方已持锁(否则会自锁死)。
+func (a *App) lockOp() func() {
+	a.opMu.Lock()
+	return a.opMu.Unlock
 }
 
 func (a *App) disconnectLocked() {
@@ -645,6 +671,7 @@ func (a *App) disconnectLocked() {
 
 // CloseDevice 仅断开设备选择。
 func (a *App) CloseDevice() {
+	defer a.lockOp()()
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.dev != nil {
@@ -656,8 +683,8 @@ func (a *App) CloseDevice() {
 
 // Logs 返回全部日志。
 func (a *App) Logs() []LogEntry {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.logMu.Lock()
+	defer a.logMu.Unlock()
 	out := make([]LogEntry, len(a.logs))
 	copy(out, a.logs)
 	return out
@@ -665,7 +692,9 @@ func (a *App) Logs() []LogEntry {
 
 func (a *App) logf(format string, args ...interface{}) {
 	entry := LogEntry{Time: a.now().Format("15:04:05"), Text: fmt.Sprintf(format, args...)}
+	a.logMu.Lock()
 	a.logs = append(a.logs, entry)
+	a.logMu.Unlock()
 	if a.Emit != nil {
 		a.Emit("log", entry)
 	}
@@ -680,6 +709,7 @@ func (a *App) emit(event string, data ...interface{}) {
 // BusStats 返回当前控制器自上次 Reset 以来的总线事务计数, 外加"对 SPD NVM 的字节写"
 // 数量(按当前设备的世代判定)。真机验证干跑时用这个作为"确实没写"的证据。
 func (a *App) BusStats() (*BusStatsResult, error) {
+	defer a.lockOp()()
 	a.mu.Lock()
 	dev := a.dev
 	active := a.active
@@ -704,6 +734,7 @@ func (a *App) BusStats() (*BusStatsResult, error) {
 
 // ResetBusStats 清零总线计数(真机验证前后各调一次即可看到本次操作的净事务数)。
 func (a *App) ResetBusStats() error {
+	defer a.lockOp()()
 	a.mu.Lock()
 	active := a.active
 	a.mu.Unlock()

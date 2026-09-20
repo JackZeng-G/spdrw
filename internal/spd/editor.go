@@ -130,6 +130,19 @@ func (e *Editor) set(off int, v byte, field, risk string) error {
 	if old == v {
 		return nil
 	}
+	// 改回原始值 = 没有变更: 必须把变更项删掉, 否则界面会谎报"有改动",
+	// 点写入还会得到"写入并校验通过: 0 字节"这种假成功。
+	if v == e.original[off] {
+		delete(e.changes, off)
+		for i, o := range e.order {
+			if o == off {
+				e.order = append(e.order[:i], e.order[i+1:]...)
+				break
+			}
+		}
+		e.dump[off] = v
+		return nil
+	}
 	if _, seen := e.changes[off]; !seen {
 		e.changes[off] = EditChange{Offset: off, Old: old, New: v, Field: field, Risk: risk}
 		e.order = append(e.order, off)

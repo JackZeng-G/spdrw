@@ -165,14 +165,18 @@ func TestCorpusEditPreflightDryRun(t *testing.T) {
 			t.Errorf("%s: 与设备内容相同却算出 %d 个变更", name, pf.ChangeCount)
 		}
 
-		// 2) 改一个字段 + 重算 CRC → 预检必须放行, 且 CRC 字节排在计划最后
-		ed, err := spd.NewEditor(dump)
-		if err != nil {
+		// 2) 载入编辑器并改一个字段 + 重算 CRC → 预检必须放行, 且 CRC 字节排在计划最后
+		if _, err := a.EditLoadFromDevice(); err != nil {
+			t.Errorf("%s: EditLoadFromDevice: %v", name, err)
 			continue
 		}
 		changed := false
 		for _, key := range []string{"serial", "partNumber"} {
-			if err := ed.SetField(key, "EDITED01"); err == nil {
+			val := "0A0B0C0D"
+			if key == "partNumber" {
+				val = "EDITED"
+			}
+			if _, err := a.EditSetField(key, val); err == nil {
 				changed = true
 				break
 			}
@@ -180,15 +184,19 @@ func TestCorpusEditPreflightDryRun(t *testing.T) {
 		if !changed {
 			continue
 		}
-		if _, err := ed.FixCRC(); err != nil {
+		if _, err := a.EditFixCRC(); err != nil {
 			t.Errorf("%s: FixCRC: %v", name, err)
 			continue
 		}
-		target := append([]byte{}, ed.Bytes()...)
+		target, err := a.EditBytes()
+		if err != nil {
+			t.Errorf("%s: EditBytes: %v", name, err)
+			continue
+		}
 
 		// 2a) 故意不修 CRC 时必须被 CRC 门拦住(至少对带 CRC 的世代)
 		if rt != spd.DDR2 && rt != spd.DDR2FBDIMM && rt != spd.DDR2FBDIMMP {
-			raw := append([]byte{}, ed.Bytes()...)
+			raw := append([]byte{}, target...)
 			// 直接改一个数据字节, 不动 CRC
 			raw[10] ^= 0x01
 			badPf, err := a.buildPreflight(name, raw, false)
@@ -225,16 +233,17 @@ func TestCorpusEditPreflightDryRun(t *testing.T) {
 		}
 
 		// 3) 干跑: 一个 NVM 字节都不能写
-		st, err := a.EditLoadFromDevice()
+		st, err := a.EditState()
 		if err != nil {
-			t.Errorf("%s: EditLoadFromDevice: %v", name, err)
+			t.Errorf("%s: EditState: %v", name, err)
 			continue
 		}
 		if st.Generation == "" || st.Size != size {
 			t.Errorf("%s: 编辑器状态异常: %+v", name, st)
 		}
-		// 走应用的真实路径(自己开干跑), 这样"建立影子"的读也会计入总线统计
-		res, err := a.writeWithPreflight(pf, target, false, true)
+		// 走应用的**入口**(EditApplyToDevice): 它会在跑预检之前先把设备切到干跑,
+		// 因此连预检里的写保护探测也不会碰总线 —— 这正是真机 V2 的路径。
+		res, err := a.EditApplyToDevice(false, true, "DRYRUN")
 		if err != nil {
 			t.Errorf("%s: 干跑失败: %v", name, err)
 			continue

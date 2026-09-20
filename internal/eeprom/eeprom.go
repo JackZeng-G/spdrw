@@ -9,11 +9,13 @@
 package eeprom
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"time"
 
 	"spdrw/internal/smbus"
+	"spdrw/internal/spd"
 )
 
 // DDR4 EE1004 命令设备地址(原版 EepromCommand >> 1)。
@@ -38,6 +40,10 @@ const (
 
 	spd5NVMReg = 0x80 // DDR5 NVM 访问位(offset%128 | 0x80)
 )
+
+// ErrDryRunNoWriteTest 表示"干跑模式跳过写测试, 保护状态未知"。
+// 调用方应把它当作"不知道"而不是"受保护"。
+var ErrDryRunNoWriteTest = errors.New("干跑模式不做写测试(保护状态未知)")
 
 // Device 是连接到一条 SMBus 总线上某个 SPD 地址的 EEPROM。
 type Device struct {
@@ -297,6 +303,12 @@ func (d *Device) CRCOffsets(dump []byte) []int {
 	if dump == nil {
 		dump = d.shadow
 	}
+	// 统一由 spd 层判定(两处各写一套判定会漂移: 实测对同一份 dump 会给出不同的槽位集合)
+	if dump != nil {
+		if offs := spd.CRCOffsets(dump); len(offs) > 0 {
+			return offs
+		}
+	}
 	var out []int
 	nonBlank := func(start, n int) bool {
 		if start < 0 || start+n > len(dump) {
@@ -506,6 +518,11 @@ func (d *Device) ShadowImage() []byte {
 // 与原始实现的关键差异: **还原后必须回读确认**, 失败重试 3 次仍不成功则报错。
 // 原实现只写不校验, 还原写失败会永久改掉该字节且无任何提示(静默数据损坏)。
 func (d *Device) WriteTest(off uint16) (bool, error) {
+	if d.dryRun {
+		// 干跑是"零风险"承诺: 写测试要真的取反写一个字节再还原, 一旦掉电/总线异常/
+		// 还原失败就会永久改坏该字节。因此干跑下直接报"状态未知", 一个字节都不写。
+		return false, ErrDryRunNoWriteTest
+	}
 	b, err := d.Read(off, 1)
 	if err != nil {
 		return false, fmt.Errorf("写测试读取 %#x: %w", off, err)
@@ -699,6 +716,11 @@ func (d *Device) WPStatusDetail() (WPStatusDetail, error) {
 		writable, err := d.WriteTest(uint16(b * det.BlockSize))
 		if err != nil {
 			det.Known[b] = false
+			if errors.Is(err, ErrDryRunNoWriteTest) {
+				// 干跑: 状态未知(不写任何字节), 但也不能说成"受保护"
+				det.Protected[b] = false
+				continue
+			}
 			det.Protected[b] = true
 			det.Warnings = append(det.Warnings, fmt.Sprintf("块 %d(0x%03X)状态未知: %v", b, b*det.BlockSize, err))
 			continue
@@ -706,8 +728,12 @@ func (d *Device) WPStatusDetail() (WPStatusDetail, error) {
 		det.Known[b] = true
 		det.Protected[b] = !writable
 	}
-	det.Warnings = append(det.Warnings,
-		fmt.Sprintf("%s 无写保护状态寄存器: 状态由块首写测试得出(每块写入取反值再还原)", d.Generation()))
+	if d.dryRun {
+		det.Warnings = append(det.Warnings, "干跑模式: 跳过 DDR4/更早世代的块首写测试, 保护状态未知(不写任何字节)")
+	} else {
+		det.Warnings = append(det.Warnings,
+			fmt.Sprintf("%s 无写保护状态寄存器: 状态由块首写测试得出(每块写入取反值再还原)", d.Generation()))
+	}
 
 	det.PSWPApplicable = d.PSWPApplicable()
 	if det.PSWPApplicable {

@@ -275,9 +275,11 @@ func (d *DDR4SPD) XMPProfiles() []XMPProfile {
 		}
 		p.TRCD = d.timing(base+0x12, base+0x2D)
 		p.TRP = d.timing(base+0x13, base+0x2C)
-		p.TRAS = d.timingLong(int(uint16(d.raw[base+0x15]) | uint16(subByteR(d.raw[base+0x14], 7, 4))<<8))
+		// 高位 nibble 位序与 JEDEC 一致: bits3:0 = tRAS MSN, bits7:4 = tRC MSN
+		// (原版 C# 把两者写反了, 实测会把 36 周期的 tRAS 读成 87)
+		p.TRAS = d.timingLong(int(uint16(d.raw[base+0x15]) | uint16(subByteR(d.raw[base+0x14], 3, 4))<<8))
 		p.TRC = Timing{
-			Medium: int(uint16(d.raw[base+0x16]) | uint16(subByteR(d.raw[base+0x14], 3, 4))<<8),
+			Medium: int(uint16(d.raw[base+0x16]) | uint16(subByteR(d.raw[base+0x14], 7, 4))<<8),
 			Fine:   int(int8(d.raw[base+0x2B])),
 		}
 		p.TFAW = d.timingLong(int(uint16(d.raw[base+0x1E]) | uint16(subByteR(d.raw[base+0x1D], 3, 4))<<8))
