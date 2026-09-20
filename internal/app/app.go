@@ -74,8 +74,8 @@ type App struct {
 
 	// dialogs 由 main.go 注入(封装 wails runtime 对话框, 需要 ctx);
 	// 返回空路径 = 用户取消。tests 置 nil 时对话框方法直接报"不可用"。
-	SaveDialog  func(title, defaultName string) (string, error)
-	OpenDialog  func(title string) (string, error)
+	SaveDialog func(title, defaultName string) (string, error)
+	OpenDialog func(title string) (string, error)
 
 	// now 便于测试注入。
 	now func() time.Time
