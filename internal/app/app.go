@@ -301,12 +301,16 @@ func (a *App) Dump() ([]byte, error) {
 		return nil, err
 	}
 	st := a.dev.ReadStats()
-	if st.BlockReadKnown && st.BlockReadOK {
-		a.logf("读取 %d 字节: 块读加速(64 字节/事务… 事务 %d 次, 耗时 %s)", len(data), st.Transactions, time.Since(start).Round(time.Millisecond))
-	} else if st.BlockReadKnown {
-		a.logf("读取 %d 字节: 逐字节(块读不可用, 已回退; 事务 %d 次, 耗时 %s)",
-			len(data), st.Transactions, time.Since(start).Round(time.Millisecond))
+	mode := st.Mode
+	if mode == "" {
+		mode = "未知读取方式"
 	}
+	line := fmt.Sprintf("读取 %d 字节: %s; 事务 %d 次, 耗时 %s(等待 %d ms)",
+		len(data), mode, st.Transactions, time.Since(start).Round(time.Millisecond), st.SleepMS)
+	if st.Note != "" && st.FallbackBytes > 0 {
+		line += "; 回退原因: " + st.Note
+	}
+	a.logf("%s", line)
 	a.lastDumpAddr = a.dev.Addr()
 	a.lastDump = data
 	a.emit("dump:done", len(data))

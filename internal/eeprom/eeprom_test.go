@@ -783,28 +783,55 @@ func TestBlockReadEqualsByteRead(t *testing.T) {
 	}
 }
 
-// TestBlockReadFallback 设备不支持块读时必须自动回退, 且结果仍然正确。
-func TestBlockReadFallback(t *testing.T) {
+// TestReadFallbackChain 读路径是"块读(32B) → 字读(2B) → 逐字节(1B)"三级回退:
+// 设备支持哪一级就用哪一级, 数据必须始终正确。
+func TestReadFallbackChain(t *testing.T) {
+	// 1) 只不支持块读 → 应落到字读
 	d, ft, img := newPatternDDR5(t)
 	ft.BlockReadUnsupported = true
 	d.SetFastRead(true)
 	got, err := d.ReadAll()
 	if err != nil {
-		t.Fatalf("回退后 ReadAll: %v", err)
+		t.Fatalf("ReadAll: %v", err)
 	}
 	for i := range got {
 		if got[i] != img[i] {
-			t.Fatalf("回退后数据错 @%#x", i)
+			t.Fatalf("数据错 @%#x", i)
 		}
 	}
 	st := d.ReadStats()
 	if st.BlockReadOK || !st.BlockReadKnown {
 		t.Fatalf("应记住块读不可用: %+v", st)
 	}
-	if st.FallbackBytes != len(img) {
-		t.Fatalf("回退字节数 = %d, 期望 %d", st.FallbackBytes, len(img))
+	if !st.WordReadOK || st.WordBytes != len(img) {
+		t.Fatalf("应回退到字读并读满整片: %+v", st)
 	}
-	if st.Transactions != len(img) {
-		t.Fatalf("回退后事务数应等于字节数 %d, got %d", len(img), st.Transactions)
+	if st.Transactions > len(img)/2+8 {
+		t.Fatalf("字读事务数应约等于 %d, got %d", len(img)/2, st.Transactions)
+	}
+
+	// 2) 块读与字读都不支持 → 逐字节
+	d2, ft2, img2 := newPatternDDR5(t)
+	ft2.BlockReadUnsupported = true
+	ft2.WordReadUnsupported = true
+	d2.SetFastRead(true)
+	got2, err := d2.ReadAll()
+	if err != nil {
+		t.Fatalf("逐字节 ReadAll: %v", err)
+	}
+	for i := range got2 {
+		if got2[i] != img2[i] {
+			t.Fatalf("逐字节数据错 @%#x", i)
+		}
+	}
+	st2 := d2.ReadStats()
+	if st2.WordReadOK {
+		t.Fatalf("应记住字读不可用: %+v", st2)
+	}
+	if st2.FallbackBytes != len(img2) || st2.Transactions != len(img2) {
+		t.Fatalf("逐字节回退应读满 %d 字节且事务数相同: %+v", len(img2), st2)
+	}
+	if st2.Mode == "" || st2.ElapsedMS < 0 {
+		t.Fatalf("应给出读取方式与耗时: %+v", st2)
 	}
 }

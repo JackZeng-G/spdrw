@@ -19,7 +19,9 @@ type FakeTransport struct {
 	ProtectedFrom int
 	// BlockReadUnsupported 为 true 时块读返回 NACK(模拟不支持块读的设备, 用于测回退)。
 	BlockReadUnsupported bool
-	Closed               bool
+	// WordReadUnsupported 为 true 时字读返回 NACK(模拟连字读都不支持的设备)。
+	WordReadUnsupported bool
+	Closed              bool
 
 	// DDR5 为 true 时按 DDR5 分页(MR11, 128 字节页, 读命令 |0x80); 否则按 DDR4(SPA quick, 256 字节页)。
 	DDR5 bool
@@ -208,6 +210,9 @@ func (f *FakeTransport) ReadBlockData(addr byte, cmd byte) ([]byte, error) {
 }
 
 func (f *FakeTransport) ReadWordData(addr byte, cmd byte) (uint16, error) {
+	if f.WordReadUnsupported {
+		return 0, fmt.Errorf("设备无响应 NACK(0xC000000E)")
+	}
 	lo, err := f.ReadByteData(addr, cmd)
 	if err != nil {
 		return 0, err

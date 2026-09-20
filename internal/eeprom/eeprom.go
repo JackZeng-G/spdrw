@@ -68,6 +68,9 @@ type Device struct {
 	blockBytes    int    // 走块读读到的字节数
 	readTx        int    // 读事务计数(字节读=1, 块读=1)
 	blockNote     string // 块读失败原因(诊断)
+	wordRead      bool   // 是否允许字读(默认开)
+	wordOK        *bool  // 字读(2 字节/事务)是否可用
+	wordBytes     int
 	readStats     ReadStats
 }
 
@@ -108,6 +111,7 @@ func New(t smbus.Transport, addr byte) (*Device, error) {
 	// 注意: 探测阶段不做任何写操作(页复位/页切换推迟到真正读写时由
 	// physOffset 执行) —— 避免探测阶段对未知设备触发写事务。
 	d.fastRead = true
+	d.wordRead = true
 	return d, nil
 }
 
@@ -225,6 +229,12 @@ type ReadStats struct {
 	FallbackBytes  int    `json:"fallbackBytes"`
 	BlockReadOK    bool   `json:"blockReadOK"`
 	BlockReadKnown bool   `json:"blockReadKnown"`
+	WordReadOK     bool   `json:"wordReadOK"`
+	WordBytes      int    `json:"wordBytes"`
+	WordReadKnown  bool   `json:"wordReadKnown"`
+	Mode           string `json:"mode"`
+	ElapsedMS      int64  `json:"elapsedMs"`
+	SleepMS        int64  `json:"sleepMs"`
 	Note           string `json:"note,omitempty"`
 }
 
@@ -235,6 +245,11 @@ func (d *Device) ReadStats() ReadStats {
 	st.BlockBytes = d.blockBytes
 	st.FallbackBytes = d.blockFallback
 	st.BlockReadKnown = d.blockOK != nil
+	st.WordReadKnown = d.wordOK != nil
+	if d.wordOK != nil {
+		st.WordReadOK = *d.wordOK
+	}
+	st.WordBytes = d.wordBytes
 	if d.blockNote != "" {
 		st.Note = d.blockNote
 	}
@@ -246,8 +261,12 @@ func (d *Device) ReadStats() ReadStats {
 
 // resetReadStats 在每次整片读取前清零。
 func (d *Device) resetReadStats() {
-	d.readTx, d.blockBytes, d.blockFallback = 0, 0, 0
+	d.readTx, d.blockBytes, d.blockFallback, d.wordBytes = 0, 0, 0, 0
+	d.readStats = ReadStats{}
 }
+
+// SetWordRead 开关字读加速(2 字节/事务)。块读不可用时它是第二档。
+func (d *Device) SetWordRead(on bool) { d.wordRead = on }
 
 // Read 读取 n 字节(n 为 0 时报错)。
 //
@@ -263,6 +282,7 @@ func (d *Device) Read(off uint16, n int) ([]byte, error) {
 		return nil, fmt.Errorf("读取范围 %#x+%#x 越界", off, n)
 	}
 	out := make([]byte, n)
+	start := time.Now()
 	for i := 0; i < n; {
 		cur := off + uint16(i)
 		if d.fastRead && d.blockReadUsable() {
@@ -276,6 +296,16 @@ func (d *Device) Read(off uint16, n int) ([]byte, error) {
 			}
 			d.markBlockUnusable(err)
 		}
+		if d.fastRead && d.wordRead && d.wordReadUsable() && n-i >= 2 && int(cur)%d.pageSize() != d.pageSize()-1 {
+			if b0, b1, err := d.readWordPair(cur); err == nil {
+				out[i], out[i+1] = b0, b1
+				i += 2
+				d.wordBytes += 2
+				d.readTx++
+				continue
+			}
+			d.markWordUnusable()
+		}
 		b, err := d.readOne(cur)
 		if err != nil {
 			return nil, err
@@ -285,7 +315,56 @@ func (d *Device) Read(off uint16, n int) ([]byte, error) {
 		d.blockFallback++
 		d.readTx++
 	}
+	d.readStats.ElapsedMS = time.Since(start).Milliseconds()
+	switch {
+	case d.blockOK != nil && *d.blockOK:
+		d.readStats.Mode = "块读(32 字节/事务)"
+	case d.wordOK != nil && *d.wordOK:
+		d.readStats.Mode = "字读(2 字节/事务)"
+	default:
+		d.readStats.Mode = "逐字节(1 字节/事务)"
+	}
 	return out, nil
+}
+
+// wordReadUsable 探测字读(2 字节/事务)是否可用: 读一个字并与两次字节读对照。
+func (d *Device) wordReadUsable() bool {
+	if d.wordOK != nil {
+		return *d.wordOK
+	}
+	ok := new(bool)
+	d.wordOK = ok
+	b0, b1, err := d.readWordPair(0)
+	if err != nil {
+		return false
+	}
+	r0, err0 := d.readOne(0)
+	r1, err1 := d.readOne(1)
+	if err0 != nil || err1 != nil || r0 != b0 || r1 != b1 {
+		return false
+	}
+	*ok = true
+	return true
+}
+
+func (d *Device) markWordUnusable() {
+	if d.wordOK == nil {
+		d.wordOK = new(bool)
+	}
+	*d.wordOK = false
+}
+
+// readWordPair 用 SMBus Word Read 读两个连续字节(小端)。
+func (d *Device) readWordPair(off uint16) (byte, byte, error) {
+	_, phys, err := d.physOffset(off)
+	if err != nil {
+		return 0, 0, err
+	}
+	v, err := d.t.ReadWordData(d.addr, phys)
+	if err != nil {
+		return 0, 0, err
+	}
+	return byte(v), byte(v >> 8), nil
 }
 
 // blockReadUsable 报告当前是否走块读; 未探测时先探测一次(只读, 不写)。
@@ -366,6 +445,7 @@ func (d *Device) readOne(off uint16) (byte, error) {
 	}
 	if ReadDelay > 0 {
 		time.Sleep(ReadDelay)
+		d.readStats.SleepMS += ReadDelay.Milliseconds()
 	}
 	return b, nil
 }

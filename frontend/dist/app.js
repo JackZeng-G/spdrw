@@ -514,8 +514,10 @@ async function refreshReadMode() {
   try {
     const st = await call("ReadStats");
     if (!st) return;
-    const mode = st.blockReadKnown ? (st.blockReadOK ? "块读加速" : "逐字节(块读不可用)") : "尚未读取";
-    $("read-mode").innerHTML = `本次读取: <b>${mode}</b> · 事务 ${st.transactions} 次 · 块读 ${st.blockBytes}B / 逐字节 ${st.fallbackBytes}B` +
+    const mode = st.mode || (st.blockReadKnown ? (st.blockReadOK ? "块读加速" : "逐字节(块读不可用)") : "尚未读取");
+    $("read-mode").innerHTML = `本次读取: <b>${mode}</b> · 事务 ${st.transactions} 次` +
+      (st.elapsedMs ? ` · 耗时 ${(st.elapsedMs / 1000).toFixed(2)}s` : "") +
+      ` · 块读 ${st.blockBytes}B / 字读 ${st.wordBytes || 0}B / 逐字节 ${st.fallbackBytes}B` +
       (st.note ? `<br><span class="warn">${escapeHtml(st.note)}</span>` : "");
   } catch (e) { /* 未选设备 */ }
 }
