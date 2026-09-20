@@ -12,9 +12,8 @@
     <div class="bar-controls">
       <label>控制器
         <select id="ctl-select"><option value="-1">— 未枚举 —</option></select>
-        <button id="btn-refresh-ctl" title="重新枚举控制器">⟳</button>
       </label>
-      <button id="btn-scan">重扫设备</button>
+      <button id="btn-scan" title="重新枚举控制器并在其上扫描 SPD 设备">重扫</button>
       <label>设备
         <select id="dimm-select"><option value="-1">— 未扫描 —</option></select>
       </label>
@@ -58,9 +57,6 @@
       <div class="panel-title">SPD 信息</div>
       <div id="info-body" class="info-body"><div class="placeholder">读取后显示</div></div>
 
-      <div class="muted small" id="read-mode-wrap">
-        读取方式: <span id="read-mode" class="muted">—</span>
-      </div>
       </div>
 
       <div id="view-edit" class="tabview hidden">

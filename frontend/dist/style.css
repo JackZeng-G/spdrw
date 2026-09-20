@@ -86,7 +86,8 @@ select {
 .hexgrid {
   flex: 1;
   overflow: auto;
-  padding: 10px;
+  /* 顶部内边距去掉: 列头要贴住滚动区顶部(sticky), 否则会露出内容 */
+  padding: 0 10px 10px;
   font: 12px/1.7 Consolas, "Courier New", monospace;
   white-space: pre;
   user-select: text;
@@ -308,3 +309,29 @@ button.q:hover { color: var(--accent); border-color: var(--accent); }
 /* 顶栏右侧的文件操作组(全局动作: 打开/另存/校验) */
 .bar-files { display: flex; align-items: center; gap: 6px; margin-left: auto; }
 .bar-files button { padding: 2px 9px; font-size: 12px; }
+
+/* 信息面板里的时序表两列: 一行两组"名称/值" */
+table.timing.two-col th { width: 4.5em; }
+table.timing.two-col td { padding-right: 14px; }
+
+/* ---------- SPD 内容: 横纵坐标固定(滚动时列头与行偏移始终可见) ---------- */
+.hexgrid .row .offset {
+  display: inline-block;
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  background: var(--bg);
+  padding-right: 10px;
+  border-right: 1px solid var(--border);
+}
+.hexgrid .row.head {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--bg);
+  padding: 4px 0 3px;
+  border-bottom: 1px solid var(--border);
+}
+.hexgrid .row.head .offset { z-index: 4; }
+.hexgrid .row.head .offset,
+.hexgrid .row.head .colhead { color: var(--accent); font-weight: 600; }

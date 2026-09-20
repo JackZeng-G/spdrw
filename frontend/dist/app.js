@@ -136,7 +136,6 @@ function escapeHtml(s) {
 }
 
 // ---------- 控制器/扫描/设备 ----------
-$("btn-refresh-ctl").onclick = () => checkEnv();
 
 $("ctl-select").onchange = async () => {
   const idx = parseInt($("ctl-select").value, 10);
@@ -244,15 +243,22 @@ async function adoptDeviceEditor() {
   }
 }
 
+// 重扫: 一次做完"重新枚举控制器 → 连接 → 扫描 SPD 设备"
+// (原先"重扫设备"与 ⟳"重新枚举控制器"两个按钮功能重叠, 已合并为一个)
 $("btn-scan").onclick = async () => {
   try {
-    const idx = parseInt($("ctl-select").value, 10);
-    if (isNaN(idx) || idx < 0) throw new Error("未枚举到控制器");
-    await call("Connect", idx); // 重复连接无害, 保证状态就绪
+    const list = (await call("ListControllers")) || [];
+    fillCtlSelect(list);
+    let idx = parseInt($("ctl-select").value, 10);
+    if (isNaN(idx) || idx < 0) {
+      if (!list.length) throw new Error("未枚举到控制器");
+      idx = 0;
+    }
+    await call("Connect", idx);
     const dimms = (await call("Scan")) || [];
     selectedAddr = null; // 重扫后回到空白, 等待用户手动选择
     fillDimmSelect(dimms);
-    addLog("", `重扫完成: ${dimms.length} 个 SPD 设备, 请选择要读取的 DIMM`);
+    addLog("", `重扫完成: ${list.length} 个控制器 / ${dimms.length} 个 SPD 设备, 请选择要读取的 DIMM`);
   } catch (e) { addLog("", "扫描失败: " + e); }
 };
 
@@ -464,26 +470,35 @@ function renderInfo(r) {
   html += kv("部件号", escapeHtml(r.partNumber || "—"));
   if (r.dateYear) html += kv("生产日期", `${r.dateYear} 年第 ${r.dateWeek} 周`);
   if (r.serialHex) html += kv("序列号", `0x${r.serialHex}`);
-  html += kv("CRC", r.crcOk ? "校验通过" : "校验失败", r.crcOk ? "good" : "bad");
+  // 读取方式并入 CRC 行(用户反馈: 底部单独一行"读取方式"是重复信息)
+  html += kv("CRC", (r.crcOk ? "校验通过" : "校验失败") +
+    ` <span id="read-mode" class="muted small"></span>`, r.crcOk ? "good" : "bad");
   html += `</div>`;
 
   if (r.hasTimings && r.tck) {
-    html += `<div class="section">时序</div><table class="timing"><tr><th>tCK</th><td>${fmtT(r.tck)} (${r.tck.ns.toFixed(3)} ns${r.tck.ns ? " · " + (1000 / r.tck.ns).toFixed(0) + " MHz" : ""})</td></tr>`;
+    html += `<div class="section">时序</div><table class="timing two-col"><tr><th>tCK</th><td>${fmtT(r.tck)} (${r.tck.ns.toFixed(3)} ns${r.tck.ns ? " · " + (1000 / r.tck.ns).toFixed(0) + " MHz" : ""})</td></tr>`;
     if (r.casLatencies) html += `<tr><th>CL</th><td>${escapeHtml(r.casLatencies)}</td></tr>`;
-    const rows = [["tAA", r.taa], ["tRCD", r.trcd], ["tRP", r.trp], ["tRAS", r.tras], ["tRC", r.trc], ["tRFC1", r.trfc1], ["tRFC2", r.trfc2], ["tRFC4", r.trfc4], ["tFAW", r.tfaw], ["tRRD_S", r.trrdS], ["tRRD_L", r.trrdL], ["tCCD_L", r.tccdL], ["tWR", r.twr]];
-    for (const [name, t] of rows) {
-      if (t && t.ns) html += `<tr><th>${name}</th><td>${fmtT(t)} (${t.ns.toFixed(3)} ns)</td></tr>`;
+    const rows = [["tAA", r.taa], ["tRCD", r.trcd], ["tRP", r.trp], ["tRAS", r.tras], ["tRC", r.trc], ["tRFC1", r.trfc1], ["tRFC2", r.trfc2], ["tRFC4", r.trfc4], ["tFAW", r.tfaw], ["tRRD_S", r.trrdS], ["tRRD_L", r.trrdL], ["tCCD_L", r.tccdL], ["tWR", r.twr]]
+      .filter(([, t]) => t && t.ns);
+    for (let i = 0; i < rows.length; i += 2) {
+      const cell = ([name, t]) => `<th>${name}</th><td>${fmtT(t)} (${t.ns.toFixed(3)} ns)</td>`;
+      html += `<tr>${cell(rows[i])}` + (rows[i + 1] ? cell(rows[i + 1]) : "<th></th><td></td>") + `</tr>`;
     }
     html += `</table>`;
   }
 
   if (r.ddr5Timings && r.ddr5Timings.length) {
-    html += `<div class="section">JEDEC 时序(DDR5)</div><table class="timing">`;
-    for (const t of r.ddr5Timings) {
+    // 两列显示: 一行放两组"名称/值", 省一半纵向空间
+    html += `<div class="section">JEDEC 时序(DDR5)</div><table class="timing two-col">`;
+    const cellsOf = (t) => {
       const ns = (t.ns != null) ? `${t.ns.toFixed(3)} ns` : "—";
       const cyc = t.cycles ? ` · ${t.cycles} clk` : "";
       const low = t.lower ? ` <span class="muted">(下限 ${t.lower})</span>` : "";
-      html += `<tr><th>${escapeHtml(t.name)}</th><td>${ns}${cyc}${low}</td></tr>`;
+      return `<th>${escapeHtml(t.name)}</th><td>${ns}${cyc}${low}</td>`;
+    };
+    for (let i = 0; i < r.ddr5Timings.length; i += 2) {
+      html += `<tr>${cellsOf(r.ddr5Timings[i])}` +
+        (r.ddr5Timings[i + 1] ? cellsOf(r.ddr5Timings[i + 1]) : `<th></th><td></td>`) + `</tr>`;
     }
     html += `</table>`;
     if (r.casLatencies) html += `<div class="kv"><div class="k">CL 支持</div><div class="v">${escapeHtml(r.casLatencies)}</div></div>`;
@@ -534,6 +549,8 @@ let busTuningCache = null;
 
 async function refreshReadMode() {
   try {
+    const target = $("read-mode");
+    if (!target) return; // 信息面板还没渲染(元素是动态生成的)
     const st = await call("ReadStats");
     if (!st) return;
     let tune = "";
@@ -546,11 +563,14 @@ async function refreshReadMode() {
       }
     } catch (e) { /* 未连接 */ }
     const mode = st.mode || (st.blockReadKnown ? (st.blockReadOK ? "块读加速" : "逐字节(块读不可用)") : "尚未读取");
-    $("read-mode").innerHTML = `本次读取: <b>${mode}</b> · 事务 ${st.transactions} 次` +
-      (st.elapsedMs ? ` · 耗时 ${(st.elapsedMs / 1000).toFixed(2)}s` : "") +
-      ` · 块读 ${st.blockBytes}B / 字读 ${st.wordBytes || 0}B / 逐字节 ${st.fallbackBytes}B` +
+    // 紧凑一行, 附在"CRC"那一行后面(避免底部再单独占一行)
+    const bytes = st.wordBytes ? `字读 ${st.wordBytes}B` :
+      (st.blockBytes ? `块读 ${st.blockBytes}B` : `逐字节 ${st.fallbackBytes}B`);
+    target.innerHTML = ` · ${escapeHtml(mode)} · ${st.transactions} 次事务` +
+      (st.elapsedMs ? ` · ${(st.elapsedMs / 1000).toFixed(2)}s` : "") +
+      ` · ${bytes}` +
       (tune ? ` · ${escapeHtml(tune)}` : "") +
-      (st.note ? `<br><span class="warn">${escapeHtml(st.note)}</span>` : "");
+      (st.note ? ` <span class="warn">(${escapeHtml(st.note)})</span>` : "");
   } catch (e) { /* 未选设备 */ }
 }
 

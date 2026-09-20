@@ -20,11 +20,17 @@ function collect(source, re) {
   return new Set([...source.matchAll(re)].map((m) => m[1]));
 }
 
-test("app.js 引用的元素 id 都存在于真实 index.html", () => {
+test("app.js 引用的元素 id 都存在于真实 index.html(动态生成的除外)", () => {
+  // 少数元素由 app.js 渲染时动态生成(例如信息面板里 CRC 行附带的读取方式),
+  // 它们不在 index.html 里; 列在白名单里, 并额外校验 app.js 确实会生成该 id。
+  const DYNAMIC_IDS = new Set(["read-mode"]);
   const htmlIDs = collect(html, /id="([^"]+)"/g);
   const used = collect(appJS, /\$\("([^"]+)"\)/g);
-  const missing = [...used].filter((id) => !htmlIDs.has(id));
+  const missing = [...used].filter((id) => !htmlIDs.has(id) && !DYNAMIC_IDS.has(id));
   assert.deepEqual(missing, [], "index.html 缺少这些元素: " + missing.join(", "));
+  for (const id of DYNAMIC_IDS) {
+    assert.ok(appJS.includes(`id="${id}"`), `动态 id ${id} 必须在 app.js 里被生成`);
+  }
   assert.ok(used.size > 20, "只解析到 " + used.size + " 个 id, 解析可能失效");
 });
 
@@ -50,4 +56,10 @@ test("图例必须用真实色块, 不能拿绿字写个「蓝」(颜色要与�
   assert.match(css, /\.sw-free\s*\{[^}]*#123f6b/, "图例蓝色块要与 .chg-free 同色");
   assert.match(css, /\.hexgrid \.hexbyte\.chg-free\s*\{[^}]*#123f6b/, "格子的蓝底要在样式里");
   assert.match(css, /\.hexgrid \.hexbyte\.chg-crc\s*\{[^}]*#7a1f24/, "格子的红底要在样式里");
+});
+
+test("SPD 内容: 列头与行偏移必须固定(sticky), 否则滚动后看不出位置", () => {
+  assert.match(css, /\.hexgrid \.row\.head\s*\{[^}]*position:\s*sticky/, "列头应 sticky");
+  assert.match(css, /\.hexgrid \.row \.offset\s*\{[^}]*position:\s*sticky/, "行偏移应 sticky");
+  assert.match(html, /id="hexgrid"/, "hex 网格容器仍在");
 });

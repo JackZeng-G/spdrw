@@ -21,8 +21,10 @@
     step("信息面板显示厂商", $("info-body").textContent.includes("Micron"));
     step("信息面板显示容量", $("info-body").textContent.includes("8 GiB"));
     step("读后即显示校验状态", $("crc-status").textContent.includes("CRC 通过"));
-    step("读取方式一行显示档位/事务/时钟", /事务|字读|块读/.test($("read-mode").textContent) &&
-      /kHz|时钟/.test($("read-mode").textContent));
+    step("读取方式挂在 CRC 行", /CRC/.test($("info-body").textContent) &&
+      /次事务/.test($("read-mode").textContent) && /kHz|时钟/.test($("read-mode").textContent));
+    step("控制器枚举按钮已合并(无 ⟳)", !document.getElementById("btn-refresh-ctl") &&
+      $("btn-scan").textContent.trim() === "重扫");
     // 总线统计面板已移除(信息并入日志与读取方式一行)
     step("总线统计面板已移除", !document.getElementById("btn-bus-stats") &&
       !document.getElementById("bus-stats"));
