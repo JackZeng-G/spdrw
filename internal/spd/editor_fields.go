@@ -2,6 +2,7 @@ package spd
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,6 +19,7 @@ type idLayout struct {
 	SerialOff, SerialLen int
 	PNOff, PNLen         int
 	RevisionOff          int // -1 = 无
+	RevisionLen          int // 1(DDR4/DDR5) 或 2(DDR3/DDR2)
 	DramCont, DramCode   int // -1 = 无
 	DramStepping         int // -1 = 无
 	DateBCD              bool
@@ -27,15 +29,15 @@ type idLayout struct {
 func idLayoutFor(rt RamType) (idLayout, error) {
 	switch rt {
 	case DDR4, DDR4E:
-		return idLayout{320, 321, 322, 323, 324, 325, 4, 329, 20, 349, 350, 351, 352, true, false}, nil
+		return idLayout{320, 321, 322, 323, 324, 325, 4, 329, 20, 349, 1, 350, 351, 352, true, false}, nil
 	case LPDDR3, LPDDR4, LPDDR4X:
-		return idLayout{320, 321, 322, 323, 324, 325, 4, 329, 20, 349, -1, -1, -1, true, false}, nil
+		return idLayout{320, 321, 322, 323, 324, 325, 4, 329, 20, 349, 1, -1, -1, -1, true, false}, nil
 	case DDR5, LPDDR5, DDR5NVDIMMP, LPDDR5X:
-		return idLayout{512, 513, 514, 515, 516, 517, 4, 521, 30, 551, 552, 553, 554, true, false}, nil
+		return idLayout{512, 513, 514, 515, 516, 517, 4, 521, 30, 551, 1, 552, 553, 554, true, false}, nil
 	case DDR3:
-		return idLayout{117, 118, 119, 120, 121, 122, 4, 128, 18, 146, 148, 149, -1, true, false}, nil
+		return idLayout{117, 118, 119, 120, 121, 122, 4, 128, 18, 146, 2, 148, 149, -1, true, false}, nil
 	case DDR2, DDR2FBDIMM, DDR2FBDIMMP:
-		return idLayout{64, 65, 72, 93, 94, 95, 4, 73, 18, 91, -1, -1, -1, false, true}, nil
+		return idLayout{64, 65, 72, 93, 94, 95, 4, 73, 18, 91, 2, -1, -1, -1, false, true}, nil
 	default:
 		return idLayout{}, fmt.Errorf("%v 暂不支持编辑", rt)
 	}
@@ -64,10 +66,14 @@ func (e *Editor) Identity() (Identity, error) {
 	if err != nil {
 		return Identity{}, err
 	}
+	cont, code := e.dump[l.MfgCont], e.dump[l.MfgCode]
+	if l.DDR2Mfg {
+		cont, code = e.ddr2ManufacturerID(l)
+	}
 	id := Identity{
-		Manufacturer:     ManufacturerName(e.dump[l.MfgCont], e.dump[l.MfgCode]),
-		ManufacturerCont: e.dump[l.MfgCont],
-		ManufacturerCode: e.dump[l.MfgCode],
+		Manufacturer:     ManufacturerName(cont, code),
+		ManufacturerCont: cont,
+		ManufacturerCode: code,
 		Location:         e.dump[l.Location],
 		SerialHex:        hexOf(e.dump[l.SerialOff : l.SerialOff+l.SerialLen]),
 		PartNumber:       asciiString(e.dump[l.PNOff : l.PNOff+l.PNLen]),
@@ -77,8 +83,11 @@ func (e *Editor) Identity() (Identity, error) {
 	} else {
 		id.DateYear, id.DateWeek = 2000+int(e.dump[l.DateYear]), int(e.dump[l.DateWeek])
 	}
-	if l.RevisionOff >= 0 {
-		id.Revision = uint16(e.dump[l.RevisionOff]) | uint16(e.dump[l.RevisionOff+1])<<8
+	if l.RevisionOff >= 0 && l.RevisionLen > 0 {
+		id.Revision = uint16(e.dump[l.RevisionOff])
+		if l.RevisionLen > 1 {
+			id.Revision |= uint16(e.dump[l.RevisionOff+1]) << 8
+		}
 	}
 	if l.DramCont >= 0 {
 		id.DRAMCont, id.DRAMCode = e.dump[l.DramCont], e.dump[l.DramCode]
@@ -119,9 +128,10 @@ func (e *Editor) identityFields() []Field {
 		{Key: "mfgCode", Name: "厂商码(含奇校验位)", Group: "常用信息", Kind: "int",
 			Value: strconv.Itoa(int(id.ManufacturerCode)), Min: 0, Max: 255,
 			Offset: fmt.Sprintf("0x%03X", l.MfgCode), Risk: "low"},
-		{Key: "mfgCont", Name: "厂商续延码(continuation)", Group: "常用信息", Kind: "int",
-			Value: strconv.Itoa(int(id.ManufacturerCont)), Min: 0, Max: 15,
-			Offset: fmt.Sprintf("0x%03X", l.MfgCont), Risk: "low"},
+		{Key: "mfgCont", Name: "厂商续延码(bit7 = 奇校验位)", Group: "常用信息", Kind: "int",
+			Value: strconv.Itoa(int(id.ManufacturerCont)), Min: 0, Max: 255,
+			Offset: fmt.Sprintf("0x%03X", l.MfgCont), Risk: "low",
+			Note: "厂商表按 cont & 0x7F 查表; 常见 bank0 写成 0x80(计数 0 + 校验位)"},
 		{Key: "location", Name: "生产地点", Group: "常用信息", Kind: "int",
 			Value: strconv.Itoa(int(id.Location)), Min: 0, Max: 255,
 			Offset: fmt.Sprintf("0x%03X", l.Location), Risk: "low"},
@@ -137,9 +147,10 @@ func (e *Editor) identityFields() []Field {
 			Value: id.PartNumber, Offset: fmt.Sprintf("0x%03X-%dB", l.PNOff, l.PNLen),
 			Risk: "low", Params: []string{strconv.Itoa(l.PNLen)}},
 	}
-	if l.RevisionOff >= 0 {
-		out = append(out, Field{Key: "revision", Name: "模块修订码(hex)", Group: "常用信息", Kind: "hex",
-			Value: fmt.Sprintf("%04X", id.Revision), Offset: fmt.Sprintf("0x%03X-0x%03X", l.RevisionOff, l.RevisionOff+1), Risk: "low"})
+	if l.RevisionOff >= 0 && l.RevisionLen > 0 {
+		out = append(out, Field{Key: "revision", Name: "模块修订码(hex, 按偏移顺序)", Group: "常用信息", Kind: "hex",
+			Value:  hexOf(e.dump[l.RevisionOff : l.RevisionOff+l.RevisionLen]),
+			Offset: fmt.Sprintf("0x%03X-%dB", l.RevisionOff, l.RevisionLen), Risk: "low"})
 	}
 	if l.DramCont >= 0 {
 		out = append(out,
@@ -183,6 +194,10 @@ func (e *Editor) SetField(key, value string) error {
 		if !ok {
 			return fmt.Errorf("厂商表中找不到 %q(可用厂商码手动指定)", value)
 		}
+		if l.DDR2Mfg {
+			// DDR2 用 0x7F 续延串表示 bank(连续 N 个 0x7F 后跟厂商码)
+			return e.setDDR2Manufacturer(cont&0x7F, code)
+		}
 		if err := e.set(l.MfgCont, cont, "模块厂商", "low"); err != nil {
 			return err
 		}
@@ -200,7 +215,7 @@ func (e *Editor) SetField(key, value string) error {
 		}
 		return e.set(l.DramCode, code, "DRAM 厂商", "low")
 	case "mfgCont":
-		v, err := asInt("续延码", 0, 15)
+		v, err := asInt("续延码", 0, 255)
 		if err != nil {
 			return err
 		}
@@ -250,10 +265,10 @@ func (e *Editor) SetField(key, value string) error {
 	case "partNumber":
 		return e.setASCII(l.PNOff, l.PNLen, value, "部件号", "low")
 	case "revision":
-		if l.RevisionOff < 0 {
+		if l.RevisionOff < 0 || l.RevisionLen <= 0 {
 			return fmt.Errorf("%v 无模块修订码字段", e.rt)
 		}
-		return e.setHexBytes(l.RevisionOff, 2, value, "模块修订", "low")
+		return e.setHexBytes(l.RevisionOff, l.RevisionLen, value, "模块修订", "low")
 	case "dramStepping":
 		if l.DramStepping < 0 {
 			return fmt.Errorf("%v 无 DRAM stepping 字段", e.rt)
@@ -274,6 +289,11 @@ func (e *Editor) SetField(key, value string) error {
 		ns, err := strconv.ParseFloat(value, 64)
 		if err != nil {
 			return fmt.Errorf("%s 必须是数值(纳秒): %q", s.Name, value)
+		}
+		// 时间没变就不动字节: 同一时间可能有等价但字节不同的编码
+		// (厂商常用 medium 向下取整 + 正 fine, 与 JEDEC 建议的向上取整 + 负 fine 等价)
+		if cur, ok := s.Get(e); ok && math.Abs(cur-ns) < 1e-9 {
+			return nil
 		}
 		return s.Set(e, ns)
 	}
@@ -325,4 +345,37 @@ func SearchManufacturers(query string, limit int) []MfgEntry {
 		out = out[:limit]
 	}
 	return out
+}
+
+// setDDR2Manufacturer 按 DDR2 惯例写厂商 ID: bank 个 0x7F 续延字节 + 厂商码 + 0x00 填充。
+func (e *Editor) setDDR2Manufacturer(bank byte, code byte) error {
+	for i := 0; i < 8; i++ {
+		var v byte
+		switch {
+		case i < int(bank):
+			v = 0x7F
+		case i == int(bank):
+			v = code
+		default:
+			v = 0x00
+		}
+		if err := e.set(64+i, v, "模块厂商", "low"); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ddr2ManufacturerID 按 DDR2 惯例解析厂商 ID(连续 0x7F 为 bank 续延码)。
+func (e *Editor) ddr2ManufacturerID(l idLayout) (cont, code byte) {
+	for i := 0; i < 8; i++ {
+		b := e.dump[l.MfgCont+i]
+		if b == 0x7F {
+			cont++
+			continue
+		}
+		code = b
+		break
+	}
+	return
 }
