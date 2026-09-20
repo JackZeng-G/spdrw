@@ -299,17 +299,26 @@ func TestWritePreflightBlocks(t *testing.T) {
 		t.Fatalf("阻断原因应提到 CRC: %s", pf.BlockReason)
 	}
 
-	// 3) 受保护块包含变更 → 阻断
+	// 3) 受保护块包含变更 → 真实写入必须被拒绝
+	//
+	// 注意: 预览用的 PreflightWrite 不做写保护探测(DDR4 的探测要真写一个字节),
+	// 所以它把保护状态报成"未知"; 真正的判定发生在写入路径上。
 	f.ProtectedFrom = 0 // 全部块 NACK
 	pf, err = a.PreflightWrite(badPath, false)
 	if err != nil {
 		t.Fatalf("PreflightWrite: %v", err)
 	}
-	if len(pf.ProtectedBlocks) == 0 {
-		t.Fatalf("应识别出受保护块: %+v", pf)
+	if len(pf.UnknownBlocks) == 0 {
+		t.Fatalf("预览应把保护状态报成未知(不写测试): %+v", pf)
 	}
-	if !pf.Blocked {
-		t.Fatalf("受保护块有变更必须阻断: %+v", pf)
+	if _, err := a.WriteConfirmed(badPath, false, false, "WRITE"); err == nil {
+		t.Fatal("受保护块有变更时真实写入必须被拒绝")
+	} else if !strings.Contains(err.Error(), "写保护") && !strings.Contains(err.Error(), "CRC") {
+		t.Fatalf("拒绝原因应可解释: %v", err)
+	}
+	// 受保护块内容不得被改动
+	if f.EEProm[200] == 0x77 {
+		t.Fatal("受保护块被写入")
 	}
 }
 

@@ -152,7 +152,7 @@ func TestCorpusEditPreflightDryRun(t *testing.T) {
 		}
 
 		// 1) 未修改的 dump 干跑: 不应有变更
-		pf, err := a.buildPreflight(name, dump, false)
+		pf, err := a.buildPreflight(name, dump, false, true)
 		if err != nil {
 			t.Errorf("%s: 预检失败: %v", name, err)
 			continue
@@ -199,7 +199,7 @@ func TestCorpusEditPreflightDryRun(t *testing.T) {
 			raw := append([]byte{}, target...)
 			// 直接改一个数据字节, 不动 CRC
 			raw[10] ^= 0x01
-			badPf, err := a.buildPreflight(name, raw, false)
+			badPf, err := a.buildPreflight(name, raw, false, true)
 			if err != nil {
 				t.Errorf("%s: 预检(坏 CRC)失败: %v", name, err)
 			} else if !badPf.Blocked || badPf.BlockKind != "crc" {
@@ -208,7 +208,7 @@ func TestCorpusEditPreflightDryRun(t *testing.T) {
 			}
 		}
 
-		pf, err = a.buildPreflight(name, target, false)
+		pf, err = a.buildPreflight(name, target, false, true)
 		if err != nil {
 			t.Errorf("%s: 预检(改后)失败: %v", name, err)
 			continue

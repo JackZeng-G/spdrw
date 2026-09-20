@@ -203,20 +203,25 @@ func (a *App) PickWriteFile() (string, error) {
 	return path, nil
 }
 
-// PreflightWrite 计算写入计划并做全部前置检查(不写任何字节)。
+// PreflightWrite 是**预览**: 算写入计划与风险, 但绝不写设备。
+//
+// 注意 probeProtection=false: DDR4/更早世代的写保护状态只能靠"取反写一字节再还原"探测,
+// 而这一步在用户勾"干跑"之前就会发生(前端是先预检、再弹出面板)。预览因此不做写测试,
+// 保护状态显示为"未知"; 真正写入时(WriteConfirmed)会带写测试重做一次并在受保护时拒绝。
 func (a *App) PreflightWrite(path string, force bool) (*WritePreflight, error) {
 	defer a.lockOp()()
-	return a.preflightNoLock(path, force)
+	return a.preflightNoLock(path, force, false)
 }
 
 // preflightNoLock 假定调用方已持操作锁(WriteConfirmed 内部用, 不能再次加锁)。
-func (a *App) preflightNoLock(path string, force bool) (*WritePreflight, error) {
+// probeProtection=true 时允许做写测试(仅在真正写入的路径上)。
+func (a *App) preflightNoLock(path string, force, probeProtection bool) (*WritePreflight, error) {
 	a.resetBusCounter()
 	dump, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("读取 %s: %w", path, err)
 	}
-	return a.buildPreflight(path, dump, force)
+	return a.buildPreflight(path, dump, force, probeProtection)
 }
 
 // beginDryRunIfRequested 在"用户要求干跑"时, **先**把设备切到干跑模式再走预检。
@@ -260,7 +265,8 @@ func (a *App) activeTransport() smbus.Transport {
 }
 
 // buildPreflight 对一份内存 dump 做写入前检查(编辑器与文件写入共用)。
-func (a *App) buildPreflight(label string, dump []byte, force bool) (*WritePreflight, error) {
+// probeProtection=false 时临时让设备进入干跑, 使写保护探测不产生任何总线写。
+func (a *App) buildPreflight(label string, dump []byte, force, probeProtection bool) (*WritePreflight, error) {
 	a.mu.Lock()
 	dev := a.dev
 	a.mu.Unlock()
@@ -300,6 +306,14 @@ func (a *App) buildPreflight(label string, dump []byte, force bool) (*WritePrefl
 	}
 
 	// 保护状态
+	if !probeProtection {
+		// 预览: 临时干跑, 使写测试不写总线(状态会显示为"未知")
+		if !dev.DryRun() {
+			if err := dev.SetDryRun(true); err == nil {
+				defer func() { _ = dev.SetDryRun(false) }()
+			}
+		}
+	}
 	det, werr := dev.WPStatusDetail()
 	if werr != nil {
 		pf.Warnings = append(pf.Warnings, fmt.Sprintf("写保护状态查询失败: %v", werr))
@@ -518,7 +532,7 @@ func (a *App) WriteConfirmed(path string, force, dryRun bool, ack string) (*Writ
 		return nil, err
 	}
 	defer restore()
-	pf, err := a.preflightNoLock(path, force)
+	pf, err := a.preflightNoLock(path, force, true)
 	if err != nil {
 		return nil, err
 	}

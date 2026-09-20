@@ -313,7 +313,7 @@ func (a *App) EditApplyToDevice(force, dryRun bool, ack string) (*WriteResult, e
 	dump := make([]byte, len(ed.Bytes()))
 	copy(dump, ed.Bytes())
 	label := "编辑器内容"
-	pf, err := a.buildPreflight(label, dump, force)
+	pf, err := a.buildPreflight(label, dump, force, true)
 	if err != nil {
 		return nil, err
 	}
