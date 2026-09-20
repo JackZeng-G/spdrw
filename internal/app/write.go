@@ -827,9 +827,10 @@ func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun 
 		fail = err
 	} else if err := dev.Verify(dump); err != nil {
 		fail = &eeprom.WriteError{Stage: "verify", Written: len(changes), Total: len(changes), Err: err}
-	} else if err := dev.VerifyChangedByteWise(dump, changes); err != nil {
-		// L11: 逐字节回读与整片校验共用同一条(块读/字读)读路径, 系统性读偏差会让两者
-		// 一起"同意"。这里用**逐字节**读法把改动过的字节再核对一遍(只有几个字节, 很快)。
+	} else if err := dev.VerifyByteWise(dump); err != nil {
+		// L11: 逐字节回读与整片校验共用同一条(块读/字读)读路径, 系统性读偏差(或分页写错位、
+		// 外部工具同时动总线)会让两者一起"同意"。这里关掉块读/字读, 用最原始的逐字节读法把
+		// **整片**再核一遍 —— 忙等模式下 1024 字节约 1 秒, 完全付得起。
 		fail = &eeprom.WriteError{Stage: "verify", Written: len(changes), Total: len(changes), Err: err}
 	}
 
@@ -845,7 +846,7 @@ func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun 
 
 	res.Written, res.Verified = len(changes), true
 	res.Message = fmt.Sprintf(
-		"写入并校验通过: %d 字节(备份 %s); 校验: 每个字节写完即回读 %d/%d + 整片 %d 字节逐字节比对 + 改动字节逐字节复核(绕过块读)",
+		"写入并校验通过: %d 字节(备份 %s); 校验: 每个字节写完即回读 %d/%d + 整片 %d 字节比对 + 整片逐字节复核(关掉块读/字读, 独立读法)",
 		len(changes), backup, len(changes), len(changes), dev.Size())
 	a.attachBusStats(res, dev, counter)
 	a.logf("%s", res.Message)

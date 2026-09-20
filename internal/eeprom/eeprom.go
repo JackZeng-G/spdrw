@@ -764,16 +764,41 @@ func (d *Device) VerifyChangedByteWise(dump []byte, changes []ByteChange) error 
 	if err := d.checkDumpLen(dump); err != nil {
 		return err
 	}
+	offs := make([]int, 0, len(changes))
+	for _, ch := range changes {
+		offs = append(offs, ch.Offset)
+	}
+	return d.verifyByteWiseAt(dump, offs)
+}
+
+// VerifyByteWise 用逐字节读法复核**整片**内容。
+//
+// 比"只复核改动字节"更强: SP5 的分页/窗口写错位、外部工具同时动总线这类问题会让
+// 计划之外的字节发生变化, 只有整片独立读一遍才能发现。逐字节读 1024 字节在忙等模式下
+// 约 1 秒(旧实现里整片逐字节读要 32 秒, 所以当时只复核改动字节)。
+func (d *Device) VerifyByteWise(dump []byte) error {
+	if err := d.checkDumpLen(dump); err != nil {
+		return err
+	}
+	offs := make([]int, len(dump))
+	for i := range offs {
+		offs[i] = i
+	}
+	return d.verifyByteWiseAt(dump, offs)
+}
+
+// verifyByteWiseAt 关掉块读/字读, 逐个偏移读回来比对(读完全程再恢复设置)。
+func (d *Device) verifyByteWiseAt(dump []byte, offs []int) error {
 	fast, word := d.fastRead, d.wordRead
 	d.fastRead, d.wordRead = false, false
 	defer func() { d.fastRead, d.wordRead = fast, word }()
-	for _, ch := range changes {
-		got, err := d.readOne(uint16(ch.Offset))
+	for _, off := range offs {
+		got, err := d.readOne(uint16(off))
 		if err != nil {
-			return fmt.Errorf("逐字节复核 %#x 失败: %w", ch.Offset, err)
+			return fmt.Errorf("逐字节复核 %#x 失败: %w", off, err)
 		}
-		if got != dump[ch.Offset] {
-			return fmt.Errorf("逐字节复核不一致 @ 0x%03X: 设备 %#x 目标 %#x", ch.Offset, got, dump[ch.Offset])
+		if got != dump[off] {
+			return fmt.Errorf("逐字节复核不一致 @ 0x%03X: 设备 %#x 目标 %#x", off, got, dump[off])
 		}
 	}
 	return nil

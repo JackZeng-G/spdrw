@@ -439,3 +439,37 @@ func TestIncrementalWriteOnlyChangedBytes(t *testing.T) {
 		t.Fatalf("force 模式应计划全部 1024 字节, got %d", resForce.Total)
 	}
 }
+
+// TestVerifyByteWiseCoversWholeImage —— 最终那层"逐字节复核"必须覆盖**整片**,
+// 而不只是改动过的字节: 分页/窗口写错位、外部工具同时动总线都会改到计划之外的字节。
+// (读速修好之前整片逐字节读要 32 秒, 所以当时只复核改动字节; 忙等模式下约 1 秒。)
+func TestVerifyByteWiseCoversWholeImage(t *testing.T) {
+	f := smbus.NewFake()
+	want := ddr4Fixture()
+	copy(f.EEProm, want)
+	d, err := eeprom.New(f, 0x50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.VerifyByteWise(want); err != nil {
+		t.Fatalf("一致时应通过: %v", err)
+	}
+	// 篡改一个**没有被写入计划覆盖**的字节(设备上变了但改动列表里没有它)
+	f.EEProm[400] ^= 0xFF
+	err = d.VerifyByteWise(want)
+	if err == nil {
+		t.Fatal("整片逐字节复核必须发现计划之外的字节变化")
+	}
+	if !strings.Contains(err.Error(), "0x190") { // 400 = 0x190
+		t.Fatalf("错误里应指出偏移: %v", err)
+	}
+	// 只复核改动字节的话, 就会漏掉它 —— 这正是升级成整片复核的理由
+	if err := d.VerifyChangedByteWise(want, []eeprom.ByteChange{{Offset: 20, New: want[20]}}); err != nil {
+		t.Fatalf("只复核改动字节本来就不该发现 0x190: %v", err)
+	}
+	// 读路径设置必须恢复(否则后面所有读都退化成逐字节)
+	f.EEProm[400] ^= 0xFF
+	if err := d.Verify(want); err != nil {
+		t.Fatalf("复核后应恢复块读路径: %v", err)
+	}
+}
