@@ -9,15 +9,17 @@ SPD-Reader-Writer 的 Go 复刻版: Windows 桌面工具, 通过 **PawnIO** 内�
 
 - **等待模式(读速的真正瓶颈)**: PawnIO 模块把每次事务的等待交给 Windows 线程休眠时,
   一次等待就是一个时钟中断(约 15.6ms)→ 每次事务固定 ~31ms、整片 1024B 要 16 秒。
-  本工具默认用**忙等**(µs 精确),并把模块的 SMBus 时钟读出来显示(如 396 kHz);
-  界面可选"低 CPU 模式"(休眠)用于对照。
+  本工具默认用**忙等**(µs 精确), 并把模块的 SMBus 时钟读出来显示(真机实测 392.9 kHz);
+  1024B 整片读取因此从 16.5 秒降到**约 0.3 秒**。等待模式不需要手动开关:
+  自动选忙等, 出错时自动降级为"轮询忙等+长等待休眠"。
 - **读取加速(三级自适应)**: **SMBus Block Read**(协议 5, 32 字节/事务) → **Word Read**(2 字节/事务) → 逐字节。
-  真机单次事务约 30ms, 逐字节读 1024B 要 30 多秒, 块读可降到 1~2 秒, 字读约 16 秒;
-  每一级都先只读探测、失败即降级(AMD FCH 实测会被 HUB 拒绝块读, 于是自动落到字读)。
-  界面开关可强制逐字节对照; 日志与"读取方式"面板会写明实际档位、事务数、耗时与回退原因。
+  每一级都先只读探测、失败即降级(AMD FCH 实测会被 HUB 拒绝块读, 于是自动落到字读:
+  真机 1024B = 512 次事务 ≈ 0.32 秒)。也没有手动开关; 日志与"SPD 信息"里的读取方式
+  那一行会写明实际档位、事务数、耗时与回退原因。
 - **控制器发现**: Intel PCH (I801) / AMD FCH (PIIX4, 双端口) / Intel Skylake-SP IMC (SKX, 双总线) — 与 OpenRGB 相同的 PawnIO 模块
 - **SPD 扫描** 0x50-0x57, DDR4 (EE1004 SPA0/SPA1 快速命令分页) 与 DDR5 (MR11 寄存器分页) 自动识别
-- **读取/保存/校验/写入** SPD dump; 写入默认增量模式(跳过相同字节)并回读校验; 支持 `-force` 全量
+- **读取/保存/校验/写入** SPD dump; 写入默认**增量模式**(只写与设备不同的字节)并回读校验,
+  需要修复时可强制全量写入(写入入口的 `force` 参数)
 - **解析**:
   - DDR4/LPDDR3/4/4X: 模块类型、密度/ banks /行列、组织、位宽、容量、全部主时序(中+细粒度)、CAS 掩码、双段 CRC(含修复)、厂商/日期/序列号/部件号、**XMP 2.0 双 Profile**(时序换算+电压)
   - DDR5/LPDDR5(X): 密度/组织/通道/位宽/容量、身份区、**完整 JEDEC 时序**(byte 20-102, ps/ns + lower limit)、CRC(**基础段 + XMP 3.0 header/各槽 + EXPO**)、按规范修正的 XMP 3.0 槽位(0x2C0..0x3C0)
@@ -31,17 +33,19 @@ SPD-Reader-Writer 的 Go 复刻版: Windows 桌面工具, 通过 **PawnIO** 内�
   - 字段两列网格, 默认只显示常用字段(JEDEC 时序的关键项/第 1 份 profile), 可"显示全部字段"
   - **读一次即自动载入编辑器**(无需"从设备载入");文件操作(打开 dump/另存为/校验文件)在顶栏右侧;
   - 写保护整块移到编辑器页; **写入前自动备份、写完自动三层校验 + 独立复核**(无需手点);
-  - 控制器列表只列出**探测到 SPD 的**控制器(AMD FCH 的 5 个端口里只有实际接条的那个有意义);
-
-    并按"改动是否在校验范围内"分色(红=影响校验, 蓝=序列号/日期等不影响校验的字段)
+  - 控制器列表只列出**探测到 SPD 的**控制器(AMD FCH 的 5 个端口里只有实际接条的那个有意义)
+- hex 视图有**两套正交的视觉信号**(说明都收在 hex 标题的"?"里):
+  **区段底色** = 参与校验(蓝) / 不参与校验(绿) / 身份信息(紫) / JEDEC 时序(青) / XMP-EXPO(黄);
+  **改动标记** = 红底(影响校验, 须重算 CRC) / 蓝底(序列号、日期等不影响校验) / 黄框(CRC 值本身)
 - **写入护栏**(写入是唯一可能变砖的操作):
   - 写前预检: 长度/类型匹配、目标 dump CRC 必须有效、受保护块检测、高危字段(容量/组织/电压/PMIC)清单
   - 自动备份当前整片到 `~/.spdrw/backups`; 确认串 `WRITE` 才真正执行
   - 写入计划按字节 diff, **CRC 字节最后写**(中断只会留下 CRC 不符的 SPD, 而不是"看着有效但内容错")
   - 中途失败给出"已写/未写字节数 + 恢复建议"; 逐字节回读校验
-  - **干跑模式**(DRYRUN): 完整跑预检/计划/校验, 一个字节都不上总线
-  - **总线统计**: 干跑/写入后直接报出"读 / 页选择与命令写 / 字节写 / 其中 NVM 数据写",
-    真机验证"干跑没碰 SPD"就看这一行(界面也有"读取总线统计/清零计数")
+  - **干跑**: 完整跑预检/计划/校验, 一个字节都不上总线(界面上不再单独放开关, 由写入入口的参数决定;
+    日志会给出"读 / 页选择与命令写 / 字节写 / 其中 NVM 数据写"这一行 —— 真机验证"干跑没碰 SPD"
+    就看它, 实测为"对 SPD NVM 的数据写 0 次")
+  - **写入能力探测**: 先在保留字节上做一次"写 → 读回 → 还原", 证明这个平台真的能写, 再动真正的字段
 - **写保护**:
   - RSWP 状态检测: DDR5 读 MR12/MR13 位图(16×64B)、DDR4 及更早块首写测试(4×128B, **还原后回读确认**, 失败重试并报"状态未知", 绝不谎报)
   - RSWP 设置(按块)/清除; DDR5 附 MR11/MR29/MR48/MR52 原始值与"写受保护块被忽略"标志
@@ -50,7 +54,7 @@ SPD-Reader-Writer 的 Go 复刻版: Windows 桌面工具, 通过 **PawnIO** 内�
 
 ## 构建
 
-需 Go 1.21+ (开发用 1.24)。
+需 Go 1.27+ (`go.mod` 的 toolchain 版本; 逻辑层不用 CGO)。
 
 **必须带 `desktop,production` 构建标签**, 否则启动时报
 "Wails applications will not build without the correct build tags"(这是 Wails 的运行时保护, 不是代码问题)。
@@ -59,14 +63,19 @@ Windows PowerShell:
 
 ```powershell
 .\build.ps1
-# 等价于:
-go build -tags desktop,production -ldflags="-H windowsgui -s -w" -trimpath -o bin\SPDReaderWriter.exe .
+# 等价于(把提交号打进二进制, 日志里能看到在跑哪一版):
+$hash = git rev-parse --short HEAD
+go build -tags desktop,production -trimpath `
+  -ldflags="-H windowsgui -s -w -X spdrw/internal/app.BuildHash=$hash" `
+  -o bin\SPDReaderWriter.exe .
 ```
 
 或从 Linux/macOS 交叉编译 (无 CGO):
 
 ```bash
-GOOS=windows GOARCH=amd64 go build -tags desktop,production -ldflags="-H windowsgui -s -w" -trimpath -o bin/SPDReaderWriter.exe .
+GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -tags desktop,production -trimpath \
+  -ldflags="-H windowsgui -s -w -X spdrw/internal/app.BuildHash=$(git rev-parse --short HEAD)" \
+  -o bin/SPDReaderWriter.exe .
 ```
 
 安装了 Wails CLI 的话也可以直接 `wails build` (自动加标签)。
