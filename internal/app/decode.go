@@ -171,6 +171,7 @@ func decodeDDR5(dump []byte, r *DecodeResult) {
 	ch, ext, primary := d.ChannelBusWidth()
 	_ = ext
 	r.Ranks = ranks
+	r.DeviceWidth = d.DeviceWidth()
 	r.TotalMib = d.TotalCapacityBytes() * 1024 // 公式单位为 GiB
 	r.TotalHuman = humanMib(r.TotalMib)
 	r.Manufacturer, _, _ = d.Manufacturer()

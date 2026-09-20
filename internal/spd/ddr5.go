@@ -86,6 +86,11 @@ func (d *DDR5SPD) IOWidths() (w [2]byte) {
 	return
 }
 
+// DeviceWidth 返回首组 SDRAM 器件位宽(JEDEC: 000=x4, 001=x8, 010=x16, 011=x32)。
+func (d *DDR5SPD) DeviceWidth() byte {
+	return 4 << subByteR(d.raw[6], 7, 3)
+}
+
 // Banks 返回 (bank group 数, 每组 bank 数)。
 func (d *DDR5SPD) Banks() (groups, perGroup byte) {
 	b := d.raw[7]
