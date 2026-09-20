@@ -17,6 +17,8 @@ import (
 func main() {
 	if len(os.Args) != 3 {
 		fmt.Fprintln(os.Stderr, "用法: extract_idcodes <Resources.cs> <out.json>")
+		fmt.Fprintln(os.Stderr, "  Resources.cs 来自 https://github.com/1a2m3/SPD-Reader-Writer")
+		fmt.Fprintln(os.Stderr, "  (src/SpdReaderWriterCore/Resources.cs); 详见 internal/spd/data/README.md")
 		os.Exit(2)
 	}
 	src, err := os.ReadFile(os.Args[1])
