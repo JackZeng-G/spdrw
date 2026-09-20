@@ -36,6 +36,14 @@ type LogEntry struct {
 	Text string `json:"text"`
 }
 
+// BuildHash 由构建命令注入(-X), 用于日志自识别版本。
+var BuildHash = "dev"
+
+// LogVersion 打印版本行(启动时调用, 便于确认运行的是哪个构建)。
+func (a *App) LogVersion() {
+	a.logf("SPD Reader Writer (Go) build %s", BuildHash)
+}
+
 // App 持有全部状态; 方法绑定到前端(Wails)。
 type App struct {
 	mu sync.Mutex

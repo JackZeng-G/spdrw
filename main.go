@@ -40,6 +40,7 @@ func main() {
 			a.Emit = func(event string, data ...interface{}) {
 				runtime.EventsEmit(ctx, event, data...)
 			}
+			a.LogVersion()
 		},
 		Bind: []interface{}{
 			a,
