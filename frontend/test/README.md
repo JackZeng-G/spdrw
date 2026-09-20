@@ -15,7 +15,7 @@ node --test "frontend/test/*.test.mjs"
   ④ 骨架页 `smoke.html` 也要有 `app.js` 引用的每个元素 —— `app.js` 顶层是 `$("x").onclick = ...`,
      少一个元素会让**整个脚本**在顶层抛错, 页面就停在"检测环境…"(新增 `btn-write-probe` 时真发生过);
   ⑤ `driver.js` 引用的元素在真实页与骨架页都在(其中 `!getElementById("x")` 是"必须不存在"的反向断言, 不计入)。
-- `wp.test.mjs` / `write.test.mjs` / `editor.test.mjs` / `bus.test.mjs`: 用 `harness.mjs`
+- `wp.test.mjs` / `write.test.mjs` / `editor.test.mjs` / `bus.test.mjs` / `xmp3.test.mjs`: 用 `harness.mjs`
   (极简 DOM + Node vm)加载**真实的** `dist/app.js`, 断言 JS↔Go 绑定契约(方法名、
   参数形态——例如 `WPSet` 必须传数字数组而不是 `[]byte` 能吃的形态——返回值用法)
   与渲染关键文案。本项目两次线上的"点了没反应"都是这一层能拦下来的问题。
