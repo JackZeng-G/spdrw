@@ -70,3 +70,26 @@ test("块读加速: 开关调后端并提示, 读取方式显示事务数", asyn
   assert.match(el("read-mode").innerHTML, /块读加速/);
   assert.match(el("read-mode").innerHTML, /34/);
 });
+
+test("读取方式: 后端给 mode/wordBytes/elapsedMs 时按加速档渲染(块读与字读都要显示)", async () => {
+  // 后端 Read() 会算出实际生效的档位: 块读(32B) → 字读(2B) → 逐字节(1B)。
+  // 真机上块读常被 FCH 拒绝, 落到字读——界面必须如实显示, 便于对照耗时。
+  const wordStats = {
+    bytes: 1024, transactions: 520, blockBytes: 0, wordBytes: 1024, fallbackBytes: 0,
+    blockReadOK: false, blockReadKnown: true, wordReadOK: true, wordReadKnown: true,
+    mode: "字读(2 字节/事务)", elapsedMs: 16050, sleepMs: 0,
+    note: "块读失败: 设备无响应 NACK(0xC000000E)",
+  };
+  const { stub } = makeAppStub({ ReadStats: () => wordStats, BusStats: () => stats });
+  const { el } = loadApp({ appStub: stub });
+  await flush();
+  await el("btn-bus-stats").onclick();
+  await flush();
+  await globalThis.__ctx.refreshReadMode();
+  const html = el("read-mode").innerHTML;
+  assert.match(html, /字读\(2 字节\/事务\)/, "应显示后端给的实际档位");
+  assert.match(html, /520/, "应显示事务数");
+  assert.match(html, /16\.05s/, "应显示耗时秒数");
+  assert.match(html, /字读 1024B/, "应分别显示块读/字读/逐字节字节数");
+  assert.match(html, /NACK/, "块读失败原因要能看到");
+});
