@@ -335,3 +335,11 @@ table.timing.two-col td { padding-right: 14px; }
 .hexgrid .row.head .offset { z-index: 4; }
 .hexgrid .row.head .offset,
 .hexgrid .row.head .colhead { color: var(--accent); font-weight: 600; }
+
+/* 写保护: 操作在上、结果在下(结果区加分隔, 一眼看出是"输出") */
+.wp-result {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border);
+}
+.wp-result .wp-summary { margin-bottom: 4px; }

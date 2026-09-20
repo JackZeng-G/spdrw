@@ -97,10 +97,10 @@
           确认串: 真实写入输入 <b>WRITE</b>(界面上不再需要勾"我已另有备份", 因为每次都会自动备份)。
         </div>
 
-        <div class="panel-title ops-title">写保护</div>
+        <div class="panel-title ops-title">写保护
+          <button class="q" data-hint="hint-wp" title="说明">?</button>
+        </div>
         <div class="ops wp">
-          <div id="wp-blocks" class="wp-blocks muted">—</div>
-          <div id="wp-summary" class="wp-summary"></div>
           <div class="write-row">
             <button id="btn-wp-status" disabled>查询保护状态</button>
             <button id="btn-write-probe" disabled>检测写入能力</button>
@@ -110,8 +110,12 @@
             <button id="btn-wp-set" disabled class="danger">RSWP 加保护…</button>
             <button id="btn-wp-clear" disabled>RSWP 清除</button>
           </div>
-          <div id="probe-result" class="bus-stats muted"></div>
-          <button class="q" data-hint="hint-wp" title="说明">?</button>
+          <!-- 结果放按钮下面: 先操作、后看结果 -->
+          <div class="wp-result">
+            <div id="wp-summary" class="wp-summary"></div>
+            <div id="wp-blocks" class="wp-blocks muted">—</div>
+            <div id="probe-result" class="bus-stats muted"></div>
+          </div>
         </div>
         <div id="hint-wp" class="hint hidden">
           <b>查询保护状态</b>: DDR5 读 MR12/MR13 位图(不写设备); DDR4 及更早没有状态寄存器,

@@ -2,6 +2,7 @@
 // 运行: node --test frontend/test/
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import { loadApp, makeAppStub, flush } from "./harness.mjs";
 
 // DDR5 样本(16 块 × 64B): 块 1、15 受保护; MR52[6] 命中; 离线模式
@@ -111,4 +112,16 @@ test("WPClear 也必须带 CLEAR 确认串", async () => {
   const call = calls.find((c) => c.name === "WPClear");
   assert.ok(call, "应调用 WPClear");
   assert.deepEqual([...call.args], ["CLEAR"]);
+});
+
+test("写保护: 操作按钮在结果上面(先操作后看结果)", () => {
+  // 用户反馈: 点"查询保护状态"后块列表出现在按钮上面不好看 —— 结果要放下面。
+  const body = fs.readFileSync(new URL("../dist/index.html", import.meta.url), "utf8");
+  const iStatus = body.indexOf('id="btn-wp-status"');
+  const iBlocks = body.indexOf('id="wp-blocks"');
+  const iSummary = body.indexOf('id="wp-summary"');
+  assert.ok(iStatus > 0 && iBlocks > 0 && iSummary > 0, "三个元素都应存在");
+  assert.ok(iStatus < iBlocks, "块列表必须在“查询保护状态”按钮之后");
+  assert.ok(iStatus < iSummary, "状态摘要必须在按钮之后");
+  assert.ok(body.includes('class="wp-result"'), "结果区应有独立容器(便于样式上分隔)");
 });
