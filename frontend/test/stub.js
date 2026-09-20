@@ -58,6 +58,8 @@
     PickWriteFile: rec("PickWriteFile", "/tmp/dump.bin"),
     PreflightWrite: rec("PreflightWrite", preflight),
     WriteConfirmed: rec("WriteConfirmed", { dryRun: false, written: 3, total: 3, backupPath: "/root/.spdrw/backups/x.bin", verified: true, message: "写入并校验通过" }),
+    SetFastRead: rec("SetFastRead", true),
+    ReadStats: rec("ReadStats", { bytes: 1024, transactions: 33, blockBytes: 1024, fallbackBytes: 0, blockReadOK: true, blockReadKnown: true }),
     BusStats: rec("BusStats", { generation: "DDR4", reads: 2140, quickWrites: 3, byteDataWrites: 2, byteWrites: 14, nvmWrites: 0 }),
     ResetBusStats: rec("ResetBusStats", null),
     WPStatus: rec("WPStatus", ddr4Status),

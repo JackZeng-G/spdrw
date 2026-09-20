@@ -58,6 +58,17 @@ type Device struct {
 	// 干跑模式: 写只落在 shadow(整片镜像), 总线上一字节都不写。
 	dryRun bool
 	shadow []byte
+
+	// 块读加速: SMBus Block Read(协议 5) 一次 32 字节, 把整片读取从事务数=字节数
+	// 降到 1/32。设备不一定支持(EE1004 规范无块读、SPD5 HUB 视固件而定), 所以
+	// 首次使用要探测, 失败自动回退到逐字节读并记住结论。
+	fastRead      bool   // 是否允许尝试块读(可由界面开关)
+	blockOK       *bool  // nil=未探测; true=可用; false=不可用(回退)
+	blockFallback int    // 回退到逐字节读的字节数(用于日志)
+	blockBytes    int    // 走块读读到的字节数
+	readTx        int    // 读事务计数(字节读=1, 块读=1)
+	blockNote     string // 块读失败原因(诊断)
+	readStats     ReadStats
 }
 
 // New 建立设备连接: 探测地址、识别 DDR5 与 SPD 大小。
@@ -96,6 +107,7 @@ func New(t smbus.Transport, addr byte) (*Device, error) {
 
 	// 注意: 探测阶段不做任何写操作(页复位/页切换推迟到真正读写时由
 	// physOffset 执行) —— 避免探测阶段对未知设备触发写事务。
+	d.fastRead = true
 	return d, nil
 }
 
@@ -196,10 +208,53 @@ func (d *Device) physOffset(off uint16) (byte, byte, error) {
 
 // ReadDelay 是逐字节读之间的间隔。默认 1ms(对齐 RAMSPDToolkit 的 SPD_IO_DELAY,
 // DDR5 HUB 对背靠背事务敏感); 测试可临时置 0 把整片读取从秒级降到毫秒级。
+// 块读路径不加这个间隔(32 字节一次事务, 间隔没有意义)。
 var ReadDelay = time.Millisecond
 
-// Read 读取 n 字节(n 为 0 时报错)。每字节读后间隔 ReadDelay(默认 1ms, 对齐 RAMSPDToolkit
-// SPD_IO_DELAY): DDR5 HUB 对背靠背事务敏感, 连发会导致数据错位。
+// SetFastRead 开关块读加速(默认开)。关闭后一律逐字节读, 用于对照排查。
+func (d *Device) SetFastRead(on bool) { d.fastRead = on }
+
+// FastRead 报告是否允许块读。
+func (d *Device) FastRead() bool { return d.fastRead }
+
+// ReadStats 报告上一次整片读取的方式与事务数。
+type ReadStats struct {
+	Bytes          int    `json:"bytes"`
+	Transactions   int    `json:"transactions"`
+	BlockBytes     int    `json:"blockBytes"`
+	FallbackBytes  int    `json:"fallbackBytes"`
+	BlockReadOK    bool   `json:"blockReadOK"`
+	BlockReadKnown bool   `json:"blockReadKnown"`
+	Note           string `json:"note,omitempty"`
+}
+
+// ReadStats 返回读取统计(用于界面显示"快/慢"与排查)。
+func (d *Device) ReadStats() ReadStats {
+	st := d.readStats
+	st.Transactions = d.readTx
+	st.BlockBytes = d.blockBytes
+	st.FallbackBytes = d.blockFallback
+	st.BlockReadKnown = d.blockOK != nil
+	if d.blockNote != "" {
+		st.Note = d.blockNote
+	}
+	if d.blockOK != nil {
+		st.BlockReadOK = *d.blockOK
+	}
+	return st
+}
+
+// resetReadStats 在每次整片读取前清零。
+func (d *Device) resetReadStats() {
+	d.readTx, d.blockBytes, d.blockFallback = 0, 0, 0
+}
+
+// Read 读取 n 字节(n 为 0 时报错)。
+//
+// 优先走 **SMBus Block Read**(协议 5, 一次最多 32 字节): 真机上单次事务约 30ms,
+// 逐字节读 1024B 要 30 多秒, 块读能降到 1~2 秒。设备不一定支持(EE1004 规范没有块读、
+// SPD5 HUB 视固件而定), 因此首次使用会**探测**, 失败立即回退逐字节并记住结论。
+// 逐字节路径保留 ReadDelay(默认 1ms, 对齐 RAMSPDToolkit)间隔。
 func (d *Device) Read(off uint16, n int) ([]byte, error) {
 	if n <= 0 {
 		return nil, fmt.Errorf("读取长度必须为正")
@@ -208,26 +263,121 @@ func (d *Device) Read(off uint16, n int) ([]byte, error) {
 		return nil, fmt.Errorf("读取范围 %#x+%#x 越界", off, n)
 	}
 	out := make([]byte, n)
-	for i := 0; i < n; i++ {
-		_, phys, err := d.physOffset(off + uint16(i))
+	for i := 0; i < n; {
+		cur := off + uint16(i)
+		if d.fastRead && d.blockReadUsable() {
+			got, err := d.readBlockChunk(cur, n-i)
+			if err == nil && len(got) > 0 {
+				copy(out[i:], got)
+				i += len(got)
+				d.blockBytes += len(got)
+				d.readTx++
+				continue
+			}
+			d.markBlockUnusable(err)
+		}
+		b, err := d.readOne(cur)
 		if err != nil {
 			return nil, err
 		}
-		b, err := d.t.ReadByteData(d.addr, phys)
-		if err != nil {
-			return nil, fmt.Errorf("读取 %#x 失败: %w", off+uint16(i), err)
-		}
 		out[i] = b
-		if ReadDelay > 0 {
-			time.Sleep(ReadDelay)
-		}
+		i++
+		d.blockFallback++
+		d.readTx++
 	}
 	return out, nil
 }
 
-// ReadAll 整片读取。
+// blockReadUsable 报告当前是否走块读; 未探测时先探测一次(只读, 不写)。
+func (d *Device) blockReadUsable() bool {
+	if d.blockOK != nil {
+		return *d.blockOK
+	}
+	// 探测: 取一块, 与逐字节读的结果比对; 不一致或报错都视为不支持。
+	got, err := d.readBlockChunk(0, 32)
+	if err != nil || len(got) == 0 {
+		d.blockOK = new(bool)
+		*d.blockOK = false
+		return false
+	}
+	ref, err := d.readOne(0)
+	if err != nil || ref != got[0] {
+		d.blockOK = new(bool)
+		*d.blockOK = false
+		return false
+	}
+	d.blockOK = new(bool)
+	*d.blockOK = true
+	return true
+}
+
+// markBlockUnusable 记录块读不可用(探测阶段失败或运行中失败都视为不可用)。
+func (d *Device) markBlockUnusable(err error) {
+	if d.blockOK != nil && !*d.blockOK {
+		return
+	}
+	d.blockOK = new(bool)
+	*d.blockOK = false
+	if err != nil {
+		d.blockNote = fmt.Sprintf("%v", err)
+	}
+}
+
+// readBlockChunk 读一块: 不超过 32 字节, 且不跨越页边界(设备页内自增, 跨页会读到别的页)。
+func (d *Device) readBlockChunk(off uint16, max int) ([]byte, error) {
+	_, phys, err := d.physOffset(off)
+	if err != nil {
+		return nil, err
+	}
+	ps := d.pageSize()
+	pageRemain := ps - int(off)%ps
+	want := smbus.ProtoBlockMax
+	if max < want {
+		want = max
+	}
+	if pageRemain < want {
+		want = pageRemain
+	}
+	if want <= 0 {
+		return nil, fmt.Errorf("块读长度非法")
+	}
+	got, err := d.t.ReadBlockData(d.addr, phys)
+	if err != nil {
+		return nil, err
+	}
+	if len(got) == 0 {
+		return nil, fmt.Errorf("块读返回空数据")
+	}
+	if len(got) > want {
+		got = got[:want]
+	}
+	return got, nil
+}
+
+// readOne 逐字节读一个字节(带 ReadDelay 间隔)。
+func (d *Device) readOne(off uint16) (byte, error) {
+	_, phys, err := d.physOffset(off)
+	if err != nil {
+		return 0, err
+	}
+	b, err := d.t.ReadByteData(d.addr, phys)
+	if err != nil {
+		return 0, fmt.Errorf("读取 %#x 失败: %w", off, err)
+	}
+	if ReadDelay > 0 {
+		time.Sleep(ReadDelay)
+	}
+	return b, nil
+}
+
+// ReadAll 整片读取(并清零读取统计)。
 func (d *Device) ReadAll() ([]byte, error) {
-	return d.Read(0, d.size)
+	d.resetReadStats()
+	b, err := d.Read(0, d.size)
+	if err == nil {
+		d.readStats.Bytes = len(b)
+	}
+	return b, err
 }
 
 // WriteByteAt 向指定逻辑偏移写一个字节。(避开 vet 对 io.WriteByte 惯例的检查)

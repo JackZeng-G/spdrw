@@ -15,6 +15,7 @@ const (
 	OpWriteByteData OpKind = "write-byte"
 	OpWriteByte     OpKind = "write-byte-nodata"
 	OpReadWordData  OpKind = "read-word"
+	OpReadBlock     OpKind = "read-block"
 )
 
 // Op 是一次 SMBus 事务的记录(Err 非空表示该事务失败)。
@@ -247,6 +248,17 @@ func (r *RecordingTransport) WriteByteNoData(addr byte) error {
 	}
 	r.record(op)
 	return err
+}
+
+// ReadBlockData 记录一次块读(计入读事务)。
+func (r *RecordingTransport) ReadBlockData(addr byte, cmd byte) ([]byte, error) {
+	b, err := r.Inner.ReadBlockData(addr, cmd)
+	op := Op{Kind: OpReadBlock, Addr: addr, Cmd: cmd}
+	if err != nil {
+		op.Err = err.Error()
+	}
+	r.record(op)
+	return b, err
 }
 
 func (r *RecordingTransport) ReadWordData(addr byte, cmd byte) (uint16, error) {

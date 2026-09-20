@@ -45,3 +45,28 @@ test("总线统计: 清零按钮调用后端并刷新", async () => {
   assert.ok(calls.some((c) => c.name === "ResetBusStats"), "应调用清零");
   assert.match(el("bus-stats").innerHTML, /读 <b>0<\/b>/, "清零后应刷新为 0");
 });
+
+test("块读加速: 开关调后端并提示, 读取方式显示事务数", async () => {
+  const readStats = {
+    bytes: 1024, transactions: 34, blockBytes: 1024, fallbackBytes: 0,
+    blockReadOK: true, blockReadKnown: true,
+  };
+  const { stub, calls } = makeAppStub({ ReadStats: () => readStats, SetFastRead: () => true });
+  const { el } = loadApp({ appStub: stub });
+  await flush();
+  await el("btn-bus-stats").onclick();
+  await flush();
+
+  el("chk-fastread").checked = false;
+  await el("chk-fastread").onchange();
+  await flush();
+  const call = calls.find((c) => c.name === "SetFastRead");
+  assert.ok(call, "切换开关应调用 SetFastRead");
+  assert.deepEqual([...call.args], [false]);
+  assert.match(el("log").text(), /块读加速/);
+
+  // refreshReadMode 在 app.js 里是函数声明(挂在 vm 全局上), 直接调用它
+  await globalThis.__ctx.refreshReadMode();
+  assert.match(el("read-mode").innerHTML, /块读加速/);
+  assert.match(el("read-mode").innerHTML, /34/);
+});

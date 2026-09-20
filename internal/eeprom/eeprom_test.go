@@ -695,3 +695,116 @@ func TestDDR5ResidualPage(t *testing.T) {
 		t.Fatalf("页 1/尾页 数据错误: %#x %#x", data[128], data[0x1FF])
 	}
 }
+
+// newPatternDDR4/DDR5 造一份每字节都不同的镜像(能暴露分页/块边界错位)。
+func newPatternDDR4(t *testing.T) (*Device, *smbus.FakeTransport, []byte) {
+	t.Helper()
+	ft := smbus.NewFake()
+	img := make([]byte, 512)
+	for i := range img {
+		img[i] = byte(i)
+	}
+	img[2] = 0x0C
+	copy(ft.EEProm, img)
+	d, err := New(ft, 0x50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d, ft, img
+}
+
+func newPatternDDR5(t *testing.T) (*Device, *smbus.FakeTransport, []byte) {
+	t.Helper()
+	ft := smbus.NewFake()
+	ft.SetDDR5(true)
+	img := make([]byte, 1024)
+	for i := range img {
+		img[i] = byte(i * 7)
+	}
+	img[0], img[1], img[2] = 0x30, 0x10, 0x12
+	copy(ft.EEProm, img)
+	d, err := New(ft, 0x50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return d, ft, img
+}
+
+// TestBlockReadEqualsByteRead 块读路径必须与逐字节读给出完全一样的字节
+// (含跨页边界: DDR4 每 256B 一页, DDR5 每 128B 一页, 块读不得跨页)。
+func TestBlockReadEqualsByteRead(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mk   func(*testing.T) (*Device, *smbus.FakeTransport, []byte)
+	}{
+		{"DDR4", newPatternDDR4},
+		{"DDR5", newPatternDDR5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d, _, img := tc.mk(t)
+			d.SetFastRead(true)
+			fast, err := d.ReadAll()
+			if err != nil {
+				t.Fatalf("块读 ReadAll: %v", err)
+			}
+			st := d.ReadStats()
+			if !st.BlockReadKnown || !st.BlockReadOK {
+				t.Fatalf("块读应被探测为可用: %+v", st)
+			}
+			if st.Transactions > len(img)/32+4 {
+				t.Fatalf("块读事务数应约等于 %d, got %d", len(img)/32, st.Transactions)
+			}
+			// 逐字节路径作为参照
+			d2, _, _ := tc.mk(t)
+			d2.SetFastRead(false)
+			slow, err := d2.ReadAll()
+			if err != nil {
+				t.Fatalf("逐字节 ReadAll: %v", err)
+			}
+			if len(fast) != len(slow) {
+				t.Fatalf("长度不同: %d vs %d", len(fast), len(slow))
+			}
+			for i := range fast {
+				if fast[i] != slow[i] || fast[i] != img[i] {
+					t.Fatalf("块读与逐字节不一致 @%#x: %02X vs %02X(镜像 %02X)", i, fast[i], slow[i], img[i])
+				}
+			}
+			// 边界附近单独读一遍(页尾/页首)
+			for _, off := range []uint16{0, 31, 32, 96, 127, 128, 255, 256, 257, uint16(len(img) - 1)} {
+				got, err := d.Read(off, 1)
+				if err != nil {
+					t.Fatalf("Read(%d): %v", off, err)
+				}
+				if got[0] != img[off] {
+					t.Fatalf("偏移 %d: %02X != %02X", off, got[0], img[off])
+				}
+			}
+		})
+	}
+}
+
+// TestBlockReadFallback 设备不支持块读时必须自动回退, 且结果仍然正确。
+func TestBlockReadFallback(t *testing.T) {
+	d, ft, img := newPatternDDR5(t)
+	ft.BlockReadUnsupported = true
+	d.SetFastRead(true)
+	got, err := d.ReadAll()
+	if err != nil {
+		t.Fatalf("回退后 ReadAll: %v", err)
+	}
+	for i := range got {
+		if got[i] != img[i] {
+			t.Fatalf("回退后数据错 @%#x", i)
+		}
+	}
+	st := d.ReadStats()
+	if st.BlockReadOK || !st.BlockReadKnown {
+		t.Fatalf("应记住块读不可用: %+v", st)
+	}
+	if st.FallbackBytes != len(img) {
+		t.Fatalf("回退字节数 = %d, 期望 %d", st.FallbackBytes, len(img))
+	}
+	if st.Transactions != len(img) {
+		t.Fatalf("回退后事务数应等于字节数 %d, got %d", len(img), st.Transactions)
+	}
+}

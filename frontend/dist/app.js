@@ -193,6 +193,7 @@ async function doDump() {
   renderHexB64(currentDump);
   enableOps(true);
   await decodeCurrent();
+  await refreshReadMode().catch(() => {});
 }
 
 $("btn-scan").onclick = async () => {
@@ -461,6 +462,7 @@ $("btn-write-go").onclick = async () => {
     if (dryRun) addLog("", "干跑模式: SPD 未被改动");
     else await doDump();
     await refreshBusStats().catch(() => {});
+    await refreshReadMode().catch(() => {});
   } catch (e) {
     addLog("", "写入失败: " + e);
   }
@@ -475,6 +477,24 @@ $("btn-bus-reset").onclick = async () => {
   try { await call("ResetBusStats"); addLog("", "总线计数已清零"); await refreshBusStats(); }
   catch (e) { addLog("", "清零失败: " + e); }
 };
+
+// 块读加速开关(真机上对照慢/快用)
+$("chk-fastread").onchange = async () => {
+  try {
+    await call("SetFastRead", $("chk-fastread").checked);
+    addLog("", "块读加速: " + ($("chk-fastread").checked ? "已开启(请重新读取)" : "已关闭(逐字节兼容)"));
+  } catch (e) { addLog("", "切换块读失败: " + e); }
+};
+
+async function refreshReadMode() {
+  try {
+    const st = await call("ReadStats");
+    if (!st) return;
+    const mode = st.blockReadKnown ? (st.blockReadOK ? "块读加速" : "逐字节(块读不可用)") : "尚未读取";
+    $("read-mode").innerHTML = `本次读取: <b>${mode}</b> · 事务 ${st.transactions} 次 · 块读 ${st.blockBytes}B / 逐字节 ${st.fallbackBytes}B` +
+      (st.note ? `<br><span class="warn">${escapeHtml(st.note)}</span>` : "");
+  } catch (e) { /* 未选设备 */ }
+}
 
 async function refreshBusStats() {
   const b = await call("BusStats");

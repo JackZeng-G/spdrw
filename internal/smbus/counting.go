@@ -107,6 +107,14 @@ func (c *CountingTransport) WriteByteNoData(addr byte) error {
 	return c.Inner.WriteByteNoData(addr)
 }
 
+// ReadBlockData 计入读事务(块读一次顶 32 次字节读, 计数上仍算 1 次)。
+func (c *CountingTransport) ReadBlockData(addr byte, cmd byte) ([]byte, error) {
+	c.mu.Lock()
+	c.reads++
+	c.mu.Unlock()
+	return c.Inner.ReadBlockData(addr, cmd)
+}
+
 func (c *CountingTransport) ReadWordData(addr byte, cmd byte) (uint16, error) {
 	c.mu.Lock()
 	c.reads++

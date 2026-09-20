@@ -89,6 +89,8 @@ export function makeAppStub(overrides = {}) {
     Decode: null,
     ReadFileBytes: dumpB64,
     BusStats: null,
+    SetFastRead: null,
+    ReadStats: null,
     ResetBusStats: null,
     WPStatus: null,
     WPSet: null,
@@ -142,6 +144,7 @@ export function loadApp({ appStub } = {}) {
   vm.createContext(ctx);
   vm.runInContext(fs.readFileSync(APP_JS, "utf8"), ctx, { filename: "app.js" });
   const el = (id) => document.getElementById(id);
+  globalThis.__ctx = ctx; // app.js 的顶层函数声明挂在 vm 全局上, 便于测试直接调用
   return { ctx, el, document, window };
 }
 
