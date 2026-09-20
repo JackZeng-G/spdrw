@@ -52,15 +52,15 @@ func TestNewDetectsDDR5(t *testing.T) {
 	if d.Size() != 1024 {
 		t.Fatalf("DDR5 大小 = %d, want 1024", d.Size())
 	}
-	// 探测过 PMIC(0x48)
+	// DDR5 页复位应写 MR11=0 而非 SPA quick
 	found := false
-	for _, op := range ft.QuickLog {
-		if op.Addr == 0x48 {
+	for _, op := range ft.WriteLog {
+		if op.Cmd == 11 && op.Val == 0 {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatal("DDR5 检测应探测 PMIC 地址 0x48")
+		t.Fatal("DDR5 页复位应写 MR11=0")
 	}
 }
 

@@ -63,6 +63,33 @@ var useEnumBackends = func() ([]smbus.Transport, error) {
 	return smbus.DiscoverBackends()
 }
 
+// AutoConnectAll 依次尝试各控制器, 停在第一个扫到设备的上(前端启动自动连接)。
+// 返回 (控制器索引, 扫到的设备列表); 都没有设备时返回最后尝试的与空表。
+func (a *App) AutoConnectAll() (int, []DimmInfo, error) {
+	ctls, err := a.ListControllers()
+	if err != nil {
+		return -1, nil, err
+	}
+	var best []DimmInfo
+	bestIdx := -1
+	for i := range ctls {
+		if err := a.Connect(i); err != nil {
+			continue
+		}
+		dimms, err := a.Scan()
+		if err != nil {
+			continue
+		}
+		if len(dimms) > 0 {
+			return i, dimms, nil
+		}
+		if bestIdx < 0 {
+			bestIdx, best = i, dimms
+		}
+	}
+	return bestIdx, best, nil
+}
+
 // ListControllers 枚举本机 SMBus 控制器(并缓存)。
 func (a *App) ListControllers() ([]ControllerInfo, error) {
 	a.mu.Lock()
@@ -114,7 +141,7 @@ func (a *App) Scan() ([]DimmInfo, error) {
 	if a.active == nil {
 		return nil, fmt.Errorf("请先连接控制器")
 	}
-	var out []DimmInfo
+	out := []DimmInfo{}
 	for addr := byte(0x50); addr <= 0x57; addr++ {
 		// 快速探测
 		if err := a.active.Quick(addr, false); err != nil {
