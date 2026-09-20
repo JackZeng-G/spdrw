@@ -143,11 +143,12 @@ func (a *App) Scan() ([]DimmInfo, error) {
 	}
 	out := []DimmInfo{}
 	for addr := byte(0x50); addr <= 0x57; addr++ {
-		// 快速探测
-		if err := a.active.Quick(addr, false); err != nil {
+		// 探测: 读 SPD 字节0(比快速命令在桥接/AMD 平台上更可靠)
+		b, err := a.active.ReadByteData(addr, 0)
+		if err != nil {
 			continue
 		}
-		a.logf("探测 %#x 在线", addr)
+		a.logf("探测 %#x 在线(byte0=%#x)", addr, b)
 		dev, err := eeprom.New(a.active, addr)
 		if err != nil {
 			a.logf("地址 %#x: %v", addr, err)

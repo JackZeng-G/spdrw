@@ -24,8 +24,9 @@ const sleepModeAlwaysSleep = 2
 
 // pawnioTransport 是绑定到一条 SMBus 总线(一个已加载模块会话)的 Transport。
 type pawnioTransport struct {
-	session *pawnioSession
-	ctrl    Controller
+	session   *pawnioSession
+	ctrl      Controller
+	piix4Port int // -1 = 非 PIIX4 会话
 }
 
 // Discover 枚举本机全部可用 SMBus 总线。
@@ -35,7 +36,7 @@ type pawnioTransport struct {
 func Discover() ([]Transport, error) {
 	var result []Transport
 
-	try := func(bin string, kind ControllerKind, index int, selectFn func(*pawnioSession) error) {
+	try := func(bin string, kind ControllerKind, index int, piix4Port int, selectFn func(*pawnioSession) error) {
 		s, err := pawnioOpen()
 		if err != nil {
 			return // 该控制器不存在/不支持
@@ -56,14 +57,14 @@ func Discover() ([]Transport, error) {
 			s.close()
 			return
 		}
-		result = append(result, &pawnioTransport{session: s, ctrl: ctrl})
+		result = append(result, &pawnioTransport{session: s, ctrl: ctrl, piix4Port: piix4Port})
 	}
 
-	try("SmbusI801.bin", KindI801, 0, nil)
-	try("SmbusPIIX4.bin", KindPIIX4, 0, func(s *pawnioSession) error { return piix4SelectPort(s, 0) })
-	try("SmbusPIIX4.bin", KindPIIX4, 1, func(s *pawnioSession) error { return piix4SelectPort(s, 1) })
-	try("SmbusIntelSkylakeIMC.bin", KindSkylakeIMC, 0, func(s *pawnioSession) error { return skxSelectIndex(s, 0) })
-	try("SmbusIntelSkylakeIMC.bin", KindSkylakeIMC, 1, func(s *pawnioSession) error { return skxSelectIndex(s, 1) })
+	try("SmbusI801.bin", KindI801, 0, -1, nil)
+	try("SmbusPIIX4.bin", KindPIIX4, 0, 0, func(s *pawnioSession) error { return piix4SelectPort(s, 0) })
+	try("SmbusPIIX4.bin", KindPIIX4, 1, 1, func(s *pawnioSession) error { return piix4SelectPort(s, 1) })
+	try("SmbusIntelSkylakeIMC.bin", KindSkylakeIMC, 0, -1, func(s *pawnioSession) error { return skxSelectIndex(s, 0) })
+	try("SmbusIntelSkylakeIMC.bin", KindSkylakeIMC, 1, -1, func(s *pawnioSession) error { return skxSelectIndex(s, 1) })
 
 	sort.Slice(result, func(i, j int) bool {
 		ni, _ := result[i].Identity()
@@ -134,6 +135,8 @@ func decodeName(v uint64) string {
 
 func (p *pawnioTransport) Identity() (Controller, error) { return p.ctrl, nil }
 
+// piix4Port 记录本会话绑定的 AMD 端口; >=0 表示每次事务前重设端口选择,
+// 因为 KernCZ 的端口选择寄存器是全局硬件状态, 多会话(端口0/1)会互相覆盖。
 func (p *pawnioTransport) xfer(addr byte, write bool, cmd byte, proto byte, data []byte, wantOut bool) ([]uint64, error) {
 	in := MarshalXfer(addr, write, cmd, proto, data)
 	out := make([]uint64, XferOutSize)
@@ -142,7 +145,35 @@ func (p *pawnioTransport) xfer(addr byte, write bool, cmd byte, proto byte, data
 		return nil, fmt.Errorf("SMBus 正被其他程序占用(等待 2 秒超时), 请关闭 Thaiphoon/厂家工具后重试")
 	}
 	defer unlock()
-	ret, err := p.session.execute(fnSmbusXfer, in, out)
+
+	// AMD KernCZ: 每次事务前把端口选择切回本会话的端口
+	if p.piix4Port >= 0 {
+		if _, err := p.session.execute(fnPiix4PortSel, []uint64{uint64(p.piix4Port)}, nil); err != nil {
+			return nil, fmt.Errorf("设置 PIIX4 端口 %d 失败: %w", p.piix4Port, err)
+		}
+	}
+
+	// 失败自动重试一次(AMD FCH 偶发首事务超时)
+	// 注: execute 层错误(DLL/驱动级)不重试; 事务状态错误(NACK/超时)重试一次。
+	var ret uint64
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		// 重试前清空上次输出
+		for i := range out {
+			out[i] = 0
+		}
+		ret, err = p.session.execute(fnSmbusXfer, in, out)
+		if err != nil {
+			break
+		}
+		if len(out) > 0 && out[0] != 0 {
+			break // 首单元非 0 —— 具体状态由 UnmarshalOut 解析
+		}
+		// out[0]==0 且无输出: 对读事务可能是 NACK; 重试一次
+		if attempt == 0 && !wantOut {
+			break // 写/快速事务无输出可判, 交给上层
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -155,6 +186,7 @@ func (p *pawnioTransport) xfer(addr byte, write bool, cmd byte, proto byte, data
 	}
 	return out[:n], nil
 }
+
 
 func (p *pawnioTransport) Quick(addr byte, write bool) error {
 	_, err := p.xfer(addr, write, 0, ProtoQuick, nil, false)
