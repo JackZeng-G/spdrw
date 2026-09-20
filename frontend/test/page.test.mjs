@@ -14,6 +14,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const appJS = fs.readFileSync(path.join(here, "..", "dist", "app.js"), "utf8");
 const html = fs.readFileSync(path.join(here, "..", "dist", "index.html"), "utf8");
 const stub = fs.readFileSync(path.join(here, "stub.js"), "utf8");
+const css = fs.readFileSync(path.join(here, "..", "dist", "style.css"), "utf8");
 
 function collect(source, re) {
   return new Set([...source.matchAll(re)].map((m) => m[1]));
@@ -37,4 +38,16 @@ test("app.js 调用的绑定方法都有桩(冒烟页才不会报找不到方法
 test("index.html 仍可被 make-real-page.mjs 改写(只有一个 app.js 标签)", () => {
   const hits = html.match(/<script src="app\.js"><\/script>/g) || [];
   assert.equal(hits.length, 1, "app.js 脚本标签数量 = " + hits.length);
+});
+
+test("图例必须用真实色块, 不能拿绿字写个「蓝」(颜色要与格子里一致)", () => {
+  // 曾经的 bug: 图例写 <b class="ok">蓝</b> —— .ok 是绿色, 于是"蓝"字显示为绿色。
+  assert.match(html, /class="sw sw-crc"/, "应有红色块图例");
+  assert.match(html, /class="sw sw-free"/, "应有蓝色块图例");
+  assert.match(html, /class="sw sw-crcbyte"/, "应有黄框图例");
+  assert.ok(!/class="ok">蓝/.test(html), "图例不得用彩色文字冒充蓝色(会渲染成绿色)");
+  // 图例文字与实际格子配色必须来自同一份样式定义
+  assert.match(css, /\.sw-free\s*\{[^}]*#123f6b/, "图例蓝色块要与 .chg-free 同色");
+  assert.match(css, /\.hexgrid \.hexbyte\.chg-free\s*\{[^}]*#123f6b/, "格子的蓝底要在样式里");
+  assert.match(css, /\.hexgrid \.hexbyte\.chg-crc\s*\{[^}]*#7a1f24/, "格子的红底要在样式里");
 });

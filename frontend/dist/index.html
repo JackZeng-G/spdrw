@@ -99,10 +99,10 @@
           <div id="edit-diff" class="edit-diff muted">—</div>
           <div class="muted small">
             改字节: 直接点左侧 hex 里的格子输入(十六进制, 可带 0x)。<br>
-            左侧配色区分改动是否影响校验:
-            <b class="danger">红</b> = 落在校验范围内(必须点"重算 CRC");
-            <b class="ok">蓝</b> = 不在校验范围(序列号/生产日期/部件号等), CRC 仍然有效;
-            <b class="warn">黄框</b> = CRC 值本身。<br>
+            左侧配色区分改动是否影响校验(见右侧色块, 与格子里实际颜色一致):
+            <span class="legend"><i class="sw sw-crc"></i>红底 = 落在校验范围内, 必须点"重算 CRC"</span>
+            <span class="legend"><i class="sw sw-free"></i>蓝底 = 不在校验范围(序列号/生产日期/部件号等), CRC 仍然有效</span>
+            <span class="legend"><i class="sw sw-crcbyte"></i>黄框 = CRC 值本身</span>
             改完记得看左侧标题旁的校验状态。
           </div>
           <label class="chk"><input type="checkbox" id="chk-edit-backup"> 我已另有备份</label>
