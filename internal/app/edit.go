@@ -23,7 +23,7 @@ type EditState struct {
 	Dirty       bool   `json:"dirty"`
 	ChangeCount int    `json:"changeCount"`
 	CRCOK       bool   `json:"crcOk"`
-	CanWrite    bool   `json:"canWrite"` // 只有来自设备的编辑才能写回设备
+	CanWrite    bool   `json:"canWrite"` // 编辑器有内容即可写回设备(内容来自文件也行, 走同一套预检门禁)
 	// CRCStale 表示"有改动落在校验覆盖范围内" —— 这类改动必须重算 CRC 才能写入;
 	// 改序列号/生产日期/部件号(不在覆盖范围)不置此位, 这才是对的提示。
 	CRCStale bool `json:"crcStale"`
@@ -148,7 +148,7 @@ func (a *App) editStateLocked() (*EditState, error) {
 		Dirty:       a.editor.IsDirty(),
 		ChangeCount: len(a.editor.Changes()),
 		CRCOK:       a.editor.CRCOK(),
-		CanWrite:    a.editFromDevice,
+		CanWrite:    true,
 		CRCStale:    stale,
 	}, nil
 }
@@ -350,7 +350,11 @@ func (a *App) EditApplyToDevice(force, dryRun bool, ack string) (*WriteResult, e
 	dev := a.dev
 	a.mu.Unlock()
 	if !fromDev {
-		return nil, fmt.Errorf("当前编辑器内容来自文件, 请用“写入文件…”流程或先“从设备载入”")
+		// 内容来自文件也可以写回设备(例如克隆/修复): 预检里的长度/世代/CRC/写保护/BIOS
+		// 门禁就是为这种情况准备的 —— 写错世代的文件会在那里被拦住。
+		a.mu.Lock()
+		a.logf("编辑器内容来自 %s(非当前设备读取), 仍走完整预检门禁后写入", a.editSource)
+		a.mu.Unlock()
 	}
 	if dev == nil {
 		return nil, fmt.Errorf("请先选择设备")

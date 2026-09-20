@@ -27,12 +27,17 @@
     step("总线统计面板已移除", !document.getElementById("btn-bus-stats") &&
       !document.getElementById("bus-stats"));
 
-    // 写保护(已移到编辑器页) + 写入能力探测
+    // 读一次就自动载入编辑器(界面已无"从设备载入")
+    step("读取后编辑器自动载入", $("edit-state").textContent.includes("设备 0x50"));
+    step("界面无“从设备载入”按钮", !document.getElementById("btn-edit-load-dev"));
+    step("文件操作在顶栏", !!document.querySelector("#topbar #btn-edit-load-file") &&
+      !!document.querySelector("#topbar #btn-edit-export") &&
+      !!document.querySelector("#topbar #btn-verify"));
+    step("旧的重复按钮已移除", !document.getElementById("btn-save") &&
+      !document.getElementById("btn-load-decode") && !document.getElementById("btn-write"));
+    step("写入确认面板已移除", !document.getElementById("write-modal"));
     $("tab-edit").onclick();
     step("编辑器页可见", !$("view-edit").classList.contains("hidden"));
-    await $("btn-edit-load-dev").onclick();
-    await wait(80);
-    step("编辑器显示来源", $("edit-state").textContent.includes("设备 0x50"));
     step("字段两列网格渲染", $("edit-fields").querySelectorAll(".fitem").length >= 2);
     step("字段默认只显示常用", /常用 \d+ \/ \d+ 个字段/.test($("edit-field-count").textContent));
     step("分组页签带常用/全部计数", /\(\d+\/\d+\)/.test($("edit-groups").textContent));
@@ -71,18 +76,6 @@
     hint.classList.add("hidden");
     document.querySelector('button.q[data-hint="hint-write"]').click();
     step("问号提示可展开", !hint.classList.contains("hidden"));
-
-    // 文件写入面板
-    $("tab-info").onclick();
-    await $("btn-write").onclick();
-    await wait(60);
-    step("写入确认面板弹出", !$("write-modal").classList.contains("hidden"));
-    step("面板显示变更数", $("write-summary").textContent.includes("变更"));
-    step("面板显示 diff", $("write-changes").textContent.includes("0x145"));
-    $("btn-write-cancel").onclick();
-    step("取消后关闭", $("write-modal").classList.contains("hidden"));
-    step("文件写入面板无备份/干跑勾选", !document.getElementById("chk-backup") &&
-      !document.getElementById("chk-dryrun"));
 
     out.jsErrors = window.__ERRORS;
     window.__SMOKE = out;

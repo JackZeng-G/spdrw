@@ -640,14 +640,34 @@ func TestEditorBlocksWriteWhenFileStale(t *testing.T) {
 	if _, err := a.EditApplyToDevice(false, false, "WRITE"); err == nil {
 		t.Fatal("未载入编辑器应拒绝")
 	}
-	// 从文件载入 → 不允许写设备
+	// 从文件载入: 现在允许写回设备(克隆/修复场景), 但必须过预检门禁。
+	// 这里文件与设备内容一致 → 无需写入(changes = 0), 走的是"无需写入"分支。
 	dump := ddr4Fixture()
 	path := writeTempFile(t, dump)
 	if _, err := a.EditLoadPath(path); err != nil {
 		t.Fatal(err)
 	}
+	res, err := a.EditApplyToDevice(false, false, "WRITE")
+	if err != nil {
+		t.Fatalf("内容与设备一致时应返回“无需写入”而不是报错: %v", err)
+	}
+	if res.Written != 0 {
+		t.Fatalf("内容一致时不应写任何字节: %+v", res)
+	}
+	// 换一份**跨世代**的文件: 必须被预检门禁挡住(这是允许文件写入后的安全网)
+	other := spd.DDR3
+	_ = other
+	d3 := make([]byte, 256)
+	d3[2] = 0x0B // DDR3
+	if _, err := spd.FixCRC(d3); err != nil {
+		t.Fatal(err)
+	}
+	d3path := writeTempFile(t, d3)
+	if _, err := a.EditLoadPath(d3path); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := a.EditApplyToDevice(false, false, "WRITE"); err == nil {
-		t.Fatal("来自文件的内容不应允许写设备")
+		t.Fatal("跨世代(长度也不同)的文件必须被预检挡住")
 	}
 	// 换设备后编辑器失效
 	if _, err := a.EditLoadFromDevice(); err != nil {

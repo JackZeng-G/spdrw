@@ -16,6 +16,8 @@ import (
 
 // ControllerInfo 是前端展示用的控制器条目。
 type ControllerInfo struct {
+	// Devices 是枚举时在该控制器上探测到的 SPD 数量(0 = 没有设备, 默认不列出)。
+	Devices int    `json:"devices"`
 	Index   int    `json:"index"`
 	Name    string `json:"name"`
 	Kind    string `json:"kind"`
@@ -163,19 +165,56 @@ func (a *App) ListControllers() ([]ControllerInfo, error) {
 		}
 		a.transports = ts
 	}
-	out := make([]ControllerInfo, 0, len(a.transports))
+	all := make([]ControllerInfo, 0, len(a.transports))
 	for i, t := range a.transports {
 		c, err := t.Identity()
 		if err != nil {
 			continue
 		}
-		out = append(out, ControllerInfo{
+		info := ControllerInfo{
 			Index: i, Name: c.Name, Kind: string(c.Kind),
 			NoSpdWp: c.NoSpdWp, WpKnown: c.WpKnown,
-		})
+		}
+		info.Devices = probeSPDCount(t)
+		all = append(all, info)
 	}
-	a.logf("发现 %d 个 SMBus 控制器", len(out))
-	return out, nil
+
+	// AMD FCH 的端口 0/2/3/4 共用同一个 IO 基址(0x0B00), 端口 1 是独立辅助控制器,
+	// 而只有其中一个端口真的接着内存条。把没有设备的条目也列出来只会让用户困惑
+	// (用户反馈: 5 个控制器里 1/3/4/5 的编号没有意义), 所以默认只保留有设备的。
+	listed := make([]ControllerInfo, 0, len(all))
+	for _, c := range all {
+		if c.Devices > 0 {
+			listed = append(listed, c)
+		}
+	}
+	if len(listed) == 0 {
+		a.logf("未在任何控制器上探测到 SPD, 暂时列出全部 %d 个控制器", len(all))
+		return all, nil
+	}
+	if hidden := len(all) - len(listed); hidden > 0 {
+		var names []string
+		for _, c := range all {
+			if c.Devices == 0 {
+				names = append(names, c.Name)
+			}
+		}
+		a.logf("已隐藏 %d 个无设备的控制器(%s)", hidden, strings.Join(names, "; "))
+	}
+	a.logf("发现 %d 个 SMBus 控制器(其中有设备的 %d 个)", len(all), len(listed))
+	return listed, nil
+}
+
+// probeSPDCount 逐个 SPD 地址探测(只读 byte0, 与扫描同一套判据)并返回在线设备数。
+// 用只读判据而不是快速命令: 在桥接/AMD 平台上更可靠, 而且探测阶段不产生写事务。
+func probeSPDCount(t smbus.Transport) int {
+	n := 0
+	for addr := byte(0x50); addr <= 0x57; addr++ {
+		if _, err := t.ReadByteData(addr, 0); err == nil {
+			n++
+		}
+	}
+	return n
 }
 
 // Connect 选择控制器并复位状态。
@@ -337,6 +376,15 @@ func (a *App) Dump() ([]byte, error) {
 	a.logf("%s", line)
 	a.lastDumpAddr = a.dev.Addr()
 	a.lastDump = data
+	// 读一次就自动把内容放进编辑器(用户反馈: 编辑器再点一次"从设备载入"是多余的)。
+	if ed, eerr := spd.NewEditor(data); eerr == nil {
+		a.editor = ed
+		a.editSource = fmt.Sprintf("设备 %#x", a.dev.Addr())
+		a.editFromDevice = true
+	} else {
+		a.editor, a.editSource, a.editFromDevice = nil, "", false
+		a.logf("编辑器未载入(该内容暂不支持编辑): %v", eerr)
+	}
 	a.emit("dump:done", len(data))
 	a.logf("读取 %d 字节", len(data))
 	// DDR5 诊断: 关键 MR 寄存器 + NVM 前 4 字节直读, 用于定位页/NVM 访问问题

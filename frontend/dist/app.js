@@ -104,7 +104,9 @@ function fillCtlSelect(list) {
   list.forEach((c, i) => {
     const opt = document.createElement("option");
     opt.value = i;
-    opt.textContent = `${c.name}${c.wpKnown ? (c.noSpdWp ? " · SPD写可" : " · BIOS禁写SPD") : ""}`;
+    // 名称后附"探测到的设备数": 列表里只剩有设备的控制器, 一眼能看出哪条真的接了条
+    const dev = c.devices ? ` · ${c.devices} 个设备` : "";
+    opt.textContent = `${c.name}${dev}${c.wpKnown ? (c.noSpdWp ? " · SPD写可" : " · BIOS禁写SPD") : ""}`;
     sel.appendChild(opt);
   });
   if (!list.length) {
@@ -221,6 +223,25 @@ async function doDump() {
   await decodeCurrent();
   await refreshReadMode().catch(() => {});
   await refreshCRCStatus().catch(() => {});
+  // 读一次就把内容放进编辑器(用户反馈: 编辑器再点一次"从设备载入"是多余的)
+  await adoptDeviceEditor();
+}
+
+// adoptDeviceEditor 把"刚读完的设备内容"接进编辑器(后端在 Dump 时已建好工作副本)。
+async function adoptDeviceEditor() {
+  try {
+    const st = await call("EditState");
+    if (!st) { resetEditorState(); return; }
+    editorLoaded = true;
+    renderEditState(st);
+    editFieldsCache = (await call("EditFields")) || [];
+    renderEditFields();
+    setEditLoadedUI(true);
+    await refreshEditBytes();
+    await refreshEditDiff();
+  } catch (e) {
+    resetEditorState();
+  }
 }
 
 $("btn-scan").onclick = async () => {
@@ -490,162 +511,21 @@ function fmtT(t) {
 
 // ---------- 文件操作 ----------
 function enableOps(on) {
-  ["btn-save", "btn-load-decode", "btn-verify", "btn-write", "btn-wp-status", "btn-wp-set", "btn-wp-clear", "btn-write-probe"].forEach((id) => ($(id).disabled = !on));
+  // 顶栏的"校验文件"需要设备(它与设备内容比对); "打开 dump 文件…"纯文件操作, 一直可用
+  ["btn-verify", "btn-wp-status", "btn-wp-set", "btn-wp-clear", "btn-write-probe", "btn-edit-reload"]
+    .forEach((id) => ($(id).disabled = !on));
 }
 
-$("btn-save").onclick = async () => {
-  // 保存对话框在 Go 侧弹出(v2 JS 运行时无对话框 API), 数据走后端缓存
-  try {
-    await call("SaveDumpDialog");
-  } catch (e) { addLog("", "保存失败: " + e); }
-};
-
-$("btn-load-decode").onclick = async () => {
-  // 打开对话框在 Go 侧弹出, 直接返回解析结果与 dump
-  try {
-    const r = await call("DecodeFileDialog");
-    if (!r) return; // 用户取消
-    renderInfo(r);
-    currentDump = await call("ReadFileBytes", r.path); // base64 string
-    resetEditMarks();
-    renderHexB64(currentDump);
-    await refreshCRCStatus().catch(() => {});
-    addLog("", "已解析 " + r.path);
-  } catch (e) {
-    if (String(e).includes("已取消")) { addLog("", "已取消"); return; }
-    addLog("", "解析失败: " + e);
-  }
-};
-
+// 校验文件: 选一个 dump 文件与**设备当前内容**逐字节比对(需要已连接设备)。
 $("btn-verify").onclick = async () => {
   try {
     const path = await call("VerifyFileDialog");
-    addLog("", "校验通过: " + path);
+    addLog("", "校验通过(文件与设备内容一致): " + path);
   } catch (e) {
     if (String(e).includes("已取消")) { addLog("", "已取消"); return; }
     addLog("", "校验失败: " + e);
   }
 };
-
-// ---------- 写入(预检 → diff → 确认串 → 执行) ----------
-let writeState = { path: null, preflight: null };
-
-$("btn-write").onclick = async () => {
-  try {
-    // 旧实现弹框后直接写; 现在先只取路径, 走预检/确认面板
-    const path = await call("PickWriteFile");
-    await openWritePanel(path);
-  } catch (e) {
-    if (String(e).includes("已取消")) { addLog("", "已取消"); return; }
-    addLog("", "写入准备失败: " + e);
-  }
-};
-
-async function openWritePanel(path) {
-  const force = $("chk-force").checked;
-  const pf = await call("PreflightWrite", path, force);
-  if (!pf) throw new Error("预检无结果");
-  writeState = { path, preflight: pf };
-  renderPreflight(pf);
-  $("write-modal").classList.remove("hidden");
-}
-
-$("chk-force").onchange = async () => {
-  if (!writeState.path) return;
-  try { await openWritePanel(writeState.path); } catch (e) { addLog("", "预检失败: " + e); }
-};
-
-function closeWritePanel() {
-  $("write-modal").classList.add("hidden");
-  writeState = { path: null, preflight: null };
-  $("inp-ack").value = "";
-}
-$("btn-write-cancel").onclick = closeWritePanel;
-
-function renderPreflight(pf) {
-  const esc = escapeHtml;
-  const rows = [];
-  const addr = pf.addr != null ? "0x" + Number(pf.addr).toString(16).padStart(2, "0") : "?";
-  $("write-target").textContent = `${addr} · ${pf.generation} ← ${pf.path}`;
-  rows.push(pf.sizeOk
-    ? `大小校验通过(${pf.fileSize} 字节)`
-    : `<span class="danger">大小不符: 文件 ${pf.fileSize} 字节 / SPD ${pf.deviceSize} 字节</span>`);
-  // 增量写入: 只把"与设备不同"的字节下到总线。这是"只改一个小字段做写入测试"的依据 ——
-  // 改一个字节就只写一个字节(勾了"强制模式"才会写全部)。
-  rows.push(`变更 <b>${pf.changeCount}</b> 字节(其中 CRC <b>${pf.crcBytes}</b> 字节, 按计划最后写入)`);
-  rows.push(pf.changeCount > 0
-    ? `本次**只会**写上面这 ${pf.changeCount} 个字节: 其余 ${Math.max(0, pf.deviceSize - pf.changeCount)} 个字节不发送任何写事务` +
-      `(增量模式; 只有勾"强制模式"才会写全部 ${pf.deviceSize} 字节)`
-    : `设备内容与目标一致: 不会写入任何字节`);
-  if (pf.targetGeneration) rows.push(`世代对照: 目标 ${esc(pf.targetGeneration)} = 设备 ${esc(pf.generation)} ✓`);
-  rows.push(`写入后自动校验: ① 每个字节写完立即回读 ② 整片 ${pf.deviceSize} 字节逐字节比对 ` +
-    `③ 改动字节再用逐字节读法复核(绕过块读) —— 任一不符立即自动回滚`);
-  rows.push(pf.targetCrcValid
-    ? `目标文件 CRC 校验通过`
-    : `<span class="danger">目标文件 CRC 校验不通过</span>`);
-  if (!pf.currentCrcValid) rows.push(`<span class="warn">设备当前内容 CRC 已不通过</span>`);
-  if (pf.highRiskCount) rows.push(`<span class="danger">含高危字节 ${pf.highRiskCount} 个(容量/组织/电压/PMIC 等)</span>`);
-  if (pf.protectedBlocks && pf.protectedBlocks.length) rows.push(`<span class="danger">受写保护块: ${pf.protectedBlocks.join(", ")}</span>`);
-  if (pf.unknownBlocks && pf.unknownBlocks.length) {
-    rows.push(`<span class="warn">保护状态未知块: ${pf.unknownBlocks.join(", ")}` +
-      `(本次是预览, 未做写保护探测以免写入设备; 真正写入时会检测并在受保护时拒绝)</span>`);
-  }
-  if (pf.pswp) rows.push(`<span class="danger">该条处于 PSWP 永久写保护</span>`);
-  for (const w of (pf.warnings || [])) rows.push(`<span class="warn">提示: ${esc(w)}</span>`);
-  if (pf.blocked) rows.push(`<span class="danger">已阻断: ${esc(pf.blockReason)}</span>`);
-  $("write-summary").innerHTML = rows.join("<br>");
-
-  let html = `<table><tr><th>区域</th><th>风险</th><th>字节</th><th>偏移</th></tr>`;
-  for (const f of (pf.fields || [])) {
-    const cls = f.risk === "high" ? "danger" : f.risk === "medium" ? "warn" : "";
-    html += `<tr><td>${esc(f.region)}</td><td class="${cls}">${esc(f.risk)}</td><td>${f.count}</td><td>${esc(f.ranges)}</td></tr>`;
-  }
-  html += `</table>`;
-  $("write-fields").innerHTML = html;
-
-  const hexb = (n, w) => Number(n).toString(16).toUpperCase().padStart(w, "0");
-  let d = "";
-  for (const c of (pf.changes || [])) {
-    d += `<div>0x${hexb(c.offset, 3)}  ${hexb(c.old, 2)} → ${hexb(c.new, 2)}${c.isCRC ? "  (CRC)" : ""}</div>`;
-  }
-  if (pf.changesTruncated) d += `<div class="muted">…(变更过多, 仅显示前 300 条)</div>`;
-  if (!d) d = `<div class="muted">无差异</div>`;
-  $("write-changes").innerHTML = d;
-
-  $("btn-write-go").disabled = !!pf.blocked || pf.changeCount === 0;
-  $("inp-ack").placeholder = "WRITE";
-}
-
-$("btn-write-go").onclick = async () => {
-  const pf = writeState.preflight;
-  if (!pf) return;
-  const dryRun = false;      // 干跑已从界面移除(需要时可在后端/测试里用)
-  const force = $("chk-force").checked;
-  if (pf.blocked) { addLog("", "预检未通过, 已阻断: " + pf.blockReason); return; }
-  try {
-    const res = await call("WriteConfirmed", writeState.path, force, dryRun, $("inp-ack").value);
-    addLog("", (res && res.message) || (dryRun ? "干跑完成" : "写入完成"));
-    if (res && res.backupPath) addLog("", "备份: " + res.backupPath);
-    closeWritePanel();
-    await doDump();
-    await refreshReadMode().catch(() => {});
-  } catch (e) {
-    addLog("", "写入失败: " + e);
-    // 失败后必须重新读设备: 是否已回滚只有重读才知道, 左侧视图/校验状态也要同步
-    await resyncAfterFailure();
-  }
-};
-
-// resyncAfterFailure 在写入失败后重新读取设备内容并刷新视图与校验状态。
-async function resyncAfterFailure() {
-  addLog("", "正在重新读取设备内容(确认回滚结果)…");
-  try {
-    await doDump();
-    addLog("", "已重新读取设备: 请以左侧内容与校验状态为准");
-  } catch (err) {
-    addLog("", "重新读取失败: " + err);
-  }
-}
 
 // 读加速(块读 → 字读 → 逐字节)与等待模式(忙等 → 折中)都不再需要手动开关:
 // 程序自己按"探测可用档位 + 失败自动降级"选路, 并把实际档位/降级原因写进日志。
@@ -850,9 +730,10 @@ function setEditEnabled(on) {
   if (!on) setEditLoadedUI(false);
 }
 
-$("btn-edit-load-dev").onclick = async () => {
-  try { await loadEditor("EditLoadFromDevice"); }
-  catch (e) { addLog("", "载入设备失败: " + e); }
+// 重新读取设备: 读取后会自动把内容接进编辑器(见 doDump/adoptDeviceEditor)
+$("btn-edit-reload").onclick = async () => {
+  try { await doDump(); addLog("", "已重新读取设备并刷新编辑器"); }
+  catch (e) { addLog("", "重新读取失败: " + e); }
 };
 $("btn-edit-load-file").onclick = async () => {
   try { await loadEditor("EditLoadFileDialog"); }
@@ -872,7 +753,21 @@ async function loadEditor(method) {
   editorLoaded = true;
   setEditLoadedUI(true);
   await refreshEditBytes();   // 让左侧 hex 进入"可直接点击修改"状态
+  await syncInfoFromEditor(); // 用户要求: 用编辑器打开 dump 文件时, SPD 信息也要同步显示
   addLog("", `编辑器已载入: ${st.source}(${st.generation} ${st.size}B)`);
+}
+
+// syncInfoFromEditor 用编辑器当前内容刷新"SPD 信息"面板(打开文件后信息面板不再空白)。
+async function syncInfoFromEditor() {
+  try {
+    const b64 = await call("EditBytes");
+    if (typeof b64 !== "string") return;
+    currentDump = b64;
+    const r = await call("Decode", b64);
+    renderInfo(r);
+  } catch (e) {
+    addLog("", "同步 SPD 信息失败: " + e);
+  }
 }
 
 function renderEditState(st) {
@@ -1049,6 +944,18 @@ async function refreshEditDiff() {
 
 
 
+// resyncAfterFailure 写入失败后重新读取设备并刷新视图与校验状态。
+// (回滚成功与否只有重读才知道; 左侧必须显示设备的真实内容。)
+async function resyncAfterFailure() {
+  addLog("", "正在重新读取设备内容(确认回滚结果)…");
+  try {
+    await doDump();
+    addLog("", "已重新读取设备: 请以左侧内容与校验状态为准");
+  } catch (err) {
+    addLog("", "重新读取失败: " + err);
+  }
+}
+
 // 写入设备: 界面不再需要勾"我已另有备份"(每次都会自动备份), 也不再提供干跑;
 // 确认串仍是唯一且必要的闸门(后端同样校验)。
 // 写入成功后自动做一次独立复核: 重新整片读取设备并与编辑器内容逐字节比较。
@@ -1102,5 +1009,4 @@ $("btn-edit-write").onclick = async () => {
 const _origEnableOps = enableOps;
 enableOps = function (on) {
   _origEnableOps(on);
-  $("btn-edit-load-dev").disabled = !on;
 };

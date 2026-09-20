@@ -304,3 +304,7 @@ button.q:hover { color: var(--accent); border-color: var(--accent); }
 
 .hexgrid .row.head { color: var(--muted); }
 .hexgrid .colhead { display: inline-block; width: 2.05ch; text-align: center; }
+
+/* 顶栏右侧的文件操作组(全局动作: 打开/另存/校验) */
+.bar-files { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.bar-files button { padding: 2px 9px; font-size: 12px; }

@@ -1,8 +1,10 @@
 package app
 
 import (
+	"strings"
 	"testing"
 
+	"spdrw/internal/smbus"
 	"spdrw/internal/spd"
 )
 
@@ -221,4 +223,56 @@ func TestBusTuningUnsupportedOnFake(t *testing.T) {
 	if _, err := empty.SetSleepMode(0); err == nil {
 		t.Fatal("未连接时 SetSleepMode 应报错")
 	}
+}
+
+// 控制器列表: 只保留"探测到设备"的控制器(用户反馈: AMD FCH 的 5 个端口里
+// 1/3/4/5 共用同一个 IO 基址、编号没有意义, 列出来只会让人困惑)。
+// 本用例用两个 Fake(一个有设备、一个没有)验证过滤与回退逻辑。
+func TestListControllersKeepsOnlyWithDevices(t *testing.T) {
+	// 有设备: 0x50/0x51 ACK
+	withDev := smbus.NewFake()
+	withDev.Ctrl = smbus.Controller{Kind: smbus.KindPIIX4, Index: 0, IOBase: 0x0B00, Name: "AMD FCH SMBus 端口 0 (IO:0B00)"}
+	withDev.Present = map[byte]bool{0x50: true, 0x51: true}
+	// 没设备: 全部 NACK
+	empty := smbus.NewFake()
+	empty.Ctrl = smbus.Controller{Kind: smbus.KindPIIX4, Index: 2, IOBase: 0x0B00, Name: "AMD FCH SMBus 端口 2 (IO:0B00)"}
+	empty.Present = map[byte]bool{}
+
+	a := New()
+	a.transports = []smbus.Transport{withDev, empty}
+	list, err := a.ListControllers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Fatalf("应只列出有设备的控制器, got %d: %+v", len(list), list)
+	}
+	if list[0].Devices != 2 {
+		t.Fatalf("应报告探测到 2 个设备: %+v", list[0])
+	}
+	if list[0].Index != 0 {
+		t.Fatalf("应保留索引 0(有设备的那个): %+v", list[0])
+	}
+	if !strings.Contains(strings.Join(logTexts(a), "\n"), "已隐藏") {
+		t.Fatal("应在日志里说明隐藏了哪些无设备控制器")
+	}
+
+	// 一个都没探到 → 退回列出全部(否则用户无从下手)
+	b := New()
+	b.transports = []smbus.Transport{empty}
+	all, err := b.ListControllers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 1 {
+		t.Fatalf("都探不到时应列出全部: %+v", all)
+	}
+}
+
+func logTexts(a *App) []string {
+	var out []string
+	for _, l := range a.Logs() {
+		out = append(out, l.Text)
+	}
+	return out
 }

@@ -130,7 +130,10 @@ export function makeAppStub(overrides = {}) {
     EditVerifyFile: { changes: [], fields: [], highRisk: 0, crcFields: 0, changeCount: 0, crcOk: true, truncated: false },
     EditExportDialog: null,
     EditApplyToDevice: null,
-    EditState: null,
+    EditState: {
+      source: "设备 0x50", generation: "DDR4", size: 512, dirty: false,
+      changeCount: 0, crcOk: true, canWrite: true, crcStale: false,
+    },
     MfgSearch: [],
     CRCStatus: {
       generation: "DDR4", size: 512, known: true, ok: true, covered: 252,

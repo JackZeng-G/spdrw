@@ -50,8 +50,10 @@ func TestConcurrentOperationsDoNotRace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EditState: %v", err)
 	}
-	if !st.Dirty {
-		t.Fatal("应该至少有一次编辑落到了工作副本")
+	// 注意: 读取(Dump)现在会自动把内容载入编辑器, 并发下最后一次可能是"读取重置后的干净副本",
+	// 所以这里不要求 Dirty, 只要求状态自洽(载入来源/长度/CRC 都说得通)。
+	if st.Size == 0 || st.Source == "" {
+		t.Fatalf("并发之后编辑器状态应自洽: %+v", st)
 	}
 	// 设备内容仍应是合法 CRC 的镜像(并发读不该破坏任何东西)
 	cur, err := a.Dump()

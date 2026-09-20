@@ -20,8 +20,16 @@ const diffDirty = {
   highRisk: 0, crcFields: 2, changeCount: 5, crcOk: true, truncated: false,
 };
 
+// 读取设备后编辑器会自动载入(界面已无"从设备载入"按钮), 测试统一走这条路径。
+async function readDevice(el) {
+  el("dimm-select").value = "80";
+  await el("dimm-select").onchange();
+  await flush();
+}
+
 function setup(overrides = {}) {
   const { stub, calls } = makeAppStub({
+    EditState: () => state,
     EditLoadFromDevice: () => state,
     EditFields: () => fields,
     EditDiff: () => diffDirty,
@@ -44,10 +52,11 @@ test("编辑器: 标签页切换与从设备载入", async () => {
   assert.equal(el("view-edit").classList.contains("hidden"), false);
   assert.equal(el("view-info").classList.contains("hidden"), true);
 
-  await el("btn-edit-load-dev").onclick();
+  await readDevice(el);
   await flush();
-  assert.ok(calls.some((c) => c.name === "EditLoadFromDevice"), "应调用 EditLoadFromDevice");
-  assert.ok(calls.some((c) => c.name === "EditFields"), "载入后应拉字段");
+  assert.ok(calls.some((c) => c.name === "Dump"), "应读取设备");
+  assert.ok(calls.some((c) => c.name === "EditState"), "读取后应自动接进编辑器");
+  assert.ok(calls.some((c) => c.name === "EditFields"), "应拉字段");
   assert.match(el("edit-state").textContent, /设备 0x50/);
   assert.match(el("edit-fields").html(), /部件号/);
   assert.match(el("edit-field-count").textContent, /常用 \d+ \/ \d+ 个字段/, "应显示常用/全部字段数");
@@ -58,8 +67,7 @@ test("编辑器: 分组切换(JEDEC 时序/常用信息分开渲染)", async () 
   const { el } = setup();
   await flush();
   el("tab-edit").onclick();
-  await el("btn-edit-load-dev").onclick();
-  await flush();
+  await readDevice(el);
   const tabs = el("edit-groups").children;
   assert.ok(tabs.length >= 2, "应有多个分组按钮: " + tabs.length);
   const names = tabs.map((t) => t.textContent).join("|");
@@ -79,8 +87,7 @@ test("编辑器: 左侧 hex 点击可就地改字节(十六进制解析)", async
   const { el, calls, ctx } = setup();
   await flush();
   el("tab-edit").onclick();
-  await el("btn-edit-load-dev").onclick();
-  await flush();
+  await readDevice(el);
   assert.match(el("hexgrid").innerHTML, /data-off="260"/, "hex 视图的字节应带 data-off(可点击)");
   assert.match(el("hexgrid").innerHTML, /colhead/, "hex 视图应有列头(00..0F)");
 
@@ -144,8 +151,7 @@ test("校验状态: 面板把左侧 dump 的字节交给后端判定并显示结
   const { el, calls } = setup();
   await flush();
   el("tab-edit").onclick();
-  await el("btn-edit-load-dev").onclick();
-  await flush();
+  await readDevice(el);
 
   const call = calls.find((c) => c.name === "CRCStatus");
   assert.ok(call, "应调用 CRCStatus 查询校验状态");
@@ -164,8 +170,7 @@ test("校验状态: 改动在校验范围外 → CRC 仍通过, 格子标蓝且�
   const { el } = setup({ EditDiff: onlyFree });
   await flush();
   el("tab-edit").onclick();
-  await el("btn-edit-load-dev").onclick();
-  await flush();
+  await readDevice(el);
 
   assert.match(el("crc-status").textContent, /CRC 通过/);
   assert.match(el("crc-status").textContent, /3 处改动不在校验范围/);
@@ -182,8 +187,7 @@ test("校验状态: 改动落在校验范围内 → 提示重算, 格子标红",
   const { el } = setup({ EditDiff: inRange });
   await flush();
   el("tab-edit").onclick();
-  await el("btn-edit-load-dev").onclick();
-  await flush();
+  await readDevice(el);
 
   assert.match(el("crc-status").textContent, /CRC 需重算/);
   assert.match(el("crc-status").textContent, /1 处在校验范围内/);
@@ -203,8 +207,7 @@ test("校验状态: 重算 CRC 后回到通过, 且不再提示重算", async ()
   });
   await flush();
   el("tab-edit").onclick();
-  await el("btn-edit-load-dev").onclick();
-  await flush();
+  await readDevice(el);
   assert.match(el("crc-status").textContent, /CRC 需重算/);
 
   await el("btn-edit-fixcrc").onclick();
@@ -218,8 +221,7 @@ test("编辑器: 修改字段会调用 EditSetField 并刷新 diff", async () =>
   const { el, calls } = setup();
   await flush();
   el("tab-edit").onclick();
-  await el("btn-edit-load-dev").onclick();
-  await flush();
+  await readDevice(el);
 
   // 触发第一个字段的应用按钮
   el("edit-fields").querySelectorAll("button[data-apply]").forEach((b) => b.onclick());
@@ -234,8 +236,7 @@ test("编辑器: CRC 不通过时禁止写入", async () => {
   const { el } = setup({ EditDiff: () => ({ ...diffDirty, crcOk: false }) });
   await flush();
   el("tab-edit").onclick();
-  await el("btn-edit-load-dev").onclick();
-  await flush();
+  await readDevice(el);
 
   assert.equal(el("btn-edit-write").disabled, true, "CRC 不通过必须禁用写入");
   assert.match(el("edit-diff").innerHTML, /CRC 不通过/);
@@ -245,8 +246,7 @@ test("写入设备: 不再需要勾备份/干跑, 只需确认串(自动备份)"
   const { el, calls } = setup();
   await flush();
   el("tab-edit").onclick();
-  await el("btn-edit-load-dev").onclick();
-  await flush();
+  await readDevice(el);
 
   // 界面上已没有"我已另有备份"与"干跑"控件(查询返回空壳元素: className 为空)
   assert.equal(el("chk-edit-backup").className, "", "备份勾选应已移除(每次自动备份)");
@@ -267,11 +267,9 @@ test("编辑器: 写入失败后自动重读设备(回滚结果只有重读才�
   });
   await flush();
   el("tab-edit").onclick();
-  await el("btn-edit-load-dev").onclick();
-  await flush();
+  await readDevice(el);
 
   calls.length = 0;
-  el("chk-edit-backup").checked = true;
   el("inp-edit-ack").value = "WRITE";
   await el("btn-edit-write").onclick();
   await flush();
@@ -292,8 +290,7 @@ test("写入成功后自动复核(不需要用户手点)", async () => {
   });
   await flush();
   el("tab-edit").onclick();
-  await el("btn-edit-load-dev").onclick();
-  await flush();
+  await readDevice(el);
 
   el("inp-edit-ack").value = "WRITE";
   await el("btn-edit-write").onclick();
@@ -313,8 +310,7 @@ test("自动复核发现不一致时要显眼提示", async () => {
   });
   await flush();
   el("tab-edit").onclick();
-  await el("btn-edit-load-dev").onclick();
-  await flush();
+  await readDevice(el);
   el("inp-edit-ack").value = "WRITE";
   await el("btn-edit-write").onclick();
   await flush();
@@ -323,24 +319,35 @@ test("自动复核发现不一致时要显眼提示", async () => {
   assert.match(el("log").text(), /不一致/);
 });
 
-test("切换设备后前端编辑器必须复位(后端已清空, 界面不能还留着上一根条的内容)", async () => {
-  const { el, calls } = setup();
+test("切换设备后编辑器内容随之刷新(不会残留上一根条的内容)", async () => {
+  let addr = "0x50";
+  const { el, calls } = setup({
+    EditState: () => ({ ...state, source: `设备 ${addr}` }),
+  });
   await flush();
   el("tab-edit").onclick();
-  await el("btn-edit-load-dev").onclick();
-  await flush();
-  assert.equal(el("btn-edit-fixcrc").disabled, false, "载入后重算 CRC 应可用");
-  assert.match(el("edit-fields").html(), /部件号/);
+  await readDevice(el);
+  assert.equal(el("btn-edit-fixcrc").disabled, false, "读取后重算 CRC 应可用");
+  assert.match(el("edit-state").textContent, /设备 0x50/);
 
-  // 切换设备: 后端 Select 会清空编辑器
+  // 切到另一根条: 读取后编辑器自动换成新设备的内容
+  addr = "0x51";
   el("dimm-select").value = "81";
   await el("dimm-select").onchange();
   await flush();
-
   assert.ok(calls.some((c) => c.name === "Select"), "应调用 Select");
+  assert.match(el("edit-state").textContent, /设备 0x51/, "编辑器应显示新设备的内容");
+});
+
+test("读到的内容无法编辑时编辑器清空并禁用操作(不会留下旧内容)", async () => {
+  const { el } = setup({
+    EditState: () => { throw new Error("编辑器尚未载入数据"); },
+  });
+  await flush();
+  el("tab-edit").onclick();
+  await readDevice(el);
   assert.equal(el("edit-fields").html().includes("部件号"), false, "字段表单应清空");
   assert.match(el("edit-fields").html(), /先载入数据/);
   assert.equal(el("btn-edit-fixcrc").disabled, true, "未载入时重算 CRC 应禁用");
   assert.equal(el("btn-edit-write").disabled, true, "未载入时禁止写入");
-  assert.match(el("log").text(), /编辑器内容已失效/, "要明确告诉用户需要重新载入");
 });

@@ -19,6 +19,12 @@
         <select id="dimm-select"><option value="-1">— 未扫描 —</option></select>
       </label>
     </div>
+    <div class="bar-files">
+      <span class="muted small">文件</span>
+      <button id="btn-edit-load-file">打开 dump 文件…</button>
+      <button id="btn-edit-export" disabled>另存为…</button>
+      <button id="btn-verify" disabled>校验文件…</button>
+    </div>
     <div id="env-status" class="env-unknown">检测环境…</div>
   </header>
 
@@ -52,15 +58,6 @@
       <div class="panel-title">SPD 信息</div>
       <div id="info-body" class="info-body"><div class="placeholder">读取后显示</div></div>
 
-      <div class="panel-title ops-title">操作</div>
-      <div class="ops">
-        <button id="btn-save" disabled>保存 dump…</button>
-        <button id="btn-load-decode" disabled>打开文件解析…</button>
-        <button id="btn-verify" disabled>校验文件…</button>
-        <button id="btn-write" disabled class="danger">写入文件…</button>
-        <input type="file" id="file-input" class="hidden">
-      </div>
-
       <div class="muted small" id="read-mode-wrap">
         读取方式: <span id="read-mode" class="muted">—</span>
       </div>
@@ -76,10 +73,8 @@
           写字节也可以直接在左侧 hex 里点格子改。
         </div>
         <div class="ops edit-load">
-          <button id="btn-edit-load-dev" disabled>从设备载入</button>
-          <button id="btn-edit-load-file" disabled>打开 dump 文件…</button>
+          <button id="btn-edit-reload" disabled>重新读取设备</button>
           <button id="btn-edit-reset" disabled>放弃修改</button>
-          <button id="btn-edit-export" disabled>另存为…</button>
         </div>
         <div id="edit-groups" class="edit-groups"></div>
         <div class="edit-fields-head">
@@ -141,27 +136,6 @@
     <div class="panel-title">日志</div>
     <div id="log" class="log"></div>
   </footer>
-
-  <!-- 写入前确认面板: 必须看过 diff/风险并输入确认串才会执行 -->
-  <div id="write-modal" class="modal hidden">
-    <div class="modal-card">
-      <div class="modal-title">写入前确认 <span id="write-target" class="muted"></span></div>
-      <div id="write-summary" class="write-summary"></div>
-      <div id="write-fields" class="write-fields"></div>
-      <details id="write-changes-wrap">
-        <summary>逐字节 diff</summary>
-        <div id="write-changes" class="write-changes"></div>
-      </details>
-      <div class="muted small">写入前会自动备份设备当前整片内容到 <code>~/.spdrw/backups</code>;
-        失败会自动回滚, 写完自动三层校验并重新读设备复核。</div>
-      <label class="chk"><input type="checkbox" id="chk-force"> 强制模式(写入全部字节, 含相同值;修复时才需要)</label>
-      <label class="chk">确认串 <input id="inp-ack" type="text" placeholder="WRITE" autocomplete="off"></label>
-      <div class="modal-actions">
-        <button id="btn-write-cancel">取消</button>
-        <button id="btn-write-go" class="danger" disabled>执行写入</button>
-      </div>
-    </div>
-  </div>
 
   <script src="app.js"></script>
 </body>

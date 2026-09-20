@@ -1,102 +1,93 @@
-// 前端契约测试(写入流程): 预检渲染、阻断、确认串与参数形态。
+// 前端契约测试(写入路径): 界面只有一个写入入口 —— 编辑器里的"写入设备…"。
+// (原"写入文件…"面板与"干跑/我已另有备份"勾选已按用户反馈移除; 备份每次自动做。)
 import test from "node:test";
 import assert from "node:assert/strict";
 import { loadApp, makeAppStub, flush } from "./harness.mjs";
 
-const preflightOK = {
-  path: "/tmp/dump.bin", addr: 0x50, generation: "DDR4", deviceSize: 512, fileSize: 512,
-  sizeOk: true, changeCount: 3, crcBytes: 2,
-  changes: [
-    { offset: 325, old: 0x01, new: 0xab, block: 2, isCRC: false },
-    { offset: 126, old: 0x11, new: 0x40, block: 0, isCRC: true },
-    { offset: 127, old: 0x11, new: 0x52, block: 0, isCRC: true },
-  ],
-  changesTruncated: false,
-  fields: [{ region: "序列号", risk: "low", count: 1, ranges: "0x145" }],
-  highRiskCount: 0, protectedBlocks: [], unknownBlocks: [], pswp: false,
-  targetCrcValid: true, currentCrcValid: true, dryRun: false,
-  warnings: [], blocked: false, blockReason: "",
+const state = {
+  source: "设备 0x50", generation: "DDR4", size: 512,
+  dirty: true, changeCount: 3, crcOk: true, canWrite: true, crcStale: false,
+};
+const diff = {
+  changes: [{ offset: 325, old: 0xde, new: 0x11, field: "序列号", risk: "low" }],
+  fields: [], highRisk: 0, crcFields: 2, changeCount: 3, crcOk: true, truncated: false,
+  crcDirty: 0, crcFreeDirty: 3, dirtyInCrc: [], dirtyFree: [323, 325, 329],
 };
 
-function setup(pf, extra = {}) {
+function setup(overrides = {}) {
   const { stub, calls } = makeAppStub({
-    PickWriteFile: () => "/tmp/dump.bin",
-    PreflightWrite: () => pf,
-    WriteConfirmed: () => ({ dryRun: false, written: 3, total: 3, backupPath: "/root/.spdrw/backups/x.bin", verified: true, message: "写入并校验通过" }),
-    ...extra,
+    EditState: () => state,
+    EditFields: () => [],
+    EditDiff: () => diff,
+    EditApplyToDevice: () => ({
+      dryRun: false, written: 3, total: 3, verified: true,
+      backupPath: "/root/.spdrw/backups/x.bin", message: "写入并校验通过: 3 字节(备份 …)",
+    }),
+    EditVerifyFile: () => ({ changes: [], fields: [], highRisk: 0, crcFields: 0, changeCount: 0, crcOk: true, truncated: false }),
+    ...overrides,
   });
   const h = loadApp({ appStub: stub });
-  const alerts = [];
-  h.ctx.alert = (m) => alerts.push(String(m));
-  return { ...h, calls, alerts };
+  return { ...h, calls };
 }
 
-test("写入: 先预检再弹确认面板, diff/字段/CRC 渲染", async () => {
-  const { el, calls } = setup(preflightOK);
+async function readDevice(el) {
+  el("dimm-select").value = "80";
+  await el("dimm-select").onchange();
   await flush();
-  await el("btn-write").onclick();
+}
+
+test("写入: 编辑器是唯一入口, 传 (force=false, dryRun=false, ack)", async () => {
+  const { el, calls } = setup();
   await flush();
-
-  assert.equal(el("write-modal").classList.contains("hidden"), false, "确认面板应显示");
-  const names = calls.map((c) => c.name);
-  const iP = names.indexOf("PickWriteFile"), iF = names.indexOf("PreflightWrite");
-  assert.ok(iP >= 0 && iF > iP, "必须先取文件再预检: " + names.join(","));
-  const pfCall = calls.find((c) => c.name === "PreflightWrite");
-  assert.equal(pfCall.args[1], false, "force 默认 false");
-
-  assert.match(el("write-summary").innerHTML, /变更 <b>3<\/b> 字节/);
-  assert.match(el("write-summary").innerHTML, /目标文件 CRC 校验通过/);
-  assert.match(el("write-fields").innerHTML, /序列号/);
-  const diff = el("write-changes").innerHTML;
-  assert.match(diff, /0x145 {2}01 → AB/);
-  assert.match(diff, /0x07E {2}11 → 40 {2}\(CRC\)/);
-  assert.equal(el("btn-write-go").disabled, false);
+  el("tab-edit").onclick();
+  await readDevice(el);
+  el("inp-edit-ack").value = "WRITE";
+  await el("btn-edit-write").onclick();
+  await flush();
+  const call = calls.find((c) => c.name === "EditApplyToDevice");
+  assert.ok(call, "应调用 EditApplyToDevice");
+  assert.deepEqual([...call.args], [false, false, "WRITE"]);
+  assert.equal(calls.some((c) => c.name === "WriteConfirmed"), false,
+    "旧的“写入文件…”路径已移除, 不应再调用 WriteConfirmed");
 });
 
-test("写入: 预检阻断时禁止执行并显示原因", async () => {
-  const blocked = {
-    ...preflightOK, targetCrcValid: false, blocked: true,
-    blockReason: "目标文件 CRC 校验不通过(先用编辑器修复 CRC 或重新生成 dump)",
-    warnings: ["变更包含 1 个高危字节(容量/组织/电压/PMIC 等), 写错可能导致无法开机"],
-    highRiskCount: 1,
-  };
-  const { el } = setup(blocked);
+test("写入: 界面不再有备份/干跑勾选(备份每次自动做)", async () => {
+  const { el } = setup();
   await flush();
-  await el("btn-write").onclick();
-  await flush();
-
-  assert.equal(el("btn-write-go").disabled, true, "阻断时必须禁用执行按钮");
-  assert.match(el("write-summary").innerHTML, /已阻断/);
-  assert.match(el("write-summary").innerHTML, /高危字节 1 个/);
+  el("tab-edit").onclick();
+  await readDevice(el);
+  for (const id of ["chk-edit-backup", "chk-edit-dryrun", "chk-backup", "chk-dryrun", "write-modal"]) {
+    assert.equal(el(id).className, "", `${id} 应已从界面移除`);
+  }
+  assert.equal(el("inp-edit-ack").placeholder, "WRITE");
 });
 
-test("写入: 备份勾选已移除, 确认串仍需传给后端", async () => {
-  const { el, calls } = setup(preflightOK);
+test("写入: CRC 不通过或有未保存内容时按钮状态正确", async () => {
+  const bad = setup({ EditDiff: () => ({ ...diff, crcOk: false, crcDirty: 1 }) });
   await flush();
-  await el("btn-write").onclick();
+  bad.el("tab-edit").onclick();
+  await readDevice(bad.el);
+  assert.equal(bad.el("btn-edit-write").disabled, true, "CRC 不通过时禁止写入");
+
+  const clean = setup({ EditDiff: () => ({ ...diff, changeCount: 0 }) });
   await flush();
-  // 界面不再有"我已另有备份"(每次写入都会自动备份)
-  assert.equal(el("chk-backup").className, "", "备份勾选应已移除");
-  assert.equal(el("chk-dryrun").className, "", "干跑勾选应已移除");
-  el("inp-ack").value = "WRITE";
-  await el("btn-write-go").onclick();
-  await flush();
-  const call = calls.find((c) => c.name === "WriteConfirmed");
-  assert.ok(call, "应调用 WriteConfirmed");
-  assert.deepEqual([...call.args], ["/tmp/dump.bin", false, false, "WRITE"]);
+  clean.el("tab-edit").onclick();
+  await readDevice(clean.el);
+  assert.equal(clean.el("btn-edit-write").disabled, true, "没有改动时禁止写入");
 });
 
-test("写入: 强制模式勾选 → force=true", async () => {
-  const { el, calls } = setup(preflightOK);
+test("写入: 失败时报错并把设备真实内容重新读回来", async () => {
+  const { el, calls } = setup({
+    EditApplyToDevice: () => { throw new Error("写入未完成: 写入中止(write)@ 0x145: …; 已自动回滚到写入前内容(3 字节, 读回校验通过)"); },
+  });
   await flush();
-  await el("btn-write").onclick();
+  el("tab-edit").onclick();
+  await readDevice(el);
+  calls.length = 0;
+  el("inp-edit-ack").value = "WRITE";
+  await el("btn-edit-write").onclick();
   await flush();
-  el("chk-force").checked = true;
-  el("inp-ack").value = "WRITE";
-  await el("btn-write-go").onclick();
-  await flush();
-  const call = calls.find((c) => c.name === "WriteConfirmed");
-  assert.ok(call);
-  assert.deepEqual([...call.args], ["/tmp/dump.bin", true, false, "WRITE"]);
-  assert.equal(el("write-modal").classList.contains("hidden"), true, "执行后应关闭面板");
+  assert.match(el("log").text(), /写入失败/);
+  assert.match(el("log").text(), /已自动回滚/);
+  assert.ok(calls.some((c) => c.name === "Dump"), "失败后必须重新读取设备");
 });
