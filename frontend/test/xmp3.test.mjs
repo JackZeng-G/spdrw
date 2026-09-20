@@ -81,10 +81,12 @@ test("XMP 3.0: 5 个槽位卡片, 关键项带频率与速率换算", async () =
   assert.match(html, /class="slot on"/, "启用的槽应有 on 标记");
   assert.match(html, /已启用/);
   assert.match(html, /6000 CL30/, "槽名称要显示出来");
-  // tCK 0.333 ns = 3000 MHz = 6000 MT/s(DDR 双沿)
+  // tCK 0.333 ns ≈ 3003 MHz ≈ 6006 MT/s(DDR 双沿)
   assert.match(html, /0\.333 ns/);
-  assert.match(html, /3000 MHz/);
-  assert.match(html, /6000 MT\/s/, "tCK 应换算成速率");
+  assert.match(html, /3003 MHz/);
+  assert.match(html, /6006 MT\/s/, "tCK 应换算成速率");
+  assert.match(html, /<th>tAA<\/th><td>0\.5 ns<\/td>/, "主时序 tAA 要在表里");
+  assert.match(html, /<th>tRCD<\/th><td>0\.5 ns<\/td>/, "主时序 tRCD 要在表里");
   assert.match(html, /30,32,34/, "CL 掩码要显示");
   assert.match(html, /1\.350 V/, "电压要显示");
   // 只填了部分字段的槽算有数据
