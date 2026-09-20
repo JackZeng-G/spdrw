@@ -273,3 +273,127 @@ func TestCorpusEditPreflightDryRun(t *testing.T) {
 	}
 	t.Logf("编辑→预检→干跑 全链路: %d 份真实 dump 全部通过", ran)
 }
+
+// TestCorpusRealWriteEndToEnd 把**真实写入**(非干跑)在全部真实 dump 上跑一遍:
+// 备份 → 按计划逐字节写(CRC 排最后) → 逐字节回读 → 整片校验 → 设备内容 == 目标。
+//
+// 这是真机写入前能做的最后一层离线验证: 语料覆盖 DDR3/DDR4/DDR5 三代, 包含
+// DDR5 的 MR11 分页与 XMP/EXPO 各自的 CRC, 任何"写错页/漏写 CRC/回读判断反了"
+// 都会在这里现形。
+func TestCorpusRealWriteEndToEnd(t *testing.T) {
+	old := eeprom.ReadDelay
+	eeprom.ReadDelay = 0
+	defer func() { eeprom.ReadDelay = old }()
+	dir := filepath.Join("..", "..", "testdata", "spd")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Skipf("无语料目录(%v)", err)
+	}
+	ran, byGen := 0, map[string]int{}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), "ddr") {
+			continue
+		}
+		name := e.Name()
+		if !strings.HasSuffix(name, ".bin") && !strings.HasSuffix(name, ".spd") {
+			continue
+		}
+		dump, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		rt, size, err := spd.Identify(dump)
+		if err != nil || len(dump) != size {
+			continue
+		}
+		if ok, _ := spd.CRCOK(dump); !ok {
+			continue
+		}
+
+		f := smbus.NewFake()
+		if rt == spd.DDR5 || rt == spd.LPDDR5 || rt == spd.DDR5NVDIMMP || rt == spd.LPDDR5X {
+			f.SetDDR5(true)
+		}
+		copy(f.EEProm, dump)
+		a := New()
+		a.transports = []smbus.Transport{f}
+		if err := a.Connect(0); err != nil {
+			t.Fatalf("%s: Connect: %v", name, err)
+		}
+		if err := a.Select(0x50); err != nil {
+			t.Fatalf("%s: Select: %v", name, err)
+		}
+		if _, err := a.EditLoadFromDevice(); err != nil {
+			t.Errorf("%s: EditLoadFromDevice: %v", name, err)
+			continue
+		}
+		// 改序列号(所有世代都支持; DDR3 上它还在 CRC 覆盖范围内, 正好连带测 CRC 重写)
+		if _, err := a.EditSetField("serial", "0A0B0C0D"); err != nil {
+			t.Errorf("%s: 改序列号: %v", name, err)
+			continue
+		}
+		if _, err := a.EditFixCRC(); err != nil {
+			t.Errorf("%s: FixCRC: %v", name, err)
+			continue
+		}
+		target, err := a.EditBytes()
+		if err != nil {
+			t.Errorf("%s: EditBytes: %v", name, err)
+			continue
+		}
+		want, err := a.EditDiff()
+		if err != nil {
+			t.Errorf("%s: EditDiff: %v", name, err)
+			continue
+		}
+
+		res, err := a.EditApplyToDevice(false, false, "WRITE")
+		if err != nil {
+			t.Errorf("%s: 真实写入失败: %v", name, err)
+			continue
+		}
+		switch {
+		case res == nil:
+			t.Errorf("%s: 无结果", name)
+			continue
+		case res.DryRun:
+			t.Errorf("%s: 应是真实写入", name)
+		case !res.Verified:
+			t.Errorf("%s: 未标记校验通过: %+v", name, res)
+		case res.RolledBack:
+			t.Errorf("%s: 不该发生回滚: %+v", name, res)
+		case res.BackupPath == "":
+			t.Errorf("%s: 真实写入必须先备份", name)
+		case res.Written != want.ChangeCount || res.Total != want.ChangeCount:
+			t.Errorf("%s: 写入计数 %d/%d 与变更数 %d 不符", name, res.Written, res.Total, want.ChangeCount)
+		case res.BusStats == nil:
+			t.Errorf("%s: 缺少总线统计", name)
+		case rt == spd.DDR5 || rt == spd.LPDDR5 || rt == spd.DDR5NVDIMMP || rt == spd.LPDDR5X:
+			// DDR5 的保护探测只读 MR 寄存器, 不做写测试 → NVM 写数必须**精确等于**变更数
+			if res.BusStats.NVMWrites != want.ChangeCount {
+				t.Errorf("%s: DDR5 NVM 写数 %d 与变更数 %d 不符", name, res.BusStats.NVMWrites, want.ChangeCount)
+			}
+		default:
+			// DDR4 及更早: 预检里的写保护探测(取反写+还原 × 块数)也计入同一窗口
+			if res.BusStats.NVMWrites < want.ChangeCount {
+				t.Errorf("%s: NVM 写数 %d 少于变更数 %d", name, res.BusStats.NVMWrites, want.ChangeCount)
+			}
+		}
+		// 设备内容必须与目标逐字节一致, 且 CRC 有效
+		for i := 0; i < size; i++ {
+			if f.EEProm[i] != target[i] {
+				t.Errorf("%s: 设备 @%#x = %02X, 目标 %02X", name, i, f.EEProm[i], target[i])
+				break
+			}
+		}
+		if ok, cerr := spd.CRCOK(f.EEProm[:size]); cerr != nil || !ok {
+			t.Errorf("%s: 写入后整片 CRC 应通过: %v %v", name, ok, cerr)
+		}
+		byGen[rt.String()]++
+		ran++
+	}
+	if ran == 0 {
+		t.Skip("语料为空")
+	}
+	t.Logf("真实写入全链路(备份/写/回读/整片校验): %d 份真实 dump 全部通过 %v", ran, byGen)
+}

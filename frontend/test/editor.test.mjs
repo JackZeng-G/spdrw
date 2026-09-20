@@ -263,3 +263,24 @@ test("编辑器: 未勾选备份拒绝写入; 干跑走 DRYRUN", async () => {
   assert.deepEqual([...call.args], [false, true, "DRYRUN"]);
 });
 
+
+test("编辑器: 写入失败后自动重读设备(回滚结果只有重读才知道)", async () => {
+  const { el, calls } = setup({
+    EditApplyToDevice: () => { throw new Error("写入中止(write)@ 0x2C5: 已写 3/4 字节…; 已自动回滚到写入前内容(3 字节, 读回校验通过)"); },
+  });
+  await flush();
+  el("tab-edit").onclick();
+  await el("btn-edit-load-dev").onclick();
+  await flush();
+
+  calls.length = 0;
+  el("chk-edit-backup").checked = true;
+  el("inp-edit-ack").value = "WRITE";
+  await el("btn-edit-write").onclick();
+  await flush();
+
+  assert.ok(calls.some((c) => c.name === "EditApplyToDevice"));
+  assert.ok(calls.some((c) => c.name === "Dump"), "写入失败后必须重新读设备");
+  assert.match(el("log").text(), /已自动回滚/, "回滚结果要出现在日志里");
+  assert.match(el("log").text(), /设备当前实际内容/, "要说明左侧现在显示的是设备内容");
+});

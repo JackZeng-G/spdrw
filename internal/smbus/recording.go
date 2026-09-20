@@ -43,6 +43,9 @@ type RecordingTransport struct {
 	FailWriteAt int
 	// FailWriteFrom > 0 时, 第 N 次及之后的写全部失败(模拟持续故障/还原失败)。
 	FailWriteFrom int
+	// FailWriteOnce > 0 时, 只让第 N 次数据写失败一次(模拟偶发 NACK/超时) ——
+	// 之后的写恢复正常, 用于验证"失败→自动回滚"能真正把内容还原。
+	FailWriteOnce int
 	// FailWriteCmdFilter 非 nil 时, 只有满足条件的写才计数/注入失败。
 	// DDR5 用得上: MR 寄存器写(切页 MR11 等, cmd bit7=0)不算 NVM 写入,
 	// 让它参与计数会把"第 N 次数据写"算错。
@@ -175,10 +178,17 @@ func (r *RecordingTransport) writeGuard(cmd byte) (int, error) {
 	}
 	n++ // 当前这次
 	failAt, failFrom, deny, inj := r.FailWriteAt, r.FailWriteFrom, r.DenyWriteFrom, r.ErrInjected
+	once := r.FailWriteOnce
+	if once > 0 && n == once {
+		r.FailWriteOnce = 0 // 只失败这一次, 后续写(含回滚)必须能成功
+	}
 	r.mu.Unlock()
 
 	if inj == nil {
 		inj = fmt.Errorf("注入的写失败(第 %d 次写)", n)
+	}
+	if once > 0 && n == once {
+		return n, inj
 	}
 	if failAt > 0 && n >= failAt {
 		return n, inj

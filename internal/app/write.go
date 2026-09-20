@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -68,6 +69,9 @@ type WriteResult struct {
 	Message    string          `json:"message"`
 	NVMWrites  int             `json:"nvmWrites"`
 	BusStats   *BusStatsResult `json:"busStats,omitempty"`
+	// 写入失败/校验失败时是否已用写入前镜像自动回滚, 以及回滚结果说明。
+	RolledBack   bool   `json:"rolledBack"`
+	RollbackNote string `json:"rollbackNote,omitempty"`
 }
 
 // spdRegion 描述一段 SPD 字节区域。
@@ -487,26 +491,68 @@ func (a *App) SetDryRun(on bool) (bool, error) {
 	return dev.DryRun(), nil
 }
 
-// backupCurrent 把设备当前整片内容存到备份目录, 返回路径。
-func (a *App) backupCurrent(dev *eeprom.Device) (string, error) {
+// backupCurrent 把设备当前整片内容存到备份目录, 返回**镜像内容**与文件路径。
+// 镜像要一直留在内存里: 写入失败时它就是回滚源(不能只依赖磁盘文件, 免得盘满/权限问题)。
+func (a *App) backupCurrent(dev *eeprom.Device) ([]byte, string, error) {
 	img, err := dev.ReadAll()
 	if err != nil {
-		return "", fmt.Errorf("备份失败(读取当前内容): %w", err)
+		return nil, "", fmt.Errorf("备份失败(读取当前内容): %w", err)
 	}
 	dir, err := backupDir()
 	if err != nil {
-		return "", err
+		return nil, "", err
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return "", fmt.Errorf("创建备份目录 %s: %w", dir, err)
+		return nil, "", fmt.Errorf("创建备份目录 %s: %w", dir, err)
 	}
 	name := fmt.Sprintf("spd-%#x-%s.bin", dev.Addr(), time.Now().Format("20060102-150405"))
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, img, 0o644); err != nil {
-		return "", fmt.Errorf("写备份 %s: %w", path, err)
+		return nil, "", fmt.Errorf("写备份 %s: %w", path, err)
 	}
 	a.logf("已备份当前 SPD: %s (%d 字节)", path, len(img))
-	return path, nil
+	return img, path, nil
+}
+
+// restoreImage 用给定镜像覆盖设备内容并整片校验(回滚与测试共用)。
+func (a *App) restoreImage(dev *eeprom.Device, img []byte) (int, error) {
+	changes, err := dev.PlanWrite(img, false)
+	if err != nil {
+		return 0, fmt.Errorf("无法生成回滚计划: %w", err)
+	}
+	if len(changes) == 0 {
+		return 0, nil // 内容已经和镜像一致(失败可能发生在第一个字节之前)
+	}
+	if err := dev.ApplyWrite(img, changes, nil); err != nil {
+		return 0, err
+	}
+	if err := dev.Verify(img); err != nil {
+		return len(changes), fmt.Errorf("回滚后整片校验不通过: %w", err)
+	}
+	return len(changes), nil
+}
+
+// rollbackAfterFailure 写入/校验失败后用写入前镜像自动回滚。
+//
+// 为什么必须是自动的: SPD 被写了一半(尤其校验字节还没写)时, 主板可能直接拒绝该条,
+// 用户面对的是一根"开不了机"的内存条。失败即回滚才是默认行为, 不能指望用户手动补。
+func (a *App) rollbackAfterFailure(dev *eeprom.Device, img []byte, backup string, cause error) (bool, string) {
+	a.logf("写入未完成(%v), 正在用写入前镜像回滚…", cause)
+	n, err := a.restoreImage(dev, img)
+	switch {
+	case err != nil:
+		note := fmt.Sprintf("自动回滚失败: %v; 请立刻用备份 %s 重新写入该条 SPD(或离线恢复)", err, backup)
+		a.logf("%s", note)
+		return false, note
+	case n == 0:
+		note := fmt.Sprintf("内容已与写入前一致(失败发生在改动之前), 无需回滚; 备份 %s", backup)
+		a.logf("%s", note)
+		return true, note
+	default:
+		note := fmt.Sprintf("已自动回滚到写入前内容(%d 字节, 读回校验通过); 备份 %s", n, backup)
+		a.logf("%s", note)
+		return true, note
+	}
 }
 
 func backupDir() (string, error) {
@@ -607,12 +653,13 @@ func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun 
 		return res, nil
 	}
 
-	// 真实写入: 先备份, 再写, 最后整片校验
+	// 真实写入: 先备份(镜像留在内存里当回滚源) → 写(CRC 排在最后) → 整片校验
+	// 任何一步失败都自动回滚到写入前内容: 半写的 SPD 可能让主板拒绝该条。
 	if dev.DryRun() {
 		return nil, fmt.Errorf("设备处于干跑模式, 本次不会真正写入; 请先关闭干跑模式再执行真实写入")
 	}
 	counter, _ := a.activeTransport().(*smbus.CountingTransport)
-	backup, err := a.backupCurrent(dev)
+	img, backup, err := a.backupCurrent(dev)
 	if err != nil {
 		return nil, fmt.Errorf("写入前备份失败, 已中止: %w", err)
 	}
@@ -621,27 +668,62 @@ func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun 
 	if err != nil {
 		return nil, err
 	}
+	res.Total = len(changes)
+
+	var fail error
 	if err := dev.ApplyWrite(dump, changes, func(w, t int) { a.emit("write:progress", w, t) }); err != nil {
-		return res, err
+		fail = err
+	} else if err := dev.Verify(dump); err != nil {
+		fail = &eeprom.WriteError{Stage: "verify", Written: len(changes), Total: len(changes), Err: err}
 	}
-	res.Total, res.Written = len(changes), len(changes)
-	if err := dev.Verify(dump); err != nil {
-		res.Message = "写入后整片校验失败"
-		a.logf("写入后校验失败: %v", err)
-		return res, fmt.Errorf("写入后整片校验失败: %w", err)
+
+	if fail != nil {
+		res.Written = writtenOf(fail, len(changes))
+		res.RolledBack, res.RollbackNote = a.rollbackAfterFailure(dev, img, backup, fail)
+		a.attachBusStats(res, dev, counter)
+		res.Message = fmt.Sprintf("写入未完成: %v; %s", fail, res.RollbackNote)
+		a.logf("%s", res.Message)
+		// 用包装错误返回: 消息里带"回滚结果", 但 errors.As 仍能取到 *eeprom.WriteError
+		return res, &writeFailure{cause: fail, note: res.RollbackNote}
 	}
-	res.Verified = true
+
+	res.Written, res.Verified = len(changes), true
 	res.Message = fmt.Sprintf("写入并校验通过: %d 字节(备份 %s)", len(changes), backup)
-	if counter != nil {
-		st := counter.Stats()
-		nvm := smbus.NVMWrites(counter.WriteLog(), dev.IsDDR5())
-		res.NVMWrites = len(nvm)
-		res.BusStats = &BusStatsResult{
-			Generation: dev.Generation(), Reads: st.Reads, QuickWrites: st.QuickWrites,
-			ByteDataWrites: st.ByteDataWrites, ByteWrites: st.ByteWrites, NVMWrites: len(nvm),
-		}
-		res.Message += fmt.Sprintf("; 总线: 读 %d / 字节写 %d(其中 NVM %d)", st.Reads, st.ByteDataWrites, len(nvm))
-	}
+	a.attachBusStats(res, dev, counter)
 	a.logf("%s", res.Message)
 	return res, nil
+}
+
+// writeFailure 把"原始写入错误"与"回滚结果"一起报给用户, 同时保留错误链
+// (上层/测试仍可用 errors.As 取到 *eeprom.WriteError 里的已写/未写计数)。
+type writeFailure struct {
+	cause error
+	note  string
+}
+
+func (e *writeFailure) Error() string { return fmt.Sprintf("%v; %s", e.cause, e.note) }
+func (e *writeFailure) Unwrap() error { return e.cause }
+
+// writtenOf 从错误里取出"已经写了多少字节"。
+func writtenOf(err error, fallback int) int {
+	var we *eeprom.WriteError
+	if errors.As(err, &we) {
+		return we.Written
+	}
+	return fallback
+}
+
+// attachBusStats 把本次操作(含可能的回滚写)的总线计数填进结果与日志文案。
+func (a *App) attachBusStats(res *WriteResult, dev *eeprom.Device, counter *smbus.CountingTransport) {
+	if counter == nil {
+		return
+	}
+	st := counter.Stats()
+	nvm := smbus.NVMWrites(counter.WriteLog(), dev.IsDDR5())
+	res.NVMWrites = len(nvm)
+	res.BusStats = &BusStatsResult{
+		Generation: dev.Generation(), Reads: st.Reads, QuickWrites: st.QuickWrites,
+		ByteDataWrites: st.ByteDataWrites, ByteWrites: st.ByteWrites, NVMWrites: len(nvm),
+	}
+	res.Message += fmt.Sprintf("; 总线: 读 %d / 字节写 %d(其中 NVM %d)", st.Reads, st.ByteDataWrites, len(nvm))
 }

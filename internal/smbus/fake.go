@@ -17,6 +17,8 @@ type FakeTransport struct {
 	Present map[byte]bool
 	// ProtectedFrom >= 0 时模拟写保护: 对该偏移及以上的写操作 NACK(真实 EE1004 行为)。
 	ProtectedFrom int
+	// IgnoreFrom >= 0 时模拟"写了但不生效"(不报错也不落值): 用来触发回读校验失败。
+	IgnoreFrom int
 	// BlockReadUnsupported 为 true 时块读返回 NACK(模拟不支持块读的设备, 用于测回退)。
 	BlockReadUnsupported bool
 	// WordReadUnsupported 为 true 时字读返回 NACK(模拟连字读都不支持的设备)。
@@ -50,6 +52,7 @@ func NewFake() *FakeTransport {
 	return &FakeTransport{
 		MR:            map[byte]byte{},
 		ProtectedFrom: -1,
+		IgnoreFrom:    -1,
 		Ctrl:          Controller{Kind: KindI801, Index: 0, IOBase: 0xEFA0, Name: "Fake"},
 		EEProm:        make([]byte, 1024),
 		page:          0,
@@ -168,6 +171,9 @@ func (f *FakeTransport) WriteByteData(addr byte, cmd byte, val byte) error {
 	i, err := f.idx(cmd)
 	if err != nil {
 		return err
+	}
+	if f.IgnoreFrom >= 0 && i >= f.IgnoreFrom {
+		return nil // 模拟"写被忽略": 不落值也不报错 → 回读校验必须发现
 	}
 	f.EEProm[i] = val
 	return nil

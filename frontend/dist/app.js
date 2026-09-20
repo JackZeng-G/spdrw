@@ -594,8 +594,21 @@ $("btn-write-go").onclick = async () => {
     await refreshReadMode().catch(() => {});
   } catch (e) {
     addLog("", "写入失败: " + e);
+    // 失败后必须重新读设备: 是否已回滚只有重读才知道, 左侧视图/校验状态也要同步
+    await resyncAfterFailure();
   }
 };
+
+// resyncAfterFailure 在写入失败后重新读取设备内容并刷新视图与校验状态。
+async function resyncAfterFailure() {
+  addLog("", "正在重新读取设备内容(确认回滚结果)…");
+  try {
+    await doDump();
+    addLog("", "已重新读取设备: 请以左侧内容与校验状态为准");
+  } catch (err) {
+    addLog("", "重新读取失败: " + err);
+  }
+}
 
 // ---------- 总线统计 ----------
 // 真机 V2 验证: 干跑前后各读一次计数, NVM 写必须为 0。
@@ -978,7 +991,11 @@ $("btn-edit-write").onclick = async () => {
     } else {
       addLog("", "干跑模式: SPD 未被改动");
     }
-  } catch (e) { addLog("", "写入失败: " + e); }
+  } catch (e) {
+    addLog("", "写入失败: " + e);
+    await resyncAfterFailure();
+    addLog("", "编辑器里仍是你的目标内容(可修正后重试); 左侧显示的是设备当前实际内容");
+  }
 };
 
 // 设备连接/选择后允许把设备内容载入编辑器

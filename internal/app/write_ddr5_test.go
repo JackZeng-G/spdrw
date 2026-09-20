@@ -153,9 +153,10 @@ func TestDDR5EditorWriteEndToEnd(t *testing.T) {
 	}
 }
 
-// TestWriteAbortKeepsCRCStale 锁死一条安全性质: 中止时 CRC 字节不会被写脏。
-// 计划把 CRC 排在最后, 所以"数据已写、CRC 未写"的中断状态会让 BIOS 拒绝该条,
-// 而不是接受一份"校验通过但内容错"的 SPD。
+// TestWriteAbortKeepsCRCStale 锁死两条安全性质(持续故障场景):
+//  1. 中止时 CRC 字节不会被写脏 —— 计划把 CRC 排在最后, 所以"数据已写、CRC 未写"
+//     的中断状态会让 BIOS 拒绝该条, 而不是接受一份"校验通过但内容错"的 SPD;
+//  2. 这种情况下自动回滚也必然失败(写一直失败), 必须明确告诉用户"用哪个备份手动重写"。
 func TestWriteAbortKeepsCRCStale(t *testing.T) {
 	a, rec, ft := newDDR5WriteApp(t)
 	orig := append([]byte{}, ft.EEProm...)
@@ -220,6 +221,123 @@ func TestWriteAbortKeepsCRCStale(t *testing.T) {
 	}
 	if ok, _ := spd.CRCOK(ft.EEProm[:1024]); ok {
 		t.Fatal("半写状态不应通过 CRC")
+	}
+	// 持续故障下回滚不可能成功: 必须如实报告并要求用备份手动恢复
+	if res.RolledBack {
+		t.Fatal("写入一直失败时不应谎报回滚成功")
+	}
+	if !strings.Contains(werr.Error(), "自动回滚失败") || !strings.Contains(werr.Error(), res.BackupPath) {
+		t.Fatalf("应说明回滚失败并给出备份路径: %v", werr)
+	}
+}
+
+// TestWriteAutoRollbackOnTransientFailure 偶发一次写失败 → 自动回滚把内容还原。
+// 这是真机上最常见的故障形态(NACK/超时一次), 半写的 SPD 会被主板拒绝,
+// 因此"失败即回滚"必须是默认行为。
+func TestWriteAutoRollbackOnTransientFailure(t *testing.T) {
+	a, rec, ft := newDDR5WriteApp(t)
+	orig := append([]byte{}, ft.EEProm...)
+
+	if _, err := a.EditLoadFromDevice(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.EditSetField("xmp3.p1.tCK", "0.500"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.EditFixCRC(); err != nil {
+		t.Fatal(err)
+	}
+	target, _ := a.EditBytes()
+	pf, err := a.buildPreflight("编辑器内容", target, false, true)
+	if err != nil {
+		t.Fatalf("buildPreflight: %v", err)
+	}
+	if pf.Blocked {
+		t.Skipf("预检已阻断(%s)", pf.BlockReason)
+	}
+	// 第一次 CRC 字节写失败, 之后恢复正常
+	nonCRC := 0
+	for _, c := range pf.Changes {
+		if !c.IsCRC {
+			nonCRC++
+		}
+	}
+	if nonCRC == 0 {
+		t.Fatal("应有数据字节变更")
+	}
+	rec.Reset()
+	rec.FailWriteOnce = nonCRC + 1
+	rec.FailWriteCmdFilter = func(cmd byte) bool { return cmd&0x80 != 0 }
+
+	res, werr := a.writeWithPreflight(pf, target, false, false)
+	if werr == nil {
+		t.Fatal("注入一次故障后写入应失败")
+	}
+	var we *eeprom.WriteError
+	if !errors.As(werr, &we) || we.Written != nonCRC {
+		t.Fatalf("应保留 WriteError 与已写计数: %v", werr)
+	}
+	if res == nil || !res.RolledBack {
+		t.Fatalf("应自动回滚: %+v", res)
+	}
+	if !strings.Contains(res.RollbackNote, "已自动回滚") {
+		t.Fatalf("回滚说明不对: %q", res.RollbackNote)
+	}
+	if !strings.Contains(werr.Error(), "回滚") {
+		t.Fatalf("错误里应带回滚结果: %v", werr)
+	}
+	// 核心断言: 设备内容与写入前逐字节一致, 且 CRC 依然有效
+	for i := range orig {
+		if ft.EEProm[i] != orig[i] {
+			t.Fatalf("回滚后 @%#x 应为 %02X, 实际 %02X", i, orig[i], ft.EEProm[i])
+		}
+	}
+	if ok, cerr := spd.CRCOK(ft.EEProm[:1024]); cerr != nil || !ok {
+		t.Fatalf("回滚后整片 CRC 必须通过: %v %v", ok, cerr)
+	}
+}
+
+// TestWriteAutoRollbackOnVerifyFailure "写了但不生效"(写被忽略/写保护块) →
+// 回读校验失败 → 自动回滚。这类故障不会报错, 只能靠回读发现。
+func TestWriteAutoRollbackOnVerifyFailure(t *testing.T) {
+	a, rec, ft := newDDR5WriteApp(t)
+	orig := append([]byte{}, ft.EEProm...)
+
+	if _, err := a.EditLoadFromDevice(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.EditSetField("xmp3.p1.tCK", "0.500"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.EditFixCRC(); err != nil {
+		t.Fatal(err)
+	}
+	target, _ := a.EditBytes()
+	pf, err := a.buildPreflight("编辑器内容", target, false, true)
+	if err != nil {
+		t.Fatalf("buildPreflight: %v", err)
+	}
+	if pf.Blocked {
+		t.Skipf("预检已阻断(%s)", pf.BlockReason)
+	}
+	// 让 0x2C0 起的写"被接受但不生效"(槽内容不落盘)
+	ft.IgnoreFrom = 0x2C0
+	rec.Reset()
+	res, werr := a.writeWithPreflight(pf, target, false, false)
+	if werr == nil {
+		t.Fatal("写被忽略时写入应失败")
+	}
+	var we *eeprom.WriteError
+	if !errors.As(werr, &we) || we.Stage != "verify" {
+		t.Fatalf("应是回读校验失败(verify): %v", werr)
+	}
+	if res == nil || !res.RolledBack {
+		t.Fatalf("应自动回滚: %+v", res)
+	}
+	for i := range orig {
+		if ft.EEProm[i] != orig[i] {
+			t.Fatalf("回滚后 @%#x 应为 %02X, 实际 %02X", i, orig[i], ft.EEProm[i])
+		}
 	}
 }
 
