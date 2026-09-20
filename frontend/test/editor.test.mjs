@@ -308,3 +308,37 @@ test("与设备比对: 重新读取并逐字节比较(写入后的独立校验)"
   await flush();
   assert.match(el("edit-diff").innerHTML, /逐字节一致/);
 });
+
+test("切换设备后前端编辑器必须复位(后端已清空, 界面不能还留着上一根条的内容)", async () => {
+  const { el, calls } = setup();
+  await flush();
+  el("tab-edit").onclick();
+  await el("btn-edit-load-dev").onclick();
+  await flush();
+  assert.equal(el("btn-edit-verify-dev").disabled, false, "载入后比对按钮应可用");
+  assert.match(el("edit-fields").html(), /部件号/);
+
+  // 切换设备: 后端 Select 会清空编辑器
+  el("dimm-select").value = "81";
+  await el("dimm-select").onchange();
+  await flush();
+
+  assert.ok(calls.some((c) => c.name === "Select"), "应调用 Select");
+  assert.equal(el("edit-fields").html().includes("部件号"), false, "字段表单应清空");
+  assert.match(el("edit-fields").html(), /先载入数据/);
+  assert.equal(el("btn-edit-verify-dev").disabled, true, "未载入时比对按钮应禁用");
+  assert.equal(el("btn-edit-fixcrc").disabled, true, "未载入时重算 CRC 应禁用");
+  assert.equal(el("btn-edit-write").disabled, true, "未载入时禁止写入");
+  assert.match(el("log").text(), /编辑器内容已失效/, "要明确告诉用户需要重新载入");
+});
+
+test("与设备比对: 未载入时给出可读提示而不是抛后端错误", async () => {
+  const { el, calls } = setup();
+  await flush();
+  el("tab-edit").onclick();
+  // 按钮本身是禁用的; 直接调用回调也要能被拦下
+  await el("btn-edit-verify-dev").onclick();
+  await flush();
+  assert.equal(calls.some((c) => c.name === "EditVerifyFile"), false, "未载入不得调后端");
+  assert.match(el("log").text(), /载入/, "应提示先载入");
+});

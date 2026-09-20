@@ -175,10 +175,36 @@ $("dimm-select").onchange = async () => {
   if (isNaN(addr) || addr < 0) return;
   try {
     selectedAddr = addr;
+    // 换设备会清空后端的编辑器(避免把 A 条的改动写进 B 条): 前端必须同步复位,
+    // 否则界面还留着上一根条的内容与改动, 用户会误以为在操作当前这根。
+    if (editorLoaded) addLog("", "已切换设备: 编辑器内容已失效, 需要重新“从设备载入”");
+    resetEditorState();
     await call("Select", addr);
     await doDump();
   } catch (e) { addLog("", "选择设备失败: " + e); }
 };
+
+// resetEditorState 把前端编辑器视图恢复到"未载入"状态(与后端 editor=nil 对齐)。
+function resetEditorState() {
+  editorLoaded = false;
+  editFieldsCache = [];
+  resetEditMarks();
+  $("edit-fields").innerHTML = `<div class="placeholder">先载入数据</div>`;
+  $("edit-groups").innerHTML = "";
+  $("edit-diff").innerHTML = "—";
+  $("edit-state").textContent = "";
+  setEditEnabled(false);
+  setEditLoadedUI(false);
+}
+
+// setEditLoadedUI 区分"可以载入"和"已载入可操作"两档:
+// 载入类按钮由 enableOps 控制, 操作类(放弃修改/重算 CRC/另存/与设备比对/写入)只有真载入后才可用。
+function setEditLoadedUI(loaded) {
+  ["btn-edit-reset", "btn-edit-fixcrc", "btn-edit-export", "btn-edit-verify-dev"].forEach(
+    (id) => ($(id).disabled = !loaded));
+  if (!loaded) $("btn-edit-write").disabled = true;
+  $("hex-hint").textContent = loaded ? "· 点击字节就地修改(hex) · 红=改动影响校验, 蓝=不影响" : "";
+}
 
 async function doDump() {
   let dump = await call("Dump");
@@ -838,9 +864,9 @@ function switchTab(which) {
 }
 
 function setEditEnabled(on) {
-  // 注意: btn-edit-write 由 refreshEditDiff 依据 CRC/变更数决定, 不在这里放开
-  ["btn-edit-reset", "btn-edit-fixcrc", "btn-edit-export", "btn-edit-verify-dev"].forEach(
-    (id) => ($(id).disabled = !on));
+  // 操作类按钮(放弃修改/重算 CRC/另存/与设备比对)由 setEditLoadedUI 按"真载入了没有"控制;
+  // btn-edit-write 另由 refreshEditDiff 依据 CRC/变更数决定。
+  if (!on) setEditLoadedUI(false);
 }
 
 $("btn-edit-load-dev").onclick = async () => {
@@ -863,6 +889,7 @@ async function loadEditor(method) {
   await refreshEditDiff();
   setEditEnabled(true);
   editorLoaded = true;
+  setEditLoadedUI(true);
   await refreshEditBytes();   // 让左侧 hex 进入"可直接点击修改"状态
   addLog("", `编辑器已载入: ${st.source}(${st.generation} ${st.size}B)`);
 }
@@ -987,6 +1014,10 @@ $("btn-edit-fixcrc").onclick = async () => {
 // 与设备比对: 重新整片读取设备, 与编辑器内容逐字节比较(写入后的独立复核)。
 // 注意: 这会在真机上重读整片(本机 DDR5 约 16s), 是"写入到底成没成"的独立证据。
 $("btn-edit-verify-dev").onclick = async () => {
+  if (!editorLoaded) {
+    addLog("", '与设备比对需要先在编辑器里载入数据(点"从设备载入"或"打开 dump 文件…")');
+    return;
+  }
   try {
     addLog("", "正在重新读取设备并与编辑器内容比对…");
     const d = await call("EditVerifyFile");
