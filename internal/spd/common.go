@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 )
 
 //go:embed data/idcodes.json
@@ -128,30 +129,23 @@ func asciiString(b []byte) string {
 // ---------------- JEDEC 厂商表 ----------------
 
 var (
-	idcodesOnce  func() // 延迟加载
 	idcodesTable [][]string
 	idcodesErr   error
-)
-
-func init() { idcodesOnce = syncOnce() }
-
-func syncOnce() func() {
-	var once bool
-	return func() {
-		if once {
-			return
-		}
-		once = true
+	// sync.OnceValue: 手写的 once 布尔量在并发下有数据竞争(审计用 -race 复现:
+	// 一个 goroutine 正在 json.Unmarshal 写表, 另一个已经在读 —— 可能返回空厂商名)。
+	idcodesOnce = sync.OnceValue(func() error {
 		raw, err := idcodesFS.ReadFile("data/idcodes.json")
 		if err != nil {
 			idcodesErr = err
-			return
+			return err
 		}
 		if err := json.Unmarshal(raw, &idcodesTable); err != nil {
 			idcodesErr = err
+			return err
 		}
-	}
-}
+		return nil
+	})
+)
 
 // ManufacturerName 由 continuation code + 厂商码查询厂商名。
 //
@@ -160,7 +154,7 @@ func syncOnce() func() {
 // Crucial 0x85(计数 5)、Corsair 0x02(计数 2) —— 全都是"计数 | 校验位"。
 // 不屏蔽 bit7 会把这些厂商全部查不到名字(旧实现就把 cont=0x80 当越界直接返回空串)。
 func ManufacturerName(cont, code byte) string {
-	idcodesOnce()
+	_ = idcodesOnce()
 	bank := cont & 0x7F
 	if idcodesErr != nil || bank >= byte(len(idcodesTable)) {
 		return ""
@@ -178,7 +172,7 @@ func ManufacturerName(cont, code byte) string {
 
 // FindManufacturer 按名(不区分大小写,完整匹配)查厂商,返回 continuation/码(含奇偶位,按原版规则补齐)。
 func FindManufacturer(name string) (cont, code byte, ok bool) {
-	idcodesOnce()
+	_ = idcodesOnce()
 	if idcodesErr != nil {
 		return 0, 0, false
 	}

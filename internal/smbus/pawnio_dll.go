@@ -152,8 +152,15 @@ func (s *pawnioSession) execute(name string, in []uint64, out []uint64) (uint64,
 	return uint64(ret), nil
 }
 
+// close 关闭会话。幂等: 句柄清零点后再调用不会二次 close ——
+// Windows 句柄会被复用, 对已关闭(old)句柄再调一次 close 有伤到别人句柄的风险。
 func (s *pawnioSession) close() {
-	_, _, _ = procPawnIOClose.Call(uintptr(s.handle))
+	if s.handle == 0 {
+		return
+	}
+	h := s.handle
+	s.handle = 0
+	_, _, _ = procPawnIOClose.Call(uintptr(h))
 }
 
 // 全局 SMBus 互斥体(与 Thaiphoon/OpenRGB 仲裁同一总线)。

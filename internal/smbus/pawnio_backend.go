@@ -33,7 +33,8 @@ type pawnioTransport struct {
 	piix4Port int // -1 = 非 PIIX4 会话
 	lastPort  int // 上次选中的端口(-2 = 未选), 避免每事务重复选路
 	sleepMode SleepMode
-	clockHz   int // 0 = 未知(模块不支持 ioctl_clock_freq)
+	clockHz   int  // 0 = 未知(模块不支持 ioctl_clock_freq)
+	ddr5      bool // 当前器件是否 DDR5(决定写周期判定)
 }
 
 // Discover 枚举本机全部可用 SMBus 总线。
@@ -248,6 +249,9 @@ func (p *pawnioTransport) xfer(addr byte, write bool, cmd byte, proto byte, data
 		return nil, err
 	}
 	n := int(ret)
+	if n < 0 { // 防御: DLL 返回垃圾时 out[:n] 会 panic
+		n = 0
+	}
 	if n > len(out) {
 		n = len(out)
 	}
@@ -282,11 +286,29 @@ func isEepromAddr(addr byte) bool { return addr >= 0x50 && addr <= 0x57 }
 
 func (p *pawnioTransport) WriteByteData(addr byte, cmd byte, val byte) error {
 	_, err := p.xfer(addr, true, cmd, ProtoByteData, []byte{val}, false)
-	if err == nil && isEepromAddr(addr) {
+	if err == nil && p.needsWriteCycle(addr, cmd) {
 		time.Sleep(eepromWriteDelay)
 	}
 	return err
 }
+
+// needsWriteCycle 判断这次写是否落在 SPD NVM 上(需要等 25ms 写周期)。
+//
+// DDR5 的 MR 寄存器写(切页 MR11、写保护 MR12/13 等)是易失寄存器, 不需要写周期 ——
+// 整片 1024B 读要切 7~8 次页, 每次都白等 25ms(审计的性能项)。能否区分取决于是否知道
+// 世代: 由 eeprom.Device 在识别出世代后调用 SetDDR5 告知(未知时保守地都等)。
+func (p *pawnioTransport) needsWriteCycle(addr byte, cmd byte) bool {
+	if !isEepromAddr(addr) {
+		return false
+	}
+	if !p.ddr5 {
+		return true // DDR4 及更早: 所有 byte-data/块写都是 NVM 写
+	}
+	return cmd&0x80 != 0 // DDR5: 只有 NVM 窗口(cmd bit7=1)需要写周期
+}
+
+// SetDDR5 让传输层知道当前器件的世代(由 eeprom.Device 在识别后调用)。
+func (p *pawnioTransport) SetDDR5(on bool) { p.ddr5 = on }
 
 func (p *pawnioTransport) WriteByteNoData(addr byte) error {
 	_, err := p.xfer(addr, true, 0, ProtoByte, nil, false)
@@ -317,7 +339,7 @@ func (p *pawnioTransport) WriteBlockData(addr byte, cmd byte, data []byte) error
 	payload = append(payload, byte(len(data)))
 	payload = append(payload, data...)
 	_, err := p.xfer(addr, true, cmd, ProtoBlockData, payload, false)
-	if err == nil && isEepromAddr(addr) {
+	if err == nil && p.needsWriteCycle(addr, cmd) {
 		time.Sleep(eepromWriteDelay)
 	}
 	return err

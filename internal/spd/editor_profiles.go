@@ -230,9 +230,11 @@ func (e *Editor) expoFields() []Field {
 	for n := 0; n < 2; n++ {
 		pb := expoProf1Off + n*expoProfLen
 		pre := fmt.Sprintf("expo.p%d", n+1)
+		bit := expoEnableBit(n)
 		out = append(out, Field{
 			Key: pre + ".enabled", Name: fmt.Sprintf("Profile %d 启用", n+1), Group: "EXPO",
-			Kind: "bool", Value: boolStr(e.dump[expoOffset+5]&(1<<n) != 0), Offset: "0x345", Risk: "medium",
+			Kind: "bool", Value: boolStr(e.dump[expoOffset+5]&(1<<bit) != 0), Offset: "0x345", Risk: "medium",
+			Note: "P2 的启用位是 bit4(参考实现 expoProfile2EnableBit), 不是 bit1",
 		})
 		for _, sp := range expoProfileSpecs {
 			out = append(out, e.fieldFromSpec(pre+"."+sp.Suffix, sp, pb, fmt.Sprintf("EXPO P%d", n+1), "EXPO"))
@@ -296,19 +298,65 @@ func (e *Editor) fieldFromSpec(key string, sp pfSpec, base int, prefix, group st
 }
 
 // setProfileField 处理 XMP/EXPO 字段写入。
+// expoEnableBit 返回 EXPO 第 n 份 profile(0/1)的启用位。
+// 参考实现(DDR5SPDEditor): P1 = bit0, P2 = expoProfile2EnableBit = 4 —— 早期实现误用
+// bit1, 于是真实 dump(0x345=0x03)会被读成"P2 也启用", 而改 P2 的开关实际动的是 P1 的伴随位。
+func expoEnableBit(n int) (bit int) {
+	if n == 1 {
+		return 4
+	}
+	return 0
+}
+
+// dumpAt 安全取字节: 偏移越界返回 0(读取路径的兜底, 不 panic)。
+func (e *Editor) dumpAt(off int) byte {
+	if off < 0 || off >= len(e.dump) {
+		return 0
+	}
+	return e.dump[off]
+}
+
+// isDDR5Family 报告当前 dump 是否 DDR5 系(XMP 3.0 / EXPO 布局只存在于 DDR5)。
+func (e *Editor) isDDR5Family() bool {
+	switch e.rt {
+	case DDR5, LPDDR5, DDR5NVDIMMP, LPDDR5X:
+		return true
+	}
+	return false
+}
+
+// isDDR4Family 报告当前 dump 是否 DDR4 系(LPDDR3/4 的 XMP 2.0 布局与 DDR4 相同)。
+func (e *Editor) isDDR4Family() bool {
+	switch e.rt {
+	case DDR4, DDR4E, LPDDR3, LPDDR4, LPDDR4X:
+		return true
+	}
+	return false
+}
+
 func (e *Editor) setProfileField(key, value string) error {
+	// 世代门禁(审计发现的阻断项): 以前任何世代都能传任何 profile key ——
+	// 轻则在 DDR3 的 256 字节 dump 上越界 panic, 重则在 DDR5 上写进基础 CRC
+	// 覆盖区里的无关字节(静默改错数据)。
+	switch {
+	case strings.HasPrefix(key, "xmp3.") || strings.HasPrefix(key, "expo."):
+		if !e.isDDR5Family() {
+			return fmt.Errorf("%s 只适用于 DDR5 系 SPD(当前是 %v)", key, e.rt)
+		}
+	case strings.HasPrefix(key, "xmp."):
+		if !e.isDDR4Family() {
+			return fmt.Errorf("%s 只适用于 DDR4 系 SPD(当前是 %v)", key, e.rt)
+		}
+	}
 	switch {
 	case key == "xmp.present":
+		// 关闭 = 只清 magic(区块失效), **保留**版本字节、启用位与 profile 内容:
+		// 以前顺手清启用位, 于是"关掉再打开"会丢掉 profile 的启用状态(审计 H1)。
 		if !parseBool(value) {
-			// 关闭 = 清掉 header magic(区块失效), 但保留 profile 内容字节,
-			// 这样字段值读回来确实是 false, 再次打开也不用重填时序。
 			if err := e.set(xmp2Base, 0, "XMP 头", "medium"); err != nil {
 				return err
 			}
-			if err := e.set(xmp2Base+1, 0, "XMP 头", "medium"); err != nil {
-				return err
-			}
-			return e.set(xmp2Base+2, 0, "XMP 启用位", "medium")
+			return e.set(xmp2Base+1, 0, "XMP 头", "medium")
 		}
 		if err := e.set(xmp2Base, xmp2Magic1, "XMP 头", "medium"); err != nil {
 			return err
@@ -316,19 +364,26 @@ func (e *Editor) setProfileField(key, value string) error {
 		if err := e.set(xmp2Base+1, xmp2Magic2, "XMP 头", "medium"); err != nil {
 			return err
 		}
-		return e.set(xmp2Base+3, 0x12, "XMP 版本", "medium")
+		// 版本/启用位: 只在整块还是空白时初始化; 已有值(如 0x20 版本、0x05 启用位)
+		// 必须保留 —— 以前无条件写 0x12 会把真实 dump 的版本字节改掉(幽灵变更)。
+		if e.dumpAt(xmp2Base+3) == 0 {
+			if err := e.set(xmp2Base+3, 0x12, "XMP 版本", "medium"); err != nil {
+				return err
+			}
+		}
+		if e.dumpAt(xmp2Base+2) == 0 {
+			return e.set(xmp2Base+2, 0x01, "XMP 启用位", "medium") // 启用 profile 1
+		}
+		return nil
 	case key == "xmp.version":
 		return e.setHexBytes(xmp2Base+3, 1, value, "XMP 版本", "medium")
 	case key == "xmp3.present":
+		// 同 XMP2: 只动 magic, 版本/启用位只在空白时初始化, 绝不覆盖既有值。
 		if !parseBool(value) {
-			// 同上: 清 magic + 启用位, 保留槽内容
 			if err := e.set(xmp30Offset, 0, "XMP3 头", "medium"); err != nil {
 				return err
 			}
-			if err := e.set(xmp30Offset+1, 0, "XMP3 头", "medium"); err != nil {
-				return err
-			}
-			return e.set(xmp30Offset+3, 0, "XMP3 启用位", "medium")
+			return e.set(xmp30Offset+1, 0, "XMP3 头", "medium")
 		}
 		if err := e.set(xmp30Offset, xmp2Magic1, "XMP3 头", "medium"); err != nil {
 			return err
@@ -336,29 +391,39 @@ func (e *Editor) setProfileField(key, value string) error {
 		if err := e.set(xmp30Offset+1, xmp2Magic2, "XMP3 头", "medium"); err != nil {
 			return err
 		}
-		if err := e.set(xmp30Offset+2, xmp3Version, "XMP3 版本", "medium"); err != nil {
-			return err
+		if e.dumpAt(xmp30Offset+2) == 0 {
+			if err := e.set(xmp30Offset+2, xmp3Version, "XMP3 版本", "medium"); err != nil {
+				return err
+			}
+		}
+		if e.dumpAt(xmp30Offset+3) == 0 {
+			return e.set(xmp30Offset+3, 0x01, "XMP3 启用位", "medium")
 		}
 		return nil
 	case key == "xmp3.version":
 		return e.setHexBytes(xmp30Offset+2, 1, value, "XMP3 版本", "medium")
 	case key == "expo.present":
+		// 同 XMP: 关闭只清 "EXPO" magic, 保留版本/启用位/内容。
 		if !parseBool(value) {
-			// 清掉 "EXPO" magic + 启用位(内容保留)
 			for i := 0; i < 4; i++ {
 				if err := e.set(expoOffset+i, 0, "EXPO 头", "medium"); err != nil {
 					return err
 				}
 			}
-			return e.set(expoOffset+5, 0, "EXPO 启用位", "medium")
+			return nil
 		}
 		for i, ch := range []byte("EXPO") {
 			if err := e.set(expoOffset+i, ch, "EXPO 头", "medium"); err != nil {
 				return err
 			}
 		}
-		if err := e.set(expoOffset+4, 0x10, "EXPO 版本", "medium"); err != nil {
-			return err
+		if e.dumpAt(expoOffset+4) == 0 {
+			if err := e.set(expoOffset+4, 0x10, "EXPO 版本", "medium"); err != nil {
+				return err
+			}
+		}
+		if e.dumpAt(expoOffset+5) == 0 {
+			return e.set(expoOffset+5, 0x01, "EXPO 启用位", "medium")
 		}
 		return nil
 	case key == "expo.revision":
@@ -428,7 +493,7 @@ func (e *Editor) setProfileField(key, value string) error {
 		}
 		t = target{expoProfileSpecs, expoProf1Off + n*expoProfLen, "EXPO"}
 		suffix = key[strings.LastIndex(key, ".")+1:]
-		hdrOff, bit = expoOffset+5, n
+		hdrOff, bit = expoOffset+5, expoEnableBit(n)
 	default:
 		return fmt.Errorf("未知字段 %q", key)
 	}
@@ -693,16 +758,23 @@ func (e *Editor) setCLMask(off, n int, value string, ddr5Mask bool, group string
 }
 
 // specValue 读取 profile 字段当前的数值(仅数值型 kind)。
+// 每次读取前都校验偏移: 越界直接当作"无值", 绝不让 dump[...] panic。
 func (e *Editor) specValue(base int, sp pfSpec) (float64, bool) {
+	if base < 0 || base+sp.Off < 0 || base+sp.Off >= len(e.dump) {
+		return 0, false
+	}
+	if sp.Aux != 0 && (base+sp.Aux < 0 || base+sp.Aux >= len(e.dump)) {
+		return 0, false
+	}
 	switch sp.Kind {
 	case pfPS16:
-		v := int(e.dump[base+sp.Off]) | int(e.dump[base+sp.Off+1])<<8
+		v := int(e.dump[base+sp.Off]) | int(e.dumpAt(base+sp.Off+1))<<8
 		return float64(v) / 1000, v > 0
 	case pfNS16:
-		v := int(e.dump[base+sp.Off]) | int(e.dump[base+sp.Off+1])<<8
+		v := int(e.dump[base+sp.Off]) | int(e.dumpAt(base+sp.Off+1))<<8
 		return float64(v), v > 0
 	case pfMTB16:
-		v := int(e.dump[base+sp.Off]) | int(e.dump[base+sp.Off+1])<<8
+		v := int(e.dump[base+sp.Off]) | int(e.dumpAt(base+sp.Off+1))<<8
 		return float64(v) * float64(DDR4Timebase(e.dump).Medium) / 1000, v > 0
 	case pfMedFin:
 		tb := DDR4Timebase(e.dump)

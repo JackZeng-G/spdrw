@@ -96,7 +96,13 @@ func (d *DDR4SPD) TotalCapacityBytes() uint64 {
 	_, ranks, _ := d.Organization()
 	_, bus := d.BusWidth()
 	_, _, capPerDie := d.DensityBanks()
-	return uint64(capPerDie) / 8 * uint64(bus) / uint64(d.deviceWidth()) * uint64(ranks) * dieFactor * 1024 * 1024
+	// 损坏/保留编码防护: 器件位宽 code>=6 时 `4<<code` 截断成 0(保留值), 直接除会 panic。
+	// 遇到这类非法组合返回 0(容量未知), 让上层显示"—"而不是崩掉。
+	dw := d.deviceWidth()
+	if bus == 0 || dw == 0 || ranks == 0 {
+		return 0
+	}
+	return uint64(capPerDie) / 8 * uint64(bus) / uint64(dw) * uint64(ranks) * dieFactor * 1024 * 1024
 }
 
 func (d *DDR4SPD) deviceWidth() byte {

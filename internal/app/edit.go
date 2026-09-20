@@ -210,6 +210,13 @@ func (a *App) EditFixCRC() (*EditState, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 内容**已经**通过校验时直接返回(一个字节都不改): 底层 FixCRC 会顺手初始化
+	// "半填充的扩展槽"(判据与硬校验不同), 在正常 dump 上会改动厂商残留字节并让文件
+	// 变脏(审计 M1: 67 份语料里有 6 份被这样改过)。用户按"重算 CRC"的意图是修校验。
+	if ed.CRCOK() {
+		a.logf("重算 CRC: 当前内容已通过校验, 未改动任何字节")
+		return a.editStateLocked()
+	}
 	n, err := ed.FixCRC()
 	if err != nil {
 		return nil, err

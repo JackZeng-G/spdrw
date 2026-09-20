@@ -421,22 +421,13 @@ func ddr2TimingSpecs() []timingSpec {
 }
 
 // bcdFraction 把 DDR2 BCD 扩展码的十分位 nibble 转成小数。-1 = 保留值。
+// bcdFraction 解析 DDR2 tCK 的小数 nibble: 与解析器 ddr2Fraction 共用同一张表;
+// 仅"无效编码(F)"的表示不同 —— 编辑器返回 -1(表示不可用), 解析器按 0 计。
 func bcdFraction(nib byte) float64 {
-	switch nib & 0x0F {
-	case 0xA:
-		return 0.25
-	case 0xB:
-		return 0.33
-	case 0xC:
-		return 0.66
-	case 0xD:
-		return 0.75
-	case 0xE:
-		return 0.875
-	case 0xF:
+	if nib&0x0F == 0xF {
 		return -1
 	}
-	return float64(nib&0x0F) / 10
+	return ddr2Fraction(nib)
 }
 
 // fracToBCD 把小数部分转成 DDR2 BCD 十分位 nibble。-1 = 不可表示。

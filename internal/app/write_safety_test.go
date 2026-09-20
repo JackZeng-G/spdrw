@@ -491,3 +491,38 @@ func TestBusTuningIsInformational(t *testing.T) {
 		t.Fatal("应说明不可调优的原因")
 	}
 }
+
+// 审计 M1: 数据本身不合格(CRC 不通过/世代不符)时, 必须在**备份与写保护探测之前**就拒绝 ——
+// 否则一个注定被拒的写入会先对 DDR4 及更早的条做 4 块 × (取反写+还原) = 8 次真实 NVM 写。
+func TestRejectedTargetIsProbedNever(t *testing.T) {
+	a, f, rec := func() (*App, *smbus.FakeTransport, *smbus.RecordingTransport) {
+		f := smbus.NewFake()
+		copy(f.EEProm, ddr4Fixture())
+		rec := smbus.NewRecording(f)
+		a := New()
+		a.transports = []smbus.Transport{rec}
+		if err := a.Connect(0); err != nil {
+			t.Fatal(err)
+		}
+		if err := a.Select(0x50); err != nil {
+			t.Fatal(err)
+		}
+		return a, f, rec
+	}()
+	// CRC 不通过的目标(改一个字节但不重算 CRC)
+	bad := append([]byte{}, ddr4Fixture()...)
+	bad[20] ^= 0x0F
+	path := writeTempFile(t, bad)
+	rec.Reset()
+	if _, err := a.WriteConfirmed(path, false, false, "WRITE"); err == nil {
+		t.Fatal("CRC 不通过的目标必须被拒绝")
+	}
+	if n := len(rec.NVMWrites()); n != 0 {
+		t.Fatalf("被拒绝的目标不应触发任何 NVM 写(实际 %d 次)", n)
+	}
+	for _, q := range f.QuickLog {
+		if q.Write {
+			t.Fatalf("被拒绝的目标不应触发写保护探测的 Quick 写(@%#x)", q.Addr)
+		}
+	}
+}

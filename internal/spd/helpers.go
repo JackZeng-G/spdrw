@@ -66,8 +66,14 @@ func (t Timing) MegaHertz(tb Timebase) float64 {
 }
 
 // DDR4Timebase 计算 DDR4 时间基准(byte 15)。
+// DDR4Timebase 解析时间基准(byte 15)。dump 不足 16 字节时返回默认基准而不是 panic
+// (导出 API, 审计 L1: 短输入会越界)。
 func DDR4Timebase(dump []byte) Timebase {
-	tb := Timebase{}
+	tb := Timebase{Medium: 125, Fine: 1}
+	if len(dump) < 16 {
+		return tb
+	}
+	tb = Timebase{}
 	if subByteR(dump[15], 3, 2) == 0 {
 		tb.Medium = 125
 	}

@@ -41,9 +41,14 @@ var ddr23ModuleTypeNames = map[byte]string{
 
 // ParseBasic 解析 DDR2/DDR3 dump(256 字节)。其他世代返回错误。
 func ParseBasic(dump []byte) (*Basic, error) {
-	rt, _, err := Identify(dump)
+	rt, size, err := Identify(dump)
 	if err != nil {
 		return nil, err
+	}
+	// 长度必须与该世代一致: 少于 256 字节会在下面的固定偏移处越界 panic
+	// (审计发现: 3 字节的 dump 只要 byte2 是 0x0B 就能让 ParseBasic 崩掉)。
+	if len(dump) != size {
+		return nil, fmt.Errorf("长度 %d 字节与 %v 的 SPD 大小 %d 字节不一致", len(dump), rt, size)
 	}
 	switch rt {
 	case DDR2, DDR2FBDIMM:
@@ -68,7 +73,11 @@ func parseDDR3(dump []byte) (*Basic, error) {
 
 	// 容量: 单 die 容量(Mb) × 总线位宽/芯片位宽 × rank (原版 TotalModuleCapacityProgrammed)
 	capPerDieMb := uint64(1) << (subByteR(dump[4], 3, 4) + 8)
-	b.BytesMib = capPerDieMb / 8 * uint64(b.BusWidthBits) / uint64(b.DeviceWidth) * uint64(b.Ranks)
+	if b.DeviceWidth == 0 || b.Ranks == 0 { // 保留编码: 位宽 code>=6 会截断成 0, 别除
+		b.BytesMib = 0
+	} else {
+		b.BytesMib = capPerDieMb / 8 * uint64(b.BusWidthBits) / uint64(b.DeviceWidth) * uint64(b.Ranks)
+	}
 
 	// 身份区(JEDEC DDR3 SPD Annex K)
 	b.ManufacturerCont, b.ManufacturerCode = dump[117], dump[118]
@@ -119,8 +128,12 @@ func parseDDR2(dump []byte, rt RamType) (*Basic, error) {
 	banks := uint64(dump[17])
 	if rows > 0 && rows < 32 && cols > 0 && cols < 32 && b.DeviceWidth > 0 {
 		arrayBits := (uint64(1) << rows) * (uint64(1) << cols) * banks
-		totalBytes := arrayBits / 8 * uint64(b.BusWidthBits) / uint64(b.DeviceWidth) * uint64(b.Ranks)
-		b.BytesMib = totalBytes / 1024 / 1024
+		if b.DeviceWidth == 0 || b.Ranks == 0 { // 同上
+			b.BytesMib = 0
+		} else {
+			totalBytes := arrayBits / 8 * uint64(b.BusWidthBits) / uint64(b.DeviceWidth) * uint64(b.Ranks)
+			b.BytesMib = totalBytes / 1024 / 1024
+		}
 	}
 
 	// JEP106: 连续的 0x7F 是 continuation(校验位已含在码里)
@@ -147,9 +160,30 @@ func parseDDR2(dump []byte, rt RamType) (*Basic, error) {
 	b.CRCOK = sum == dump[63]
 	b.ChecksumOK = b.CRCOK
 
-	// tCKmin = 整数 nibble + 十分位 nibble
-	b.TCKminNS = float64(subByteR(dump[9], 7, 4)) + float64(subByteR(dump[9], 3, 4))/10
+	// tCKmin = 整数 nibble + 小数 nibble。小数 nibble 用 JEDEC 扩展码
+	// (A=0.25 B=0.33 C=0.66 D=0.75 E=0.875, 其余按十分位) —— 与编辑器
+	// bcdFraction 同一套解释, 两层不能各算一套(审计 M3)。
+	b.TCKminNS = float64(subByteR(dump[9], 7, 4)) + ddr2Fraction(subByteR(dump[9], 3, 4))
 	return b, nil
+}
+
+// ddr2Fraction 把 DDR2 tCK 的小数 nibble 翻译成纳秒(与编辑器 bcdFraction 一致)。
+func ddr2Fraction(nib byte) float64 {
+	switch nib & 0x0F {
+	case 0xA:
+		return 0.25
+	case 0xB:
+		return 0.33
+	case 0xC:
+		return 0.66
+	case 0xD:
+		return 0.75
+	case 0xE:
+		return 0.875
+	case 0xF:
+		return 0 // JEDEC: F 表示该编码无效, 按 0 处理(不猜)
+	}
+	return float64(nib&0x0F) / 10
 }
 
 func b23BusWidth(dump []byte) (ext bool, primary byte) {

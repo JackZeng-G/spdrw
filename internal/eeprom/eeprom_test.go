@@ -835,3 +835,185 @@ func TestReadFallbackChain(t *testing.T) {
 		t.Fatalf("应给出读取方式与耗时: %+v", st2)
 	}
 }
+
+// 写测试的判定依据必须用最原始的逐字节读: 若走块读/字读, 读路径一旦有缓存/偏差,
+// "还原失败"会被误判成"还原成功" —— 那是静默数据损坏(块首字节被永久取反)。
+func TestWriteTestUsesPrimitiveReadsForVerdict(t *testing.T) {
+	f := smbus.NewFake()
+	copy(f.EEProm, ddr4FixtureForTest())
+	d, err := New(f, 0x50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 块读路径全部返回"取反前的原值"(模拟缓存/偏差), 逐字节读是真值
+	orig := append([]byte{}, f.EEProm...)
+	f.BlockReadOverride = orig
+	ok, err := d.WriteTest(0)
+	if err != nil {
+		t.Fatalf("WriteTest: %v", err)
+	}
+	_ = ok
+	// 关键: 设备内容必须原样(取反写已被还原)
+	for i := range orig {
+		if f.EEProm[i] != orig[i] {
+			t.Fatalf("写测试后设备内容被改动 @%#x: %02X != %02X", i, f.EEProm[i], orig[i])
+		}
+	}
+}
+
+func ddr4FixtureForTest() []byte {
+	d := make([]byte, 512)
+	for i := range d {
+		d[i] = byte(i)
+	}
+	d[2] = 0x0C
+	return d
+}
+
+// 256 字节(DDR2/DDR3/SDRAM)是单页器件: 首次访问绝不能写 SPA 地址 0x36 ——
+// 0x36 属于 SWP/PSWP 的设备类型地址空间, 真实主板上通常无人应答(读整片直接失败),
+// 应答的那一根(SA=6 → 0x56)还可能被误写 PSWP。审计发现的阻断项。
+func TestSinglePageDeviceNeverPageSwitches(t *testing.T) {
+	f := smbus.NewFake()
+	d := make([]byte, 256)
+	for i := range d {
+		d[i] = byte(i)
+	}
+	d[2] = 0x0B // DDR3
+	copy(f.EEProm, d)
+	dev, err := New(f, 0x50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dev.ReadAll(); err != nil {
+		t.Fatalf("单页器件应能直接读取: %v", err)
+	}
+	for _, q := range f.QuickLog {
+		if q.Write {
+			t.Fatalf("单页器件不应发任何 Quick 写(页选择会打到 0x%02X)", q.Addr)
+		}
+	}
+	for _, w := range f.WriteLog {
+		t.Fatalf("单页器件不应发任何写事务: cmd=%#x val=%#x", w.Cmd, w.Val)
+	}
+}
+
+// 真实主板常见情况: 0x36/0x37 无人应答 → 单页器件读取仍必须成功。
+func TestSinglePageReadWorksWhenSPAUnpopulated(t *testing.T) {
+	f := smbus.NewFake()
+	d := make([]byte, 256)
+	for i := range d {
+		d[i] = byte(i * 3)
+	}
+	d[2] = 0x0B
+	copy(f.EEProm, d)
+	f.Present = map[byte]bool{0x50: true} // 只有 0x50 存在, 0x36/0x37 一律 NACK
+	dev, err := New(f, 0x50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := dev.ReadAll()
+	if err != nil {
+		t.Fatalf("0x36/0x37 无人应答时单页器件仍应可读: %v", err)
+	}
+	for i := range d {
+		if got[i] != d[i] {
+			t.Fatalf("@%#x = %#x, want %#x", i, got[i], d[i])
+		}
+	}
+}
+
+// 干跑模式下 RSWP 加保护/清除必须被拒绝(写保护是设备状态, 部分颗粒置位后很难清)。
+func TestRSWPBlockedInDryRun(t *testing.T) {
+	for _, ddr5 := range []bool{false, true} {
+		f := smbus.NewFake()
+		if ddr5 {
+			f.SetDDR5(true)
+			copy(f.EEProm, make([]byte, 1024))
+		} else {
+			d4 := make([]byte, 512)
+			d4[2] = 0x0C
+			copy(f.EEProm, d4)
+		}
+		dev, err := New(f, 0x50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := dev.SetDryRun(true); err != nil {
+			t.Fatal(err)
+		}
+		before := len(f.WriteLog)
+		if err := dev.RSWPSet(0); err == nil {
+			t.Fatalf("ddr5=%v: 干跑下 RSWPSet 必须被拒绝", ddr5)
+		}
+		if err := dev.RSWPClear(); err == nil {
+			t.Fatalf("ddr5=%v: 干跑下 RSWPClear 必须被拒绝", ddr5)
+		}
+		if len(f.WriteLog) != before {
+			t.Fatalf("ddr5=%v: 干跑下不应下发任何写事务", ddr5)
+		}
+	}
+}
+
+// 写入计划里的偏移必须先校验再转 uint16: 0x10010 截成 0x10 会写到错误位置还报成功
+// (审计复现的"最坏失败形态"), 越界必须直接报错且一个字节都不写。
+func TestApplyWriteRejectsOutOfRangeOffset(t *testing.T) {
+	f := smbus.NewFake()
+	copy(f.EEProm, ddr4FixtureForTest())
+	d, err := New(f, 0x50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := append([]byte{}, f.EEProm...)
+	target[20] ^= 0x0F
+	before := append([]byte{}, f.EEProm...)
+	changes := []ByteChange{{Offset: 0x10010, New: 0x99}}
+	err = d.ApplyWrite(target, changes, nil)
+	if err == nil {
+		t.Fatal("越界偏移必须报错")
+	}
+	for i := range before {
+		if f.EEProm[i] != before[i] {
+			t.Fatalf("越界计划不应写任何字节(改了 @%#x)", i)
+		}
+	}
+}
+
+// 逐字节复核同样要先校验偏移(导出的 VerifyChangedByteWise 传错 plan 不能 panic)。
+func TestVerifyChangedByteWiseRejectsOutOfRange(t *testing.T) {
+	f := smbus.NewFake()
+	copy(f.EEProm, ddr4FixtureForTest())
+	d, err := New(f, 0x50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dump := append([]byte{}, f.EEProm...)
+	if err := d.VerifyChangedByteWise(dump, []ByteChange{{Offset: 0x10005}}); err == nil {
+		t.Fatal("越界偏移应报错而不是 panic")
+	}
+	if err := d.VerifyChangedByteWise(dump, []ByteChange{{Offset: -1}}); err == nil {
+		t.Fatal("负偏移应报错")
+	}
+}
+
+// MR11 读不出来时不许盲写(盲写会先清掉 bit7:3 再报错)。
+func TestSetPageDoesNotBlindWriteMR11(t *testing.T) {
+	f := smbus.NewFake()
+	f.SetDDR5(true)
+	f.FailReads = false
+	copy(f.EEProm, make([]byte, 1024))
+	d, err := New(f, 0x50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 让所有 MR11 读失败(仅 cmd=11 的读), 写照常: 这时切页必须放弃而不是盲写
+	f.MRFailRead = map[byte]bool{11: true}
+	if err := d.setPage(2); err == nil {
+		t.Fatal("MR11 读失败时应放弃切页并报错")
+	}
+	for _, w := range f.WriteLog {
+		if w.Cmd == 11 {
+			t.Fatalf("不应盲写 MR11(实际写入 %#x)", w.Val)
+		}
+	}
+}

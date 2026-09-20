@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"strings"
 
 	"spdrw/internal/spd"
 )
@@ -194,6 +195,11 @@ func decodeDDR5(dump []byte, r *DecodeResult) {
 	r.DeviceWidth = d.DeviceWidth()
 	r.TotalMib = d.TotalCapacityBytes() * 1024 // 公式单位为 GiB
 	r.TotalHuman = humanMib(r.TotalMib)
+	if r.TotalMib == 0 {
+		// 容量公式返回 0 只可能来自保留/非法编码(位宽码 5-7 会截断成 0, 加密码越界等):
+		// 别静默显示 0 —— 审计 M5 指出这类"算错但不报"比报错更难查。
+		r.ManufacturerNote = strings.TrimSpace(r.ManufacturerNote + " 容量无法解析(位宽/密度编码为保留值)")
+	}
 	mfg, cont, code := d.Manufacturer()
 	r.Manufacturer = mfg
 	r.ManufacturerNote = spd.ManufacturerIDNote(cont, code)

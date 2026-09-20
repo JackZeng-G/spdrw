@@ -84,9 +84,15 @@ func (e *Editor) Identity() (Identity, error) {
 		id.DateYear, id.DateWeek = 2000+int(e.dump[l.DateYear]), int(e.dump[l.DateWeek])
 	}
 	if l.RevisionOff >= 0 && l.RevisionLen > 0 {
-		id.Revision = uint16(e.dump[l.RevisionOff])
-		if l.RevisionLen > 1 {
-			id.Revision |= uint16(e.dump[l.RevisionOff+1]) << 8
+		// DDR2 的修订码是"高字节在前"(与解析器 parseDDR2 一致: d[92] | d[91]<<8),
+		// 其余世代是低字节在前 —— 两层显示同一个值, 不能各按一种顺序(审计 M4)。
+		if l.DDR2Mfg {
+			id.Revision = uint16(e.dump[l.RevisionOff+1]) | uint16(e.dump[l.RevisionOff])<<8
+		} else {
+			id.Revision = uint16(e.dump[l.RevisionOff])
+			if l.RevisionLen > 1 {
+				id.Revision |= uint16(e.dump[l.RevisionOff+1]) << 8
+			}
 		}
 	}
 	if l.DramCont >= 0 {
@@ -180,13 +186,14 @@ func (e *Editor) identityFields() []Field {
 			Value: id.Manufacturer, Offset: fmt.Sprintf("0x%03X-0x%03X", l.MfgCont, l.MfgCode),
 			Risk: "low", Params: []string{"JEP106"},
 			Note: "输入厂商名(可用搜索);留空 = 不改动, 想清掉 ID 请改下面两个原始码"},
-		{Key: "mfgCode", Name: "厂商码(含奇校验位)", Group: "常用信息", Kind: "int",
-			Value: strconv.Itoa(int(id.ManufacturerCode)), Min: 0, Max: 255,
-			Offset: fmt.Sprintf("0x%03X", l.MfgCode), Risk: "low"},
-		{Key: "mfgCont", Name: "厂商续延码(bit7 = 奇校验位)", Group: "常用信息", Kind: "int",
-			Value: strconv.Itoa(int(id.ManufacturerCont)), Min: 0, Max: 255,
+		{Key: "mfgCode", Name: mfgCodeName(l), Group: "常用信息", Kind: "int",
+			Value: mfgCodeValue(e, l), Min: 0, Max: 255,
+			Offset: fmt.Sprintf("0x%03X", l.MfgCode), Risk: "low",
+			Note: mfgCodeNote(l)},
+		{Key: "mfgCont", Name: mfgContName(l), Group: "常用信息", Kind: "int",
+			Value: mfgContValue(e, l), Min: 0, Max: 255,
 			Offset: fmt.Sprintf("0x%03X", l.MfgCont), Risk: "low",
-			Note: "厂商表按 cont & 0x7F 查表; 常见 bank0 写成 0x80(计数 0 + 校验位)"},
+			Note: mfgContNote(l, id)},
 		{Key: "location", Name: "生产地点", Group: "常用信息", Kind: "int",
 			Value: strconv.Itoa(int(id.Location)), Min: 0, Max: 255,
 			Offset: fmt.Sprintf("0x%03X", l.Location), Risk: "low"},
@@ -284,6 +291,14 @@ func (e *Editor) SetField(key, value string) error {
 		v, err := asInt("厂商码", 0, 255)
 		if err != nil {
 			return err
+		}
+		if l.DDR2Mfg {
+			// DDR2: 厂商码紧跟 0x7F 续延串(位置随 bank 变化), 不能写死 0x41
+			off, _, ok := e.ddr2MfgCodeOffset(l)
+			if !ok {
+				return fmt.Errorf("DDR2 厂商 ID 全是 0x7F 续延字节, 没有厂商码字节可写")
+			}
+			return e.set(off, byte(v), "模块厂商", "low")
 		}
 		return e.set(l.MfgCode, byte(v), "模块厂商", "low")
 	case "dramMfgCode":
@@ -413,6 +428,11 @@ func SearchManufacturers(query string, limit int) []MfgEntry {
 
 // setDDR2Manufacturer 按 DDR2 惯例写厂商 ID: bank 个 0x7F 续延字节 + 厂商码 + 0x00 填充。
 func (e *Editor) setDDR2Manufacturer(bank byte, code byte) error {
+	if bank > 7 {
+		// DDR2 的厂商 ID 只有 8 个字节(0x40-0x47)可用作 0x7F 续延串, bank>7 写不下:
+		// 旧实现会写 8 个 0x7F 却永远写不进厂商码, 还返回成功(审计复现)。
+		return fmt.Errorf("DDR2 厂商 bank %d 超出 8 字节字段容量(0x40-0x47), 无法表示", bank)
+	}
 	for i := 0; i < 8; i++ {
 		var v byte
 		switch {
@@ -428,6 +448,71 @@ func (e *Editor) setDDR2Manufacturer(bank byte, code byte) error {
 		}
 	}
 	return nil
+}
+
+// DDR2 的厂商字段是"1~8 个 0x7F 续延字节 + 厂商码", 没有固定偏移:
+//   - 展示与编辑都用**原始字节**(第一个字节 0x40 与厂商码所在字节),
+//     否则"把字段设成它显示的值"会把续延字节改成计数(审计复现: 显示 1 → 写入 0x01
+//     把 Micron 变成 AMD);
+//   - 厂商码位置随 bank 变化, 展示时把解析出的位置写进 Note。
+func mfgContName(l idLayout) string {
+	if l.DDR2Mfg {
+		return "厂商 ID 首字节(0x40, 原始值)"
+	}
+	return "厂商续延码(bit7 = 奇校验位)"
+}
+
+func mfgCodeName(l idLayout) string {
+	if l.DDR2Mfg {
+		return "厂商码字节(原始值)"
+	}
+	return "厂商码(含奇校验位)"
+}
+
+func mfgContValue(e *Editor, l idLayout) string {
+	if l.DDR2Mfg {
+		return strconv.Itoa(int(e.dumpAt(l.MfgCont)))
+	}
+	id, _ := e.Identity()
+	return strconv.Itoa(int(id.ManufacturerCont))
+}
+
+func mfgCodeValue(e *Editor, l idLayout) string {
+	if l.DDR2Mfg {
+		off, _, ok := e.ddr2MfgCodeOffset(l)
+		if !ok {
+			return "0"
+		}
+		return strconv.Itoa(int(e.dumpAt(off)))
+	}
+	id, _ := e.Identity()
+	return strconv.Itoa(int(id.ManufacturerCode))
+}
+
+func mfgContNote(l idLayout, id Identity) string {
+	if l.DDR2Mfg {
+		return "DDR2: 0x40 起连续 0x7F 表示 bank, 其后一个字节才是厂商码; 这里改的是 0x40 原始字节"
+	}
+	return "厂商表按 cont & 0x7F 查表; 常见 bank0 写成 0x80(计数 0 + 校验位)"
+}
+
+func mfgCodeNote(l idLayout) string {
+	if l.DDR2Mfg {
+		return "DDR2: 厂商码在续延串之后, 位置随 bank 变化; 这里改的是解析出的厂商码字节"
+	}
+	return ""
+}
+
+// ddr2MfgCodeOffset 返回 DDR2 厂商码实际所在偏移(0x7F 续延串之后的那个字节)。
+func (e *Editor) ddr2MfgCodeOffset(l idLayout) (int, byte, bool) {
+	for i := 0; i < 8; i++ {
+		b := e.dumpAt(l.MfgCont + i)
+		if b == 0x7F {
+			continue
+		}
+		return l.MfgCont + i, b, true
+	}
+	return 0, 0, false
 }
 
 // ddr2ManufacturerID 按 DDR2 惯例解析厂商 ID(连续 0x7F 为 bank 续延码)。

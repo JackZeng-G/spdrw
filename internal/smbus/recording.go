@@ -56,6 +56,8 @@ type RecordingTransport struct {
 	DenyWriteFrom int
 	// BanQuickWrite 为 true 时所有 quick 写事务返回 NACK(模拟控制器不支持快速命令)。
 	BanQuickWrite bool
+	// ddr5 非 nil 时用于 NVMWrites 的世代判据(默认从内层 Fake 推断)。
+	ddr5 *bool
 }
 
 // NewRecording 包装一个 Transport 用于记录与故障注入。
@@ -112,15 +114,52 @@ func (r *RecordingTransport) DataWrites() []Op {
 
 // NVMWrites 返回真正的 NVM 数据写事务(仅 DDR5 语义: cmd bit7=1 为 NVM 窗口;
 // DDR5 的 MR 寄存器写/切页写成 bit7=0, 不属于 NVM 写入)。
+// NVMWrites 返回对 SPD NVM 的数据写(测试断言用)。
+//
+// 判据随世代不同: DDR5 看 cmd bit7(NVM 窗口); DDR4 及更早所有 byte-data/块写都是 NVM。
+// 以前无条件用 DDR5 判据, 在 DDR4 fixture 上会把 NVM 写数成 0(审计指出的少报),
+// 于是"零 NVM 写"这类断言可能被虚过。世代默认从内层 Fake 推断, 也可显式设置。
 func (r *RecordingTransport) NVMWrites() []Op {
+	return r.NVMWritesFor(r.ddr5Mode())
+}
+
+// NVMWritesFor 按指定世代统计 NVM 写。
+func (r *RecordingTransport) NVMWritesFor(ddr5 bool) []Op {
 	var out []Op
 	for _, op := range r.Writes() {
-		if (op.Kind == OpWriteByteData || op.Kind == OpWriteBlock) && op.Cmd&0x80 != 0 {
-			out = append(out, op)
+		if op.Kind != OpWriteByteData && op.Kind != OpWriteBlock {
+			continue
 		}
+		if op.Addr < 0x50 || op.Addr > 0x57 {
+			continue
+		}
+		if ddr5 {
+			if op.Cmd&0x80 != 0 {
+				out = append(out, op)
+			}
+			continue
+		}
+		if op.Cmd == 0 && op.Val == 0 { // quick/无数据写
+			continue
+		}
+		out = append(out, op)
 	}
 	return out
 }
+
+// ddr5Mode 推断当前是否 DDR5: 显式设置优先, 否则看内层 Fake。
+func (r *RecordingTransport) ddr5Mode() bool {
+	if r.ddr5 != nil {
+		return *r.ddr5
+	}
+	if f, ok := r.Inner.(*FakeTransport); ok {
+		return f.DDR5
+	}
+	return false // 默认按 DDR4 判据(更宽松, 宁可多报)
+}
+
+// SetDDR5Mode 显式指定世代(包装的不是 Fake 时用)。
+func (r *RecordingTransport) SetDDR5Mode(ddr5 bool) { r.ddr5 = &ddr5 }
 
 // WritesAtCmd 返回对指定 cmd 的全部 byte-data 写事务。
 func (r *RecordingTransport) WritesAtCmd(cmd byte) []Op {
@@ -274,22 +313,22 @@ func (r *RecordingTransport) ReadBlockData(addr byte, cmd byte) ([]byte, error) 
 
 // WriteBlockData 记录并转发 SMBus Block Write(协议 5)。
 func (r *RecordingTransport) WriteBlockData(addr byte, cmd byte, data []byte) error {
-	op := Op{Kind: OpWriteBlock, Addr: addr, Cmd: cmd}
+	// Write: true 必须设置 —— 否则 Writes()/WriteCount()/NVMWrites()/DataWrites() 与
+	// 故障注入(writeGuard)都会把块写当成"非写事务"漏掉, "干跑零写入"的断言就可能被骗过。
+	op := Op{Kind: OpWriteBlock, Addr: addr, Cmd: cmd, Write: true}
 	// 故障注入(与逐字节写共用同一套计数/过滤): 块写的"值"取数据首字节便于日志阅读
-	n, werr := r.writeGuard(cmd)
-	err := werr
-	if err == nil {
-		for i, b := range data {
-			if i == 0 {
-				op.Val = b
-			}
-		}
-		err = r.Inner.WriteBlockData(addr, cmd, data)
+	if _, werr := r.writeGuard(cmd); werr != nil {
+		op.Err = werr.Error()
+		r.record(op)
+		return werr
 	}
+	if len(data) > 0 {
+		op.Val = data[0]
+	}
+	err := r.Inner.WriteBlockData(addr, cmd, data)
 	if err != nil {
 		op.Err = err.Error()
 	}
-	_ = n
 	r.record(op)
 	return err
 }

@@ -39,6 +39,8 @@ type FakeTransport struct {
 	// MR 覆盖表(仅 DDR5, cmd bit7=0 的寄存器读): 测试注入 MR12/13/48 等状态用。
 	// 未覆盖的寄存器按默认模拟(MR0=0x51, MR11=当前页, 其余 0)。
 	MR map[byte]byte
+	// MRFailRead 里列出的寄存器读一律 NACK(模拟 SPD5118 在页非 0 时隐藏 volatile 寄存器)。
+	MRFailRead map[byte]bool
 
 	// 页切换状态模拟。
 	page     int
@@ -68,6 +70,9 @@ func NewFake() *FakeTransport {
 		pageSpan:           256,
 	}
 }
+
+// mr11Reg 是页寄存器编号(与 eeprom.MR11 同值; smbus 包不依赖 eeprom)。
+const mr11Reg = 11
 
 // SetDDR5 切换 DDR5 分页语义(128 字节页, MR11 切页)。
 func (f *FakeTransport) SetDDR5(v bool) {
@@ -142,6 +147,9 @@ func (f *FakeTransport) ReadByteData(addr byte, cmd byte) (byte, error) {
 	if f.FailReads {
 		return 0, fmt.Errorf("设备无响应 NACK(0xC000000E)")
 	}
+	if f.DDR5 && cmd&0x80 == 0 && f.MRFailRead[cmd] {
+		return 0, fmt.Errorf("设备无响应 NACK(0xC000000E)")
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.Present != nil && !f.Present[addr] {
@@ -173,6 +181,11 @@ func (f *FakeTransport) WriteByteData(addr byte, cmd byte, val byte) error {
 			f.MR = map[byte]byte{}
 		}
 		f.MR[cmd] = val
+		if cmd == mr11Reg {
+			// 页寄存器: 让后续回读能看到写入的值(否则 setPage 的读-改-写校验在
+			// Fake 上永远失败, 相关分支测不到 —— 审计指出)
+			f.page = int(val & 0x07)
+		}
 		return nil
 	}
 	if f.ProtectedFrom >= 0 && int(cmd) >= f.ProtectedFrom {

@@ -62,11 +62,13 @@ func (c *CountingTransport) Reset() {
 	c.mu.Unlock()
 }
 
-// SetDDR5 同步"当前设备是不是 DDR5", 用于按正确判据累计 NVM 写。
+// SetDDR5 同步"当前设备是不是 DDR5": 既用于按正确判据累计 NVM 写,
+// 也透传给内层传输(写周期判定要用)。
 func (c *CountingTransport) SetDDR5(on bool) {
 	c.mu.Lock()
 	c.ddr5 = on
 	c.mu.Unlock()
+	SetTransportDDR5(c.Inner, on)
 }
 
 // NVMWriteCount 返回**精确累计**的 NVM 字节写次数(不受日志截断影响)。
@@ -192,11 +194,16 @@ func NVMWrites(ops []WriteOp, ddr5 bool) []WriteOp {
 			}
 			continue
 		}
-		// DDR4/更早: quick 与 nodata 写不记录为 NVM(调用方只用 WriteLog 里的字节写);
-		// 地址不在 EEPROM 区间(0x50-0x57)的也排除
-		if op.Addr >= 0x50 && op.Addr <= 0x57 {
-			out = append(out, op)
+		// DDR4/更早: 只有 byte-data / 块写才是 NVM 数据写。WriteLog 里 quick 与
+		// byte 无数据写都记成 Cmd=0/Val=0, 排除它们即可 —— 否则会虚报 NVM 写
+		// (审计指出的假阳性: "干跑零 NVM 写"这类证据会被污染)。
+		if op.Addr < 0x50 || op.Addr > 0x57 {
+			continue
 		}
+		if op.Cmd == 0 && op.Val == 0 {
+			continue
+		}
+		out = append(out, op)
 	}
 	return out
 }

@@ -122,6 +122,24 @@ func New(t smbus.Transport, addr byte) (*Device, error) {
 		d.ramType = ramType
 		d.size = sizeByRamType(ramType)
 		d.typeKnown = spd.RamTypeFromByte(ramType) != spd.Unknown
+		// 非 DDR5 却按类型表判成 1024 字节: DDR4 的 EE1004 只有 0x36/0x37 两个 SPA,
+		// 第 3/4 页会用到 0x38/0x39(0111b 设备类型, 完全不同的器件)。这种情况直接
+		// 标成不可用, 不去猜也不去写那些地址(审计复现过 0x38 的写事务)。
+		if d.size > 512 {
+			d.size = 512
+			d.typeKnown = false
+		}
+	}
+
+	// 告诉传输层世代: DDR5 的 MR 寄存器写不需要 25ms 写周期(整片读取要切 7~8 次页)
+	smbus.SetTransportDDR5(t, ddr5)
+
+	// 单页器件(256B: DDR2/DDR3/SDRAM)没有页可切: 直接把页状态标记为已知,
+	// 否则首次访问会去写 SPA 地址 0x36 —— 那是 SWP/PSWP 的设备类型地址空间,
+	// 在真实主板上 0x36 通常无人应答 → 读整片直接 NACK 失败(DDR3 读不了),
+	// 应答的那一根(SA=6, 即 0x56)则可能被误写 PSWP。审计发现的阻断项。
+	if d.pageCount() <= 1 {
+		d.page, d.pageKnown = 0, true
 	}
 
 	// 注意: 探测阶段不做任何写操作(页复位/页切换推迟到真正读写时由
@@ -196,6 +214,11 @@ func (d *Device) setPage(p int) error {
 	if p < 0 || p >= d.pageCount() {
 		return fmt.Errorf("页 %d 越界(共 %d 页)", p, d.pageCount())
 	}
+	if d.pageCount() == 1 {
+		// 单页器件: 不需要也不能页切换(写 0x36 会落到 SWP/PSWP 地址空间)
+		d.page, d.pageKnown = 0, true
+		return nil
+	}
 	var err error
 	if d.ddr5 {
 		for attempt := 0; attempt < 2; attempt++ {
@@ -204,11 +227,15 @@ func (d *Device) setPage(p int) error {
 			}
 			// 读-改-写: MR11 只写整字节会清掉 bit7:4 与 bit3(内核 spd5118.c 用
 			// selector_mask=GENMASK(2,0) 并保留 bit3 —— 那是寻址模式位, 清掉它
-			// 会在个别 hub 上静默切换寻址模式)。读不到就退回只写低 3 位。
-			val := byte(p & 0x07)
-			if cur, rerr := d.t.ReadByteData(d.addr, MR11); rerr == nil {
-				val = (cur & 0xF8) | byte(p&0x07)
+			// 会在个别 hub 上静默切换寻址模式)。
+			// 读不到 MR11 时**不猜**: 盲写 0x00|page 会先改坏器件状态再报错(审计复现),
+			// 直接放弃本次切页, 让上层报"页状态未知"。
+			cur, rerr := d.t.ReadByteData(d.addr, MR11)
+			if rerr != nil {
+				err = fmt.Errorf("读 MR11 失败(无法安全切页): %w", rerr)
+				continue
 			}
+			val := (cur & 0xF8) | byte(p&0x07)
 			if err = d.t.WriteByteData(d.addr, MR11, val); err != nil {
 				continue
 			}
@@ -253,7 +280,7 @@ func (d *Device) physOffset(off uint16) (byte, byte, error) {
 		p = int(off) >> 8
 		phys = byte(off)
 	}
-	if p != d.page || !d.pageKnown {
+	if d.pageCount() > 1 && (p != d.page || !d.pageKnown) {
 		if err := d.setPage(p); err != nil {
 			return 0, 0, err
 		}
@@ -712,6 +739,14 @@ func (d *Device) ApplyWrite(dump []byte, changes []ByteChange, progress Progress
 		progress(0, total)
 	}
 	for i, ch := range changes {
+		// Offset 是 int: 不校验就转 uint16 会把 0x10010 截成 0x10 —— 写到错误位置还报成功
+		// (审计复现)。负数同样在 physOffset 里才算越界, 这里一并挡掉。
+		if ch.Offset < 0 || ch.Offset >= d.size || ch.Offset >= len(dump) {
+			return &WriteError{
+				Offset: ch.Offset, Written: i, Total: total, Stage: "write",
+				Err: fmt.Errorf("写入计划里的偏移 %d 越界(设备 %d 字节)", ch.Offset, d.size),
+			}
+		}
 		if err := d.writeOne(uint16(ch.Offset), ch.New); err != nil {
 			return &WriteError{Offset: ch.Offset, Written: i, Total: total, Err: err, Stage: "write"}
 		}
@@ -873,6 +908,9 @@ func (d *Device) verifyByteWiseAt(dump []byte, offs []int) error {
 	d.fastRead, d.wordRead = false, false
 	defer func() { d.fastRead, d.wordRead = fast, word }()
 	for _, off := range offs {
+		if off < 0 || off >= len(dump) {
+			return fmt.Errorf("逐字节复核偏移 %d 越界(共 %d 字节)", off, len(dump))
+		}
 		got, err := d.readOne(uint16(off))
 		if err != nil {
 			return fmt.Errorf("逐字节复核 %#x 失败: %w", off, err)
@@ -932,11 +970,13 @@ func (d *Device) WriteTest(off uint16) (bool, error) {
 		// 还原失败就会永久改坏该字节。因此干跑下直接报"状态未知", 一个字节都不写。
 		return false, ErrDryRunNoWriteTest
 	}
-	b, err := d.Read(off, 1)
+	// 用最原始的逐字节读: 写测试是"取反写→还原"的真实写, 判定依据绝不能走可能带
+	// 缓存/偏差的块读/字读路径, 否则还原失败会被误判成成功(静默数据损坏)。
+	b, err := d.readOne(off)
 	if err != nil {
 		return false, fmt.Errorf("写测试读取 %#x: %w", off, err)
 	}
-	orig := b[0]
+	orig := b
 	flipped := orig ^ 0xFF
 
 	if err := d.WriteByteAt(off, flipped); err != nil {
@@ -947,18 +987,18 @@ func (d *Device) WriteTest(off uint16) (bool, error) {
 	}
 
 	// 确认写是否真的生效: 有的 HUB/颗粒会静默忽略受保护块的写(不 NACK)。
-	back, err := d.Read(off, 1)
+	back, err := d.readOne(off)
 	if err != nil {
 		return false, fmt.Errorf("写测试回读 %#x: %w", off, err)
 	}
-	if back[0] != flipped {
-		if back[0] == orig {
+	if back != flipped {
+		if back == orig {
 			return false, nil // 写被忽略 → 受保护(内容未变, 无需还原)
 		}
 		// 出现了既非原值也非目标值的异常值: 尽力还原后再报错
 		_, rerr := d.restoreByte(off, orig)
 		return false, fmt.Errorf("写测试回读异常 @ %#x: 原 %#x 写 %#x 读 %#x(还原错误: %v)",
-			off, orig, flipped, back[0], rerr)
+			off, orig, flipped, back, rerr)
 	}
 
 	if ok, rerr := d.restoreByte(off, orig); !ok {
@@ -978,15 +1018,15 @@ func (d *Device) restoreByte(off uint16, want byte) (bool, error) {
 		if lastErr = d.WriteByteAt(off, want); lastErr != nil {
 			continue
 		}
-		cur, err := d.Read(off, 1)
+		cur, err := d.readOne(off) // 同上: 还原确认必须用最原始的逐字节读
 		if err != nil {
 			lastErr = err
 			continue
 		}
-		if cur[0] == want {
+		if cur == want {
 			return true, nil
 		}
-		lastErr = fmt.Errorf("还原后回读仍为 %#x(期望 %#x)", cur[0], want)
+		lastErr = fmt.Errorf("还原后回读仍为 %#x(期望 %#x)", cur, want)
 	}
 	return false, lastErr
 }
@@ -1172,6 +1212,11 @@ func (d *Device) Generation() string {
 
 // RSWPSet 启用指定块的可逆写保护。
 func (d *Device) RSWPSet(block byte) error {
+	if d.dryRun {
+		// 干跑承诺"不改设备": 写保护是设备状态(部分颗粒置位后需离线模式/断电才能清),
+		// 绝不能因为开着干跑就真改 —— 审计发现的漏洞。
+		return fmt.Errorf("干跑模式下不修改写保护(请先关闭干跑)")
+	}
 	blocks, err := d.blockCount()
 	if err != nil {
 		return err
@@ -1195,6 +1240,9 @@ func (d *Device) RSWPSet(block byte) error {
 
 // RSWPClear 清除全部可逆写保护(DDR4 CWP / DDR5 MR12-MR13 置 0)。
 func (d *Device) RSWPClear() error {
+	if d.dryRun {
+		return fmt.Errorf("干跑模式下不修改写保护(请先关闭干跑)")
+	}
 	if d.ddr5 {
 		if err := d.t.WriteByteData(d.addr, MR12, 0); err != nil {
 			return fmt.Errorf("清 MR12: %w", err)

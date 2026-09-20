@@ -115,8 +115,8 @@ func (a *App) WriteProbe() (*WriteProbeResult, error) {
 		res.Restored = true
 	}
 
-	// 4) 整片复核: 设备必须与探测前逐字节一致
-	if verr := dev.Verify(img); verr != nil {
+	// 4) 整片复核: 设备必须与探测前逐字节一致(用最原始的逐字节读法判定)
+	if verr := dev.VerifyByteWise(img); verr != nil {
 		res.Verified = false
 		res.Note += fmt.Sprintf("; 探测后设备内容与备份不一致(%v), 正在回滚…", verr)
 		if n, ferr := a.restoreImage(dev, img); ferr != nil {

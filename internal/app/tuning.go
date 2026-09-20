@@ -26,6 +26,7 @@ type BusTuningResult struct {
 
 // BusTuning 返回当前控制器的 SMBus 时钟与等待模式。
 func (a *App) BusTuning() (*BusTuningResult, error) {
+	defer a.lockOp()()
 	a.mu.Lock()
 	active := a.active
 	dev := a.dev
@@ -79,14 +80,6 @@ func (a *App) SetSleepMode(mode int) (int, error) {
 	cur := int(tuner.SleepMode())
 	a.logf("总线等待模式: %s", smbus.SleepModeName(tuner.SleepMode()))
 	return cur, nil
-}
-
-// busTuningNote 生成一行用于日志的"总线环境"说明(时钟 + 等待模式)。
-// 自行加锁 —— 持锁的调用点(Select/Dump)必须用 busTuningNoteLocked, 否则自锁死。
-func (a *App) busTuningNote() string {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.busTuningNoteLocked()
 }
 
 // busTuningNoteLocked 假定调用方已持 a.mu。

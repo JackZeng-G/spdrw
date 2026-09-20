@@ -429,6 +429,23 @@ func (a *App) buildPreflight(label string, dump []byte, force, probeProtection b
 		pf.Blocked, pf.BlockKind = true, "protected"
 		pf.BlockReason = fmt.Sprintf("变更涉及受写保护的块 %v(可先执行 RSWP 清除, 若可逆)", hit)
 	}
+	// M2: 保护状态"未知"(写测试失败)的块一旦被改动, 也必须拒绝**真实写入** ——
+	// 未知不等于可写; 否则会在状态不明的块上写, 中途回读失败再回滚(半写风险)。
+	// 注意: 只在真正探测过的路径(probeProtection=true)上这么判 —— 预览路径为了保证
+	// "预览不写设备"会让写测试返回"未知", 那是预期行为, 不能因此阻断预览。
+	if probeProtection && !pf.Blocked && len(pf.UnknownBlocks) > 0 {
+		var unknownHit []int
+		for _, b := range pf.UnknownBlocks {
+			if changedBlocks[b] {
+				unknownHit = append(unknownHit, b)
+			}
+		}
+		if len(unknownHit) > 0 {
+			pf.Blocked, pf.BlockKind = true, "unknown"
+			pf.BlockReason = fmt.Sprintf(
+				"变更涉及的块 %v 写保护状态未知(写测试失败): 为避免半写, 已拒绝写入; 可重试或换一根条", unknownHit)
+		}
+	}
 	if pf.PSWP && !pf.Blocked {
 		pf.Blocked, pf.BlockKind = true, "pswp"
 		pf.BlockReason = "该条已处于 PSWP 永久写保护, 无法写入"
@@ -578,8 +595,8 @@ func (a *App) restoreImage(dev *eeprom.Device, img []byte) (int, error) {
 	if err := dev.ApplyWrite(img, changes, nil); err != nil {
 		return 0, err
 	}
-	if err := dev.Verify(img); err != nil {
-		return len(changes), fmt.Errorf("回滚后整片校验不通过: %w", err)
+	if err := dev.VerifyByteWise(img); err != nil {
+		return len(changes), fmt.Errorf("回滚后整片逐字节复核不通过: %w", err)
 	}
 	return len(changes), nil
 }
@@ -602,7 +619,9 @@ func (a *App) afterProbeCheck(dev *eeprom.Device, img []byte) error {
 	if img == nil {
 		return nil
 	}
-	err := dev.Verify(img)
+	// 判定"探测是否改动过设备"必须用最原始的逐字节读法: 块读/字读路径一旦有缓存或偏差,
+	// 这里会把"byte0 已被探测写坏"误判成"内容一致 → 无需回滚"(审计验证过的假阴性)。
+	err := dev.VerifyByteWise(img)
 	if err == nil {
 		return nil
 	}
@@ -712,6 +731,11 @@ func (a *App) WriteConfirmed(path string, force, dryRun bool, ack string) (*Writ
 	if dev == nil {
 		return nil, fmt.Errorf("请先选择设备")
 	}
+	// M1: 数据本身不合格(长度/世代/CRC)时**先拒绝** —— 不要在"注定被拒"的目标上
+	// 先备份再跑写保护探测(DDR4 及更早的探测是真实写测试, 8 次 NVM 写)。
+	if err := gateDump(dev, dump); err != nil {
+		return nil, fmt.Errorf("写入被拒绝: %w", err)
+	}
 	img, backup, err := a.backupIfNeeded(dev, dryRun)
 	if err != nil {
 		return nil, fmt.Errorf("写入前备份失败, 已中止: %w", err)
@@ -738,7 +762,8 @@ func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun 
 	if pf.Blocked {
 		// 干跑只是内存演算, 不碰硬件: 只有"数据本身不合格"(长度/世代/CRC)才拒绝,
 		// 写保护/PSWP/BIOS 这类"硬件此刻不接受"的原因允许继续(结果里带警示)。
-		hardwareGate := pf.BlockKind == "protected" || pf.BlockKind == "pswp" || pf.BlockKind == "bios"
+		hardwareGate := pf.BlockKind == "protected" || pf.BlockKind == "pswp" ||
+			pf.BlockKind == "bios" || pf.BlockKind == "unknown"
 		if !(dryRun && hardwareGate) {
 			return nil, fmt.Errorf("写入被拒绝: %s", pf.BlockReason)
 		}
@@ -772,8 +797,9 @@ func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun 
 		if err := dev.ApplyWrite(dump, changes, func(w, t int) { a.emit("write:progress", w, t) }); err != nil {
 			return nil, err
 		}
-		res.Total, res.Written, res.Verified = len(changes), len(changes), true
-		res.Message = fmt.Sprintf("干跑完成: 将写入 %d 字节", len(changes))
+		// 干跑只演算内存影子: 不能声称"已校验设备"(res.Verified 语义是设备已核对)
+		res.Total, res.Written, res.Verified = len(changes), len(changes), false
+		res.Message = fmt.Sprintf("干跑完成: 将写入 %d 字节(未对设备做任何校验)", len(changes))
 		if counter != nil {
 			st := counter.Stats()
 			nvm := counter.NVMWriteCount()
@@ -805,22 +831,24 @@ func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun 
 	if dev.DryRun() {
 		return nil, fmt.Errorf("设备处于干跑模式, 本次不会真正写入; 请先关闭干跑模式再执行真实写入")
 	}
+	if img == nil {
+		// 调用方(测试)没给镜像: 这里先备份再算计划 —— 顺序上不会出现"先计划后备份"
+		var berr error
+		img, backup, berr = a.backupCurrent(dev)
+		if berr != nil {
+			return nil, fmt.Errorf("写入前备份失败, 已中止: %w", berr)
+		}
+	}
 	changes, err := dev.PlanWrite(dump, force)
 	if err != nil {
 		return nil, err
 	}
 	res.Total = len(changes)
 	if len(changes) == 0 {
-		// 设备内容已与目标一致: 不写、也不浪费一份备份(L14)
-		res.Message = "设备内容已与目标一致, 无需写入(未做备份)"
+		// 设备内容已与目标一致: 不写(计划为空时备份是浪费; 备份文件仍在, 只是没用到)
+		res.Message = "设备内容已与目标一致, 无需写入"
 		a.logf("%s", res.Message)
 		return res, nil
-	}
-	if img == nil {
-		img, backup, err = a.backupCurrent(dev)
-		if err != nil {
-			return nil, fmt.Errorf("写入前备份失败, 已中止: %w", err)
-		}
 	}
 	res.BackupPath = backup
 

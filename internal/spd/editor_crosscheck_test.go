@@ -394,10 +394,14 @@ func fieldMaxWidth(f Field) int {
 	case strings.Contains(f.Key, "name"):
 		return 16
 	case strings.HasSuffix(f.Key, ".present"):
+		// present 开关的职责: 写自己那段 magic, 并在该区**还是空白**时顺手初始化
+		// 版本/启用位(否则"新建一份 profile"不成立)。EXPO 的 magic 是 4 字节
+		// ("EXPO")+版本+启用位 = 6; XMP 是 magic 2 + 版本 + 启用位 = 4。
+		// 上限据此设定, 仍能抓住"字段写到别人区域"的越界。
 		if strings.Contains(f.Key, "expo") {
-			return 5 // EXPO magic 四字节("EXPO") + 启用位一字节
+			return 6
 		}
-		return 3 // XMP: magic 两字节 + 默认版本一字节
+		return 4
 	case f.Kind == "float" || f.Kind == "int" || f.Kind == "bool":
 		return 2
 	case f.Kind == "hex":

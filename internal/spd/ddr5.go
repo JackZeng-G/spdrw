@@ -73,7 +73,13 @@ func (d *DDR5SPD) DensityPackages() (dies [2]byte, densitiesGb [2]byte) {
 			die = 1
 		}
 		dies[i] = die
-		densitiesGb[i] = ddr5DensityList[subByteR(b, 3, 4)]
+		// 容量码 9..15 是保留值: 表只有 9 项, 越界会 panic(审计发现的崩溃点)。
+		code := subByteR(b, 3, 4)
+		if int(code) < len(ddr5DensityList) {
+			densitiesGb[i] = ddr5DensityList[code]
+		} else {
+			densitiesGb[i] = 0 // 未知容量: 上层显示 0/—, 不崩
+		}
 	}
 	return
 }
@@ -130,6 +136,10 @@ func (d *DDR5SPD) TotalCapacityBytes() uint64 {
 	dies, densities := d.DensityPackages()
 	ioW := d.IOWidths()
 	ioWidth := byte(4) << ioW[0] // 原版 IoWidth 未展示容量换算,按 JEDEC: 4<<code(0→4bit... code=0→4)
+	// 损坏/保留编码防护: IO 位宽 code>=6 时 `4<<code` 截断成 0, primary/0 会 panic。
+	if ioWidth == 0 || primary == 0 || ranks == 0 {
+		return 0
+	}
 	// 原版容量公式: channels * (primary/ioWidth) * dies * densityGb/8 * ranks
 	return uint64(channels) * uint64(primary/ioWidth) * uint64(dies[0]) * uint64(densities[0]) / 8 * uint64(ranks)
 }

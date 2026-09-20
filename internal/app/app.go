@@ -131,8 +131,11 @@ func (a *App) AutoConnectAll() (*AutoConnectResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 注意: ctls 是**过滤后**的列表(只保留探测到设备的控制器), 它的下标 != transports 下标。
+	// 必须用 ControllerInfo.Index 去 Connect, 否则"SPD 不在 transports[0]"的机器上会连错控制器,
+	// 界面里一台设备都看不到(审计发现的阻断项)。
 	for i := range ctls {
-		if err := a.Connect(i); err != nil {
+		if err := a.Connect(ctls[i].Index); err != nil {
 			continue
 		}
 		dimms, err := a.Scan()
@@ -140,11 +143,11 @@ func (a *App) AutoConnectAll() (*AutoConnectResult, error) {
 			continue
 		}
 		if len(dimms) > 0 {
-			res.CtlIndex, res.Dimms = i, dimms
+			res.CtlIndex, res.Dimms = ctls[i].Index, dimms
 			return res, nil
 		}
 		if res.CtlIndex < 0 {
-			res.CtlIndex, res.Dimms = i, dimms
+			res.CtlIndex, res.Dimms = ctls[i].Index, dimms
 		}
 	}
 	return res, nil
@@ -296,7 +299,28 @@ func (a *App) Scan() ([]DimmInfo, error) {
 				return s
 			}
 		}
-		a.logf("扫描完成: 0 个设备(0x50: %s; 其余地址同类)", classify(lastErr[0x50]))
+		// lastErr 可能缺 0x50(例如 0x50 读到了 byte0 但 eeprom.New 失败), 直接索引会拿到
+		// nil error → classify 里 err.Error() 空指针 panic(审计发现的崩溃点)。
+		var first error
+		for addr := byte(0x50); addr <= 0x57; addr++ {
+			if e, ok := lastErr[addr]; ok && e != nil {
+				first = e
+				break
+			}
+		}
+		if first == nil {
+			for _, e := range lastErr {
+				if e != nil {
+					first = e
+					break
+				}
+			}
+		}
+		if first == nil {
+			a.logf("扫描完成: 0 个设备(地址 0x50-0x57 均未应答或无法识别, 无错误详情)")
+		} else {
+			a.logf("扫描完成: 0 个设备(首个错误: %s)", classify(first))
+		}
 		return out, nil
 	}
 	a.logf("扫描完成: %d 个设备", len(out))
@@ -338,6 +362,12 @@ func (a *App) Select(addr byte) error {
 // Dump 读取整片 SPD; progress(0..100) 经事件推送。
 func (a *App) Dump() ([]byte, error) {
 	defer a.lockOp()()
+	return a.dumpLocked()
+}
+
+// dumpLocked 是 Dump 的实现, 假定调用方已持操作锁(opMu)。
+// SaveDump 这类"已经持锁"的入口必须走这里, 否则会自锁死 —— 死锁守卫测试抓到过一次。
+func (a *App) dumpLocked() ([]byte, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.dev == nil {
@@ -346,6 +376,8 @@ func (a *App) Dump() ([]byte, error) {
 	start := time.Now()
 	data, err := a.dev.ReadAll()
 	if err != nil {
+		// 读失败: 清掉缓存, 免得后面"从设备载入/复用缓存"拿到上一次的旧内容
+		a.lastDump, a.lastDumpAddr = nil, 0
 		// 自动降级: 忙等(默认, 最快)下若出现事务异常, 自动换成"轮询忙等 + 长等待休眠"
 		// 再试一次 —— 有些控制器/HUB 需要更宽松的等待, 用户不必关心这些细节, 但日志要写清楚。
 		if tuner, ok := smbus.TunerOf(a.active); ok && tuner.SleepMode() == smbus.SleepModeAlwaysBusy {
@@ -377,7 +409,11 @@ func (a *App) Dump() ([]byte, error) {
 	a.lastDumpAddr = a.dev.Addr()
 	a.lastDump = data
 	// 读一次就自动把内容放进编辑器(用户反馈: 编辑器再点一次"从设备载入"是多余的)。
-	if ed, eerr := spd.NewEditor(data); eerr == nil {
+	// 但如果编辑器里有**未保存的改动**, 不能悄悄丢弃(审计 M4): 保留工作副本并提示。
+	if a.editor != nil && a.editor.IsDirty() {
+		a.logf("设备内容已刷新; 编辑器里有 %d 处未保存改动, 未覆盖(需要时点“放弃修改”)",
+			len(a.editor.Changes()))
+	} else if ed, eerr := spd.NewEditor(data); eerr == nil {
 		a.editor = ed
 		a.editSource = fmt.Sprintf("设备 %#x", a.dev.Addr())
 		a.editFromDevice = true
@@ -422,6 +458,7 @@ func (a *App) dumpDiagnostics() {
 
 // SaveDump 保存到文件: 优先复用最近一次读取的缓存, 无缓存时现读。
 func (a *App) SaveDump(path string) error {
+	defer a.lockOp()()
 	a.mu.Lock()
 	if a.dev == nil {
 		a.mu.Unlock()
@@ -431,10 +468,10 @@ func (a *App) SaveDump(path string) error {
 	if a.lastDump != nil && a.lastDumpAddr == a.dev.Addr() {
 		data = a.lastDump
 	} else {
-		// 无缓存: 现读(释放锁让 Dump() 正常加锁)
+		// 无缓存: 现读。注意走 dumpLocked(本函数已持 opMu, 再调 Dump 会自锁死)
 		a.mu.Unlock()
 		var err error
-		if data, err = a.Dump(); err != nil {
+		if data, err = a.dumpLocked(); err != nil {
 			return err
 		}
 		a.mu.Lock()
@@ -703,6 +740,9 @@ func (a *App) WPSet(blocks []int, ack string) error {
 			return fmt.Errorf("块号 %d 无效", b)
 		}
 	}
+	if dev.DryRun() {
+		return fmt.Errorf("干跑模式下不修改写保护(请先关闭干跑模式)")
+	}
 	img, backup, err := a.backupIfNeeded(dev, dev.DryRun())
 	if err != nil {
 		return fmt.Errorf("设置写保护前备份失败, 已中止: %w", err)
@@ -739,6 +779,9 @@ func (a *App) WPClear(ack string) error {
 	a.mu.Unlock()
 	if dev == nil {
 		return fmt.Errorf("请先选择设备")
+	}
+	if dev.DryRun() {
+		return fmt.Errorf("干跑模式下不修改写保护(请先关闭干跑模式)")
 	}
 	img, backup, err := a.backupIfNeeded(dev, dev.DryRun())
 	if err != nil {
@@ -843,6 +886,11 @@ func (a *App) disconnectLocked() {
 	if a.active != nil {
 		a.active = nil
 	}
+	// 断开后编辑器/控制器状态都要清干净: 否则 EditState 还会说"设备 0x50, 可写"
+	// (审计 LOW: 只有 a.editor 非空就报 CanWrite=true)。
+	a.editor, a.editSource, a.editFromDevice = nil, "", false
+	a.ctrl = smbus.Controller{}
+	a.lastDump, a.lastDumpAddr = nil, 0
 }
 
 // CloseDevice 仅断开设备选择。

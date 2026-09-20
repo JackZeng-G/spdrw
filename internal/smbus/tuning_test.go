@@ -71,3 +71,35 @@ func TestTunerOfUnwrapsWrappers(t *testing.T) {
 		t.Fatal("nil 不应被识别为可调优")
 	}
 }
+
+// 块写必须被记录成"写事务": 否则 Writes/WriteCount/NVMWrites/DataWrites 与故障注入
+// 都会漏掉它 —— "干跑零写入"这类断言就会被骗过(块写路径是后来加的, 容易漏)。
+func TestRecordingCountsBlockWrites(t *testing.T) {
+	rec, f := NewRecordingFake()
+	f.SetDDR5(true)
+	if err := rec.WriteBlockData(0x50, 0x88, []byte{0x11, 0x22}); err != nil {
+		t.Fatal(err)
+	}
+	if n := rec.WriteCount(); n != 1 {
+		t.Fatalf("块写应计入写事务, got %d", n)
+	}
+	if n := len(rec.NVMWrites()); n != 1 {
+		t.Fatalf("块写(cmd bit7=1)应计入 NVM 写, got %d", n)
+	}
+	if n := len(rec.DataWrites()); n != 1 {
+		t.Fatalf("块写应计入数据写, got %d", n)
+	}
+	// 寄存器写(cmd<0x80)不算 NVM
+	if err := rec.WriteBlockData(0x50, 0x0B, []byte{0x01}); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(rec.NVMWrites()); n != 1 {
+		t.Fatalf("寄存器块写不应计入 NVM 写, got %d", n)
+	}
+	// 故障注入必须能命中块写
+	rec2, _ := NewRecordingFake()
+	rec2.FailWriteAt = 1
+	if err := rec2.WriteBlockData(0x50, 0x88, []byte{0x11}); err == nil {
+		t.Fatal("FailWriteAt 应能命中块写")
+	}
+}

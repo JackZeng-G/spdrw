@@ -53,3 +53,14 @@ type Transport interface {
 	ReadWordData(addr byte, cmd byte) (uint16, error)
 	Close() error
 }
+
+// GenerationAware 是"知道自己连的是不是 DDR5"的传输(可选能力)。
+// 写周期判定要区分 DDR5 的 MR 寄存器写与 NVM 写, 所以由设备层在识别世代后告知。
+type GenerationAware interface{ SetDDR5(bool) }
+
+// SetTransportDDR5 尽力把世代信息透给传输(含计数包装)。
+func SetTransportDDR5(t Transport, ddr5 bool) {
+	if g, ok := t.(GenerationAware); ok {
+		g.SetDDR5(ddr5)
+	}
+}
