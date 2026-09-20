@@ -71,26 +71,84 @@ test("编辑器: 分组切换(JEDEC 时序/常用信息分开渲染)", async () 
   assert.ok(!keys.includes("partNumber"), "切换分组后不应再渲染常用信息字段");
 });
 
-test("编辑器: 左侧 hex 点击可直接改字节", async () => {
+test("编辑器: 左侧 hex 点击可就地改字节(十六进制解析)", async () => {
   const { el, calls, ctx } = setup();
   await flush();
   el("tab-edit").onclick();
   await el("btn-edit-load-dev").onclick();
   await flush();
-  ctx.prompt = () => "00";
   assert.match(el("hexgrid").innerHTML, /data-off="260"/, "hex 视图的字节应带 data-off(可点击)");
   assert.match(el("hex-hint").textContent, /点击/, "应提示左侧 hex 可直接修改");
-  // 直接构造点击目标(不依赖夹具的 HTML 解析能力)
-  const target = {
-    classList: { contains: (c) => c === "hexbyte" },
-    getAttribute: (k) => (k === "data-off" ? "260" : null),
-    textContent: "00",
-  };
+
+  // 每次提交后 hex 视图会整体重绘, 所以要重新取格子(与真实点击一致)
+  const findTarget = () =>
+    el("hexgrid").querySelectorAll("span[data-off]").find((b) => b.getAttribute("data-off") === "260");
+  let target = findTarget();
+  assert.ok(target, "应能取到 data-off=260 的字节格");
   el("hexgrid").onclick({ target });
+  const inp = target.querySelector("input");
+  assert.ok(inp, "点击后该格应出现输入框");
+  // 关键: 输入 5A 必须按十六进制解析(=90), 不是十进制 5 / 0
+  inp.value = "5A";
+  await inp.onkeydown({ key: "Enter", preventDefault() {} });
+  await flush();
+  let call = calls.find((c) => c.name === "EditSetByte");
+  assert.ok(call, "回车后应调用 EditSetByte");
+  assert.deepEqual([...call.args], [260, 0x5a]);
+
+  // 0x 前缀同样按十六进制
+  calls.length = 0;
+  target = findTarget();
+  el("hexgrid").onclick({ target });
+  const inp2 = target.querySelector("input");
+  inp2.value = "0x0b";
+  await inp2.onkeydown({ key: "Enter", preventDefault() {} });
+  await flush();
+  call = calls.find((c) => c.name === "EditSetByte");
+  assert.deepEqual([...call.args], [260, 0x0b]);
+
+  // Esc 取消: 不调后端
+  calls.length = 0;
+  target = findTarget();
+  el("hexgrid").onclick({ target });
+  const inp3 = target.querySelector("input");
+  inp3.value = "FF";
+  await inp3.onkeydown({ key: "Escape", preventDefault() {} });
+  await flush();
+  assert.equal(calls.some((c) => c.name === "EditSetByte"), false, "Esc 不应提交");
+
+  // 非法输入: 报错且不调后端
+  calls.length = 0;
+  target = findTarget();
+  el("hexgrid").onclick({ target });
+  const inp4 = target.querySelector("input");
+  inp4.value = "zz";
+  await inp4.onkeydown({ key: "Enter", preventDefault() {} });
+  await flush();
+  assert.equal(calls.some((c) => c.name === "EditSetByte"), false, "非法十六进制不应提交");
+  assert.match(el("log").text(), /十六进制/);
+});
+
+test("编辑器: 原始 hex 表单按十六进制解析(5A=90, 不是十进制)", async () => {
+  const { el, calls, ctx } = setup();
+  await flush();
+  el("tab-edit").onclick();
+  await el("btn-edit-load-dev").onclick();
+  await flush();
+
+  el("hex-off").value = "104";   // 十六进制 0x104 = 260
+  el("hex-val").value = "5A";    // 十六进制 0x5A = 90
+  await el("btn-hex-apply").onclick();
   await flush();
   const call = calls.find((c) => c.name === "EditSetByte");
-  assert.ok(call, "点击字节应调用 EditSetByte");
-  assert.deepEqual([...call.args], [260, 0x00]);
+  assert.ok(call, "应调用 EditSetByte");
+  assert.deepEqual([...call.args], [0x104, 0x5a]);
+
+  calls.length = 0;
+  el("hex-val").value = "zz";
+  await el("btn-hex-apply").onclick();
+  await flush();
+  assert.equal(calls.some((c) => c.name === "EditSetByte"), false, "非法值不应提交");
 });
 
 test("编辑器: 修改字段会调用 EditSetField 并刷新 diff", async () => {
@@ -146,24 +204,3 @@ test("编辑器: 未勾选备份拒绝写入; 干跑走 DRYRUN", async () => {
   assert.deepEqual([...call.args], [false, true, "DRYRUN"]);
 });
 
-test("编辑器: 原始 hex 编辑解析 0x 前缀并拒绝非法输入", async () => {
-  const { el, calls } = setup();
-  await flush();
-  el("tab-edit").onclick();
-  await el("btn-edit-load-dev").onclick();
-  await flush();
-
-  el("hex-off").value = "0x1F0";
-  el("hex-val").value = "0x5A";
-  await el("btn-hex-apply").onclick();
-  await flush();
-  let call = calls.find((c) => c.name === "EditSetByte");
-  assert.ok(call, "应调用 EditSetByte");
-  assert.deepEqual([...call.args], [0x1f0, 0x5a]);
-
-  calls.length = 0;
-  el("hex-off").value = "abc";
-  await el("btn-hex-apply").onclick();
-  await flush();
-  assert.equal(calls.some((c) => c.name === "EditSetByte"), false, "非法偏移不应调用后端");
-});

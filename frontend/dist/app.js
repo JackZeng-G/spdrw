@@ -216,26 +216,50 @@ function renderHexB64(b64) {
   renderHex(dump);
 }
 
-// hex 视图的字节带 data-off, 编辑器载入后可点击直接改(走后端 EditSetByte)
-$("hexgrid").onclick = async (ev) => {
+// hex 视图的字节带 data-off, 编辑器载入后可点击**就地编辑**(不再弹原生 prompt):
+// 点击把该格换成 2 位输入框, 回车提交 / Esc 取消 / 失焦提交; 输入按十六进制解析。
+$("hexgrid").onclick = (ev) => {
   const t = ev.target;
   if (!t || !t.classList || !t.classList.contains("hexbyte")) return;
   if (!editorLoaded) { addLog("", "左侧 hex 需先在编辑器标签页载入数据后才能直接修改"); return; }
+  if (t.querySelector && t.querySelector("input")) return; // 已在编辑中
   const off = parseInt(t.getAttribute("data-off"), 10);
-  const cur = t.textContent;
-  const v = prompt(`偏移 ${hex(off, 3)}(当前 ${cur})\n输入新值(hex, 如 5A 或 0x5A):`, cur);
-  if (v == null) return;
-  const nv = parseHexOrDec(v.trim().replace(/^0x/i, ""));
-  if (nv == null || nv < 0 || nv > 255) { addLog("", `字节值无效: ${v}`); return; }
-  try {
-    const st = await call("EditSetByte", off, nv);
-    renderEditState(st);
-    await refreshEditDiff();
-    await refreshEditBytes();
-    addLog("", `原始编辑: ${hex(off, 3)} = ${hex(nv, 2)}(记得"重算 CRC")`);
-  } catch (e) { addLog("", "原始编辑失败: " + e); }
-};
+  const cur = (t.textContent || "").trim();
 
+  const inp = document.createElement("input");
+  inp.className = "hexedit";
+  inp.value = cur;
+  inp.setAttribute("maxlength", "2");
+  inp.setAttribute("size", "2");
+  t.textContent = "";
+  t.appendChild(inp);
+  if (inp.focus) inp.focus();
+  if (inp.select) inp.select();
+
+  let done = false;
+  const finish = async (commit) => {
+    if (done) return;
+    done = true;
+    const raw = String(inp.value || "").trim();
+    inp.remove && inp.remove();
+    t.textContent = cur; // 先恢复显示, 提交成功后整体重绘
+    if (!commit) return;
+    const nv = parseHexByte(raw);
+    if (nv == null) { addLog("", `字节值必须是十六进制 00-FF(收到 ${raw})`); return; }
+    try {
+      const st = await call("EditSetByte", off, nv);
+      renderEditState(st);
+      await refreshEditDiff();
+      await refreshEditBytes();
+      addLog("", `原始编辑: ${hex(off, 3)} = ${hex(nv, 2)}(记得"重算 CRC")`);
+    } catch (e) { addLog("", "原始编辑失败: " + e); }
+  };
+  inp.onkeydown = (e) => {
+    if (e.key === "Enter") { e.preventDefault(); finish(true); }
+    else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+  };
+  inp.onblur = () => finish(true);
+};
 function renderHex(dump) {
   const grid = $("hexgrid");
   $("hex-meta").textContent = `${dump.length} 字节`;
@@ -781,9 +805,12 @@ $("btn-edit-export").onclick = async () => {
 };
 
 $("btn-hex-apply").onclick = async () => {
-  const off = parseHexOrDec($("hex-off").value);
-  const val = parseHexOrDec($("hex-val").value);
-  if (off == null || val == null) { addLog("", "偏移/值格式无效(可用 0x1F0 或 496)"); return; }
+  const off = parseHexOffset($("hex-off").value);
+  const val = parseHexByte($("hex-val").value);
+  if (off == null || val == null) {
+    addLog("", "偏移/值必须是十六进制(偏移如 204 或 0x204; 值如 5A 或 0x5A)");
+    return;
+  }
   try {
     const st = await call("EditSetByte", off, val);
     renderEditState(st);
@@ -792,11 +819,20 @@ $("btn-hex-apply").onclick = async () => {
   } catch (e) { addLog("", "原始编辑失败: " + e); }
 };
 
-function parseHexOrDec(s) {
-  s = String(s || "").trim();
-  if (!s) return null;
-  const v = /^0x/i.test(s) ? parseInt(s, 16) : parseInt(s, 10);
-  return isNaN(v) ? null : v;
+// parseHexByte 解析一个字节: **一律按十六进制**(允许 0x 前缀, 1~2 位)。
+// 早先的实现剥掉 0x 后用 parseInt(s,10), 于是 "5A"/"0b" 被当十进制(5A→5, 0b→0),
+// 是明确的错误 —— 这是 hex 编辑器, 输入的就是十六进制。
+function parseHexByte(s) {
+  s = String(s || "").trim().replace(/^0x/i, "");
+  if (!/^[0-9a-fA-F]{1,2}$/.test(s)) return null;
+  return parseInt(s, 16);
+}
+
+// parseHexOffset 解析偏移: 一律按十六进制(允许 0x 前缀)。
+function parseHexOffset(s) {
+  s = String(s || "").trim().replace(/^0x/i, "");
+  if (!/^[0-9a-fA-F]+$/.test(s)) return null;
+  return parseInt(s, 16);
 }
 
 async function refreshEditBytes() {

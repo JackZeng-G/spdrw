@@ -95,10 +95,10 @@
 
         <div class="panel-title ops-title">原始 hex 编辑</div>
         <div class="ops hexedit">
-          <label>偏移 <input id="hex-off" type="text" placeholder="0x1F0" size="6"></label>
-          <label>值 <input id="hex-val" type="text" placeholder="0x5A" size="5"></label>
+          <label>偏移(hex) <input id="hex-off" type="text" placeholder="204 或 0x204" size="9"></label>
+          <label>值(hex) <input id="hex-val" type="text" placeholder="5A" size="5"></label>
           <button id="btn-hex-apply" disabled>写入该字节</button>
-          <div class="muted small">直接改任意字节(高风险); 之后用"重算 CRC"修正校验和。</div>
+          <div class="muted small">两个框都是**十六进制**(可不带 0x); 也可以直接点左侧 hex 里的字节就地修改。之后用"重算 CRC"修正校验和。</div>
         </div>
 
         <div class="panel-title ops-title">变更与写入</div>
