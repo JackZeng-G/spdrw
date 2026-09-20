@@ -72,15 +72,22 @@ var useEnumBackends = func() ([]smbus.Transport, error) {
 	return smbus.DiscoverBackends()
 }
 
+// AutoConnectResult 自动连接结果(前端展示)。
+// 注意: Wails v2 绑定方法只支持 1-2 个返回值, 多返回值会静默返回 null,
+// 因此必须打包成单个结构体。
+type AutoConnectResult struct {
+	CtlIndex int        `json:"ctlIndex"`
+	Dimms    []DimmInfo `json:"dimms"`
+}
+
 // AutoConnectAll 依次尝试各控制器, 停在第一个扫到设备的上(前端启动自动连接)。
-// 返回 (控制器索引, 扫到的设备列表); 都没有设备时返回最后尝试的与空表。
-func (a *App) AutoConnectAll() (int, []DimmInfo, error) {
+// 都没有设备时返回最后尝试的控制器与空表。
+func (a *App) AutoConnectAll() (*AutoConnectResult, error) {
+	res := &AutoConnectResult{CtlIndex: -1, Dimms: []DimmInfo{}}
 	ctls, err := a.ListControllers()
 	if err != nil {
-		return -1, nil, err
+		return nil, err
 	}
-	var best []DimmInfo
-	bestIdx := -1
 	for i := range ctls {
 		if err := a.Connect(i); err != nil {
 			continue
@@ -90,13 +97,14 @@ func (a *App) AutoConnectAll() (int, []DimmInfo, error) {
 			continue
 		}
 		if len(dimms) > 0 {
-			return i, dimms, nil
+			res.CtlIndex, res.Dimms = i, dimms
+			return res, nil
 		}
-		if bestIdx < 0 {
-			bestIdx, best = i, dimms
+		if res.CtlIndex < 0 {
+			res.CtlIndex, res.Dimms = i, dimms
 		}
 	}
-	return bestIdx, best, nil
+	return res, nil
 }
 
 // ListControllers 枚举本机 SMBus 控制器(并缓存)。

@@ -75,8 +75,9 @@ async function checkEnv() {
 
 async function autoConnectAll() {
   try {
-    const [idx, dimms] = await call("AutoConnectAll") || [-1, []];
-    const list = dimms || [];
+    const r = await call("AutoConnectAll");
+    const idx = (r && r.ctlIndex) || -1;
+    const list = (r && r.dimms) || [];
     if (idx >= 0) {
       $("ctl-select").value = String(idx);
     }
