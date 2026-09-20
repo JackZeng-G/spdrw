@@ -192,10 +192,13 @@ func TestWriteFromFileFlow(t *testing.T) {
 		t.Fatalf("VerifyFile: %v", err)
 	}
 
-	// 保护状态可查询
-	blocks, _, _, err := a.WPStatus()
-	if err != nil || len(blocks) != 4 {
-		t.Fatalf("WPStatus: %v %v", blocks, err)
+	// 保护状态可查询(单结构体返回, 修掉旧 4 返回值被 Wails 序列化成 null)
+	st, err := a.WPStatus()
+	if err != nil || st.Blocks != 4 || st.BlockSize != 128 {
+		t.Fatalf("WPStatus: %v %+v", err, st)
+	}
+	if st.PSWPApplicable {
+		t.Fatalf("DDR4(EE1004)无 PWPB 设备类型, 不应适用 PSWP 探测: %+v", st)
 	}
 }
 
@@ -209,7 +212,7 @@ func TestWPSetClear(t *testing.T) {
 	_ = a.Connect(0)
 	_ = a.Select(0x50)
 
-	if err := a.WPSet([]byte{2}); err != nil {
+	if err := a.WPSet([]int{2}); err != nil {
 		t.Fatalf("WPSet: %v", err)
 	}
 	// DDR4 RSWPSet(2) 应发出 SWP2 quick 命令(写 0x35)与 CWP(0x33)
@@ -225,14 +228,17 @@ func TestWPSetClear(t *testing.T) {
 	// 保护状态由芯片侧 NACK 模拟: 页0 内 cmd>=128 NACK → 块1(0x80)与块3(页1 cmd 0x80)只读;
 	// 块2 位于页1 cmd 0,不受影响 —— 验证状态检测确实按块区分。
 	f.ProtectedFrom = 128
-	blocks, _, _, err := a.WPStatus()
+	st, err := a.WPStatus()
 	if err != nil {
 		t.Fatalf("WPStatus: %v", err)
 	}
 	want := []bool{false, true, false, true}
 	for i, w := range want {
-		if blocks[i] != w {
-			t.Fatalf("blocks = %v, want %v", blocks, want)
+		if st.Protected[i] != w {
+			t.Fatalf("blocks = %v, want %v", st.Protected, want)
+		}
+		if !st.Known[i] {
+			t.Fatalf("块 %d 状态应确知: %v", i, st.Known)
 		}
 	}
 	if err := a.WPClear(); err != nil {

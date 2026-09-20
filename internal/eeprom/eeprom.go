@@ -31,7 +31,9 @@ const (
 	MR11 = 11 // Legacy Mode Device Configuration(页寄存器)
 	MR12 = 12 // NVM 块写保护 [7:0]
 	MR13 = 13 // NVM 块写保护 [15:8]
+	MR29 = 29 // I2C/寄存器写保护相关(原始值诊断, 语义因芯片而异)
 	MR48 = 48 // Device Status(bit2 = offline mode)
+	MR52 = 52 // Device Status 扩展(bit6 = 写受保护块被忽略)
 
 	spd5NVMReg = 0x80 // DDR5 NVM 访问位(offset%128 | 0x80)
 )
@@ -280,30 +282,78 @@ func (d *Device) Verify(dump []byte) error {
 	return nil
 }
 
-// WriteTest 对指定偏移做写保护测试(原版同款: 取反写回再还原)。
-func (d *Device) WriteTest(off uint16) bool {
+// WriteTest 对指定偏移做写保护测试: 写入取反值 → 回读确认 → 还原 → 回读确认还原。
+//
+// 返回 (writable, err):
+//   - writable=false, err=nil: 设备拒绝/忽略该写 → 该块受写保护
+//   - writable=true,  err=nil: 写入成功且已确认还原(内容不变)
+//   - err != nil: 状态无法判定, 且字节值可能已被改写(错误信息会指出偏移与原值)
+//
+// 与原始实现的关键差异: **还原后必须回读确认**, 失败重试 3 次仍不成功则报错。
+// 原实现只写不校验, 还原写失败会永久改掉该字节且无任何提示(静默数据损坏)。
+func (d *Device) WriteTest(off uint16) (bool, error) {
 	b, err := d.Read(off, 1)
 	if err != nil {
-		return false
+		return false, fmt.Errorf("写测试读取 %#x: %w", off, err)
 	}
 	orig := b[0]
-	if err := d.WriteByteAt(off, orig^0xFF); err != nil {
-		return false
+	flipped := orig ^ 0xFF
+
+	if err := d.WriteByteAt(off, flipped); err != nil {
+		if isNACK(err) {
+			return false, nil // 设备拒绝写入 → 受保护
+		}
+		return false, fmt.Errorf("写测试写入 %#x: %w", off, err)
 	}
-	if err := d.WriteByteAt(off, orig); err != nil {
-		return false
+
+	// 确认写是否真的生效: 有的 HUB/颗粒会静默忽略受保护块的写(不 NACK)。
+	back, err := d.Read(off, 1)
+	if err != nil {
+		return false, fmt.Errorf("写测试回读 %#x: %w", off, err)
 	}
-	return true
+	if back[0] != flipped {
+		if back[0] == orig {
+			return false, nil // 写被忽略 → 受保护(内容未变, 无需还原)
+		}
+		// 出现了既非原值也非目标值的异常值: 尽力还原后再报错
+		_, rerr := d.restoreByte(off, orig)
+		return false, fmt.Errorf("写测试回读异常 @ %#x: 原 %#x 写 %#x 读 %#x(还原错误: %v)",
+			off, orig, flipped, back[0], rerr)
+	}
+
+	if ok, rerr := d.restoreByte(off, orig); !ok {
+		return false, fmt.Errorf("写测试还原失败 @ %#x(原值 %#x): %w; 该字节可能已被改写, 请立即用备份恢复",
+			off, orig, rerr)
+	}
+	return true, nil
 }
 
-// RSWPStatus 返回各块的可逆写保护状态。
+// restoreByte 把 off 处的值写回 want 并回读确认, 最多重试 3 次。
+func (d *Device) restoreByte(off uint16, want byte) (bool, error) {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if attempt > 0 {
+			time.Sleep(5 * time.Millisecond)
+		}
+		if lastErr = d.WriteByteAt(off, want); lastErr != nil {
+			continue
+		}
+		cur, err := d.Read(off, 1)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if cur[0] == want {
+			return true, nil
+		}
+		lastErr = fmt.Errorf("还原后回读仍为 %#x(期望 %#x)", cur[0], want)
+	}
+	return false, lastErr
+}
+
+// RSWPStatus 返回各块的可逆写保护状态(保守语义: 无法判定的块按"受保护"处理)。
 // DDR5: 16 块(MR12/MR13 位图); DDR4: 4 块; 更早: 1 块。
 func (d *Device) RSWPStatus() ([]bool, error) {
-	blocks, err := d.blockCount()
-	if err != nil {
-		return nil, err
-	}
-	result := make([]bool, blocks)
 	if d.ddr5 {
 		mr12, err := d.t.ReadByteData(d.addr, MR12)
 		if err != nil {
@@ -313,18 +363,26 @@ func (d *Device) RSWPStatus() ([]bool, error) {
 		if err != nil {
 			return nil, fmt.Errorf("读 MR13: %w", err)
 		}
+		result := make([]bool, 16)
 		for i := 0; i < 8; i++ {
 			result[i] = mr12&(1<<i) != 0
 			result[i+8] = mr13&(1<<i) != 0
 		}
 		return result, nil
 	}
+	blocks, err := d.blockCount()
+	if err != nil {
+		return nil, err
+	}
+	result := make([]bool, blocks)
 	for b := 0; b < blocks; b++ {
-		result[b] = !d.WriteTest(uint16(b * 128))
+		writable, err := d.WriteTest(uint16(b * d.blockSize()))
+		result[b] = err != nil || !writable // 状态未知按受保护处理, 保证写入前检查保守
 	}
 	return result, nil
 }
 
+// blockCount 返回可保护块数。
 func (d *Device) blockCount() (int, error) {
 	switch {
 	case d.ddr5:
@@ -335,6 +393,131 @@ func (d *Device) blockCount() (int, error) {
 		return 1, nil
 	default:
 		return 0, fmt.Errorf("SPD 大小 %d 不支持写保护操作", d.size)
+	}
+}
+
+// blockSize 返回每块字节数: DDR5 按 64B 块(MR12/MR13 位图共 16 块 = 1024B);
+// DDR4/更早按 128B 块(EE1004 SWP 语义)。
+func (d *Device) blockSize() int {
+	if d.ddr5 {
+		return 64
+	}
+	return 128
+}
+
+// WPStatusDetail 是写保护状态的完整快照(RSWP 位图 + 原始寄存器 + 永久保护/离线)。
+//
+// 设计要点(修掉旧实现的假阳性):
+//   - DDR5 不存在 EE1004 的 PSWP 设备类型(0110b), 旧实现去读 0x30|SA 必然 NACK,
+//     于是把每根 DDR5 都误报成"PSWP 永久保护已生效"。现在 DDR5 直接标 PSWPApplicable=false。
+//   - 只有 DDR2/DDR3 世代(256B SPD)才用 PWPB(0x30|SA)探测永久保护:
+//     器件一旦被永久保护就不再应答 0110b 设备类型([AT34C02D 手册 7.5.1](https://onlinedocs.microchip.com/oxy/GUID-CBD9956C-D3D9-444B-A2AE-BA0049287CAB-en-US-2/GUID-8DF2B692-DDB1-476B-8550-34CD1F325B20.html))。
+//   - DDR4/更早的 RSWP 状态无寄存器可读, 只能用写测试; 写测试失败/无法判定时
+//     该块标 Known=false, 绝不谎报状态。
+type WPStatusDetail struct {
+	DDR5           bool     `json:"ddr5"`
+	Blocks         int      `json:"blocks"`
+	BlockSize      int      `json:"blockSize"`
+	Protected      []bool   `json:"protected"` // RSWP 位图(未知按受保护处理)
+	Known          []bool   `json:"known"`     // 每块状态是否确知
+	MR11           byte     `json:"mr11"`
+	MR12           byte     `json:"mr12"`
+	MR13           byte     `json:"mr13"`
+	MR29           byte     `json:"mr29"`
+	MR48           byte     `json:"mr48"`
+	MR52           byte     `json:"mr52"`
+	ProtectionHit  bool     `json:"protectionHit"` // MR52[6]: 近期有写受保护块被忽略
+	Offline        bool     `json:"offline"`       // DDR5 MR48[2]
+	PSWPApplicable bool     `json:"pswpApplicable"`
+	PSWP           bool     `json:"pswp"`
+	RegsPresent    bool     `json:"regsPresent"`
+	Warnings       []string `json:"warnings"`
+}
+
+// WPStatusDetail 读取完整写保护状态。只读操作(DDR4 的写测试会写入 1 字节再还原)。
+func (d *Device) WPStatusDetail() (WPStatusDetail, error) {
+	det := WPStatusDetail{DDR5: d.ddr5}
+	blocks, err := d.blockCount()
+	if err != nil {
+		return det, err
+	}
+	det.Blocks, det.BlockSize = blocks, d.blockSize()
+	det.Protected = make([]bool, blocks)
+	det.Known = make([]bool, blocks)
+
+	if d.ddr5 {
+		mr11, e11 := d.t.ReadByteData(d.addr, MR11)
+		mr12, e12 := d.t.ReadByteData(d.addr, MR12)
+		mr13, e13 := d.t.ReadByteData(d.addr, MR13)
+		if e12 != nil || e13 != nil {
+			return det, fmt.Errorf("读 MR12/MR13 失败: %v / %v", e12, e13)
+		}
+		det.MR11, det.MR12, det.MR13 = mr11, mr12, mr13
+		det.RegsPresent = e11 == nil
+		for i := 0; i < 8; i++ {
+			det.Protected[i] = mr12&(1<<i) != 0
+			det.Protected[i+8] = mr13&(1<<i) != 0
+			det.Known[i], det.Known[i+8] = true, true
+		}
+		if b, err := d.t.ReadByteData(d.addr, MR48); err == nil {
+			det.MR48 = b
+			det.Offline = b&0x04 != 0
+		}
+		if b, err := d.t.ReadByteData(d.addr, MR29); err == nil {
+			det.MR29 = b
+		}
+		if b, err := d.t.ReadByteData(d.addr, MR52); err == nil {
+			det.MR52 = b
+			det.ProtectionHit = b&0x40 != 0
+		}
+		if mr12 != 0 || mr13 != 0 {
+			det.Warnings = append(det.Warnings,
+				"MR12/MR13 已置位: 按 JEDEC SPD5118 正常运行时不可清零, 需进入离线模式(MR48 bit2)或断电后由主板解除")
+		}
+		if det.ProtectionHit {
+			det.Warnings = append(det.Warnings, "MR52[6]=1: 检测到对受保护块的写被忽略")
+		}
+		return det, nil
+	}
+
+	// DDR4 及更早: 无状态寄存器, 逐块写测试(写入 1 字节后还原)
+	for b := 0; b < blocks; b++ {
+		writable, err := d.WriteTest(uint16(b * det.BlockSize))
+		if err != nil {
+			det.Known[b] = false
+			det.Protected[b] = true
+			det.Warnings = append(det.Warnings, fmt.Sprintf("块 %d(0x%03X)状态未知: %v", b, b*det.BlockSize, err))
+			continue
+		}
+		det.Known[b] = true
+		det.Protected[b] = !writable
+	}
+	det.Warnings = append(det.Warnings,
+		fmt.Sprintf("%s 无写保护状态寄存器: 状态由块首写测试得出(每块写入取反值再还原)", d.Generation()))
+
+	det.PSWPApplicable = d.PSWPApplicable()
+	if det.PSWPApplicable {
+		pswp, err := d.PSWPStatus()
+		if err != nil {
+			det.Warnings = append(det.Warnings, fmt.Sprintf("PSWP 探测失败: %v", err))
+		} else {
+			det.PSWP = pswp
+		}
+	}
+	return det, nil
+}
+
+// Generation 返回展示用的世代名。
+func (d *Device) Generation() string {
+	switch {
+	case d.ddr5:
+		return "DDR5"
+	case d.size == 512:
+		return "DDR4"
+	case d.size == 256:
+		return "DDR2/DDR3"
+	default:
+		return "未知世代"
 	}
 }
 
@@ -386,9 +569,18 @@ func (d *Device) RSWPClear() error {
 	return d.t.Quick(cwp, true)
 }
 
-// PSWPStatus 检测永久写保护状态(BYTE 协议读 0x30|(addr&7))。
-// true = 已永久保护(设备 NACK)。与原版 SMBus 路径行为一致。
+// PSWPApplicable 报告该世代是否存在可用 SMBus 探测的永久写保护设备类型。
+// 只有 DDR2/DDR3 一代(256B SPD, AT34C02 类器件)定义了 PWPB(0110b)设备类型;
+// DDR4(EE1004)与 DDR5(SPD5118)没有它 —— 对它们探测必然 NACK, 会把"无设备"
+// 误判成"已永久保护", 所以必须直接判为不适用。
+func (d *Device) PSWPApplicable() bool { return !d.ddr5 && d.size == 256 }
+
+// PSWPStatus 检测永久写保护状态: BYTE_DATA 读 0x30|(addr&7)(PWPB 设备类型 0110b)。
+// 器件被永久保护后不再应答该设备类型(NACK)→ true。仅 DDR2/DDR3 适用。
 func (d *Device) PSWPStatus() (bool, error) {
+	if !d.PSWPApplicable() {
+		return false, fmt.Errorf("%s 不支持 PSWP 探测(仅 DDR2/DDR3 定义 PWPB 设备类型)", d.Generation())
+	}
 	_, err := d.t.ReadByteData(pswpID|(d.addr&7), 0)
 	if err == nil {
 		return false, nil

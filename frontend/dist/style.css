@@ -123,6 +123,11 @@ table.timing th { background: var(--bg3); color: var(--muted); text-align: left;
 }
 .wp-blocks .blk.on { color: var(--danger); border-color: #5a3234; }
 .wp-blocks .blk.off { color: var(--ok); }
+.wp-blocks .blk.unknown { color: var(--warn, #ffd479); border-color: #5a4a24; }
+.wp-summary { padding: 6px 12px 0; font-size: 11px; line-height: 1.7; color: var(--muted); }
+.wp-summary .danger { color: var(--danger); }
+.wp-summary .warn { color: #ffd479; }
+.wp-summary code { color: #cfd6e6; }
 
 /* 日志 */
 #log-panel { height: 130px; display: flex; flex-direction: column; border-top: 1px solid var(--border); }

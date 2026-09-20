@@ -305,11 +305,14 @@ func TestRSWP(t *testing.T) {
 }
 
 func TestPSWPStatus(t *testing.T) {
-	// PSWP 检测: BYTE 无数据读 0x30|(addr&7)。
-	// 未保护: 设备 ACK → false; 已永久保护: NACK → true。
+	// PSWP 探测: BYTE_DATA 读 0x30|(addr&7)(PWPB 设备类型 0110b)。
+	// 未保护: 设备 ACK → false; 已永久保护: NACK → true。仅 DDR2/DDR3 适用。
 	ft := smbus.NewFake()
-	ft.EEProm[2] = 0x0C
+	ft.EEProm[2] = 0x0B // DDR3(256B, 适用 PWPB)
 	d, _ := New(ft, 0x50)
+	if !d.PSWPApplicable() {
+		t.Fatal("DDR3 应适用 PSWP 探测")
+	}
 	pswp, err := d.PSWPStatus()
 	if err != nil || pswp {
 		t.Fatalf("未保护: %v %v", pswp, err)
@@ -322,6 +325,133 @@ func TestPSWPStatus(t *testing.T) {
 	}
 	if !pswp {
 		t.Fatal("NACK 应判为已永久保护")
+	}
+}
+
+func TestPSWPNotApplicableDDR4DDR5(t *testing.T) {
+	// DDR4(EE1004)与 DDR5(SPD5118)没有 PWPB 设备类型: 对其探测必然 NACK,
+	// 旧实现因此把每根条都误报成"PSWP 永久保护已生效"。必须直接判为不适用。
+	d4, _ := newDDR4(t)
+	if d4.PSWPApplicable() {
+		t.Fatal("DDR4 不应适用 PSWP")
+	}
+	if _, err := d4.PSWPStatus(); err == nil {
+		t.Fatal("DDR4 调用 PSWPStatus 应报不适用")
+	}
+	d5, _ := newDDR5(t)
+	if d5.PSWPApplicable() {
+		t.Fatal("DDR5 不应适用 PSWP")
+	}
+	if _, err := d5.PSWPStatus(); err == nil {
+		t.Fatal("DDR5 调用 PSWPStatus 应报不适用")
+	}
+
+	// DDR5 状态下不得探测 0x30(真实硬件上是空地址 → 假阳性来源)
+	rec, recFake := smbus.NewRecordingFake()
+	recFake.SetDDR5(true)
+	recFake.Fill(0x51)
+	d5r, err := New(rec, 0x50)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	det, err := d5r.WPStatusDetail()
+	if err != nil {
+		t.Fatalf("WPStatusDetail: %v", err)
+	}
+	if det.PSWPApplicable || det.PSWP {
+		t.Fatalf("DDR5 不应有 PSWP 结论: %+v", det)
+	}
+	for _, op := range rec.Ops() {
+		if op.Addr == 0x30 {
+			t.Fatalf("DDR5 不应在 0x30 探测: %s", rec)
+		}
+	}
+	if det.Blocks != 16 || det.BlockSize != 64 {
+		t.Fatalf("DDR5 应为 16 块 × 64B: %+v", det)
+	}
+}
+
+func TestWPStatusDetailDDR5MRs(t *testing.T) {
+	d5, ft := newDDR5(t)
+	ft.MR[MR12] = 0x0A // 块 1、3 受保护
+	ft.MR[MR13] = 0x80 // 块 15 受保护
+	ft.MR[MR48] = 0x04 // 离线模式
+	ft.MR[MR52] = 0x40 // 写受保护块被忽略
+	det, err := d5.WPStatusDetail()
+	if err != nil {
+		t.Fatalf("WPStatusDetail: %v", err)
+	}
+	want := map[int]bool{1: true, 3: true, 15: true}
+	for i := 0; i < 16; i++ {
+		if det.Protected[i] != want[i] {
+			t.Fatalf("块 %d = %v, want %v(%+v)", i, det.Protected[i], want[i], det.Protected)
+		}
+		if !det.Known[i] {
+			t.Fatalf("DDR5 位图状态应确知: %+v", det.Known)
+		}
+	}
+	if det.MR12 != 0x0A || det.MR13 != 0x80 || det.MR48 != 0x04 || det.MR52 != 0x40 {
+		t.Fatalf("MR 原始值: %+v", det)
+	}
+	if !det.Offline || !det.ProtectionHit {
+		t.Fatalf("offline/protectionHit: %+v", det)
+	}
+	if len(det.Warnings) == 0 {
+		t.Fatal("MR12/MR13 置位应有不可清零提示")
+	}
+}
+
+func TestWPStatusDetailDDR4WriteTest(t *testing.T) {
+	// 未保护: 全部开放且状态确知, 且写测试必须把值还原
+	d4, ft := newDDR4(t)
+	ft.Fill(0x11)
+	det, err := d4.WPStatusDetail()
+	if err != nil {
+		t.Fatalf("WPStatusDetail: %v", err)
+	}
+	if det.Blocks != 4 || det.BlockSize != 128 {
+		t.Fatalf("DDR4 应为 4 块 × 128B: %+v", det)
+	}
+	for i := 0; i < 4; i++ {
+		if det.Protected[i] || !det.Known[i] {
+			t.Fatalf("块 %d 应开放且确知: %+v", i, det)
+		}
+	}
+	cur, _ := d4.ReadAll()
+	for i, b := range cur {
+		if b != 0x11 {
+			t.Fatalf("写测试未还原 @%#x = %#x", i, b)
+		}
+	}
+}
+
+func TestWPStatusDetailUnknownStateOnRestoreFailure(t *testing.T) {
+	// 还原失败必须报"状态未知"而不是假装受保护, 也绝不能静默把字节改掉。
+	rec, ft := smbus.NewRecordingFake()
+	ft.EEProm[2] = 0x0C // DDR4
+	ft.Fill(0x11)
+	// 第 1 次写(取反)成功; 第 2 次起全部失败 → 还原失败
+	rec.FailWriteFrom = 2
+	d, err := New(rec, 0x50)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	det, err := d.WPStatusDetail()
+	if err != nil {
+		t.Fatalf("WPStatusDetail 应返回结果+警告, got err=%v", err)
+	}
+	if det.Known[0] {
+		t.Fatal("还原失败时块 0 状态应为未知")
+	}
+	if !det.Protected[0] {
+		t.Fatal("状态未知时必须保守地按受保护处理")
+	}
+	joined := strings.Join(det.Warnings, "; ")
+	if !strings.Contains(joined, "状态未知") {
+		t.Fatalf("应给出状态未知警告: %v", det.Warnings)
+	}
+	if !strings.Contains(joined, "还原") {
+		t.Fatalf("应指出还原失败: %v", det.Warnings)
 	}
 }
 
