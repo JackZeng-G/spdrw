@@ -25,10 +25,11 @@
 - **解析**:
   - DDR4/LPDDR3/4/4X: 模块类型、密度/ banks /行列、组织、位宽、容量、全部主时序(中+细粒度)、CAS 掩码、双段 CRC(含修复)、厂商/日期/序列号/部件号、**XMP 2.0 双 Profile**(时序换算+电压)
   - DDR5/LPDDR5(X): 密度/组织/通道/位宽/容量、身份区、**完整 JEDEC 时序**(byte 20-102, ps/ns + lower limit)、CRC(**基础段 + XMP 3.0 header/各槽 + EXPO**)、按规范修正的 XMP 3.0 槽位(0x2C0..0x3C0)
-  - DDR3: 容量/组织/部件号/厂商/日期/序列号/校验(DDR2 按 JEDEC 修正了总线与芯片位宽偏移)
+  - DDR3: 容量/组织/部件号/厂商/日期/序列号/校验
+  - **不支持 DDR2**(太老, 也找不到任何真实 dump 用于验证; 2026-09-21 起移除, byte2=0x08-0x0A 按"未知类型"拒绝解析与写入)
 - **SPD 编辑器**(内存中编辑, 不落盘不写设备):
   - 常用信息: 厂商(JEP106 反查/搜索)、厂商码、生产地点、日期、序列号、部件号、修订码、DRAM 厂商/stepping
-  - JEDEC 时序: DDR4 medium+fine、DDR5 16bit(ps/ns, 含 lower limit)、DDR3 MTB/FTB、DDR2 BCD(含扩展码)
+  - JEDEC 时序: DDR4 medium+fine、DDR5 16bit(ps/ns, 含 lower limit)、DDR3 MTB/FTB
   - 扩展信息: **XMP 2.0**(DDR4, 2×63B)、**XMP 3.0**(DDR5, header + 5 槽)、**EXPO**(DDR5, 与 XMP 槽 3/User1 互斥) —— 可创建/修改/清除, CRC 自动重算
   - hex 视图内点格子就地编辑任意字节(带列头 00-0F); **实时校验状态**与**重算 CRC**都在标题行;
     界面说明收进"?"问号里, 点一下才展开
@@ -51,7 +52,7 @@
 - **写保护**:
   - RSWP 状态检测: DDR5 读 MR12/MR13 位图(16×64B)、DDR4 及更早块首写测试(4×128B, **还原后回读确认**, 失败重试并报"状态未知", 绝不谎报)
   - RSWP 设置(按块)/清除; DDR5 附 MR11/MR29/MR48/MR52 原始值与"写受保护块被忽略"标志
-  - PSWP: 仅 DDR2/DDR3 可经 PWPB(0110b)探测; DDR4/DDR5 无该设备类型, 明确显示"不适用"(旧版会误报"永久保护已生效")
+  - PSWP: 仅 DDR3 可经 PWPB(0110b)探测; DDR4/DDR5 无该设备类型, 明确显示"不适用"(旧版会误报"永久保护已生效")
   - 显示 BIOS "SPD write disable" 状态 (I801)
 
 ## 构建
@@ -138,7 +139,7 @@ build/icon           图标源(go run ./tools/makeicon 生成: png/ico/各尺寸
 build/winres         Windows 资源配置(图标 + 版本信息 + 版权) → rsrc_windows_amd64.syso
 tools/makeicon       纯标准库图标生成器(4 倍超采样; 16/24 用简化版)
 internal/app         GUI 服务层: 连接/扫描/读写/保护/解析编排
-internal/spd         SPD 解析: DDR4 全量 / DDR5 / DDR2-3 基本信息 + JEP106 厂商表
+internal/spd         SPD 解析: DDR4 全量 / DDR5 / DDR3 基本信息 + JEP106 厂商表
 internal/eeprom      设备语义: 分页(EE1004 quick / DDR5 MR11)、RSWP/PSWP、增量写+校验
 internal/smbus       Transport 接口 + PawnIO 后端(i801/PIIX4×2/SKX×2) + 内存 Fake(测试)
 internal/assets      内嵌 PawnIO 模块(SmbusI801/SmbusPIIX4/SmbusIntelSkylakeIMC .bin)与 PawnIOLib.dll

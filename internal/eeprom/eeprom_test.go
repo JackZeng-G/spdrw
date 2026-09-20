@@ -499,7 +499,7 @@ func TestRSWP(t *testing.T) {
 
 func TestPSWPStatus(t *testing.T) {
 	// PSWP 探测: BYTE_DATA 读 0x30|(addr&7)(PWPB 设备类型 0110b)。
-	// 未保护: 设备 ACK → false; 已永久保护: NACK → true。仅 DDR2/DDR3 适用。
+	// 未保护: 设备 ACK → false; 已永久保护: NACK → true。仅 DDR3 适用。
 	ft := smbus.NewFake()
 	ft.EEProm[2] = 0x0B // DDR3(256B, 适用 PWPB)
 	d, _ := New(ft, 0x50)
@@ -870,7 +870,7 @@ func ddr4FixtureForTest() []byte {
 	return d
 }
 
-// 256 字节(DDR2/DDR3/SDRAM)是单页器件: 首次访问绝不能写 SPA 地址 0x36 ——
+// 256 字节(DDR3/SDRAM)是单页器件: 首次访问绝不能写 SPA 地址 0x36 ——
 // 0x36 属于 SWP/PSWP 的设备类型地址空间, 真实主板上通常无人应答(读整片直接失败),
 // 应答的那一根(SA=6 → 0x56)还可能被误写 PSWP。审计发现的阻断项。
 func TestSinglePageDeviceNeverPageSwitches(t *testing.T) {

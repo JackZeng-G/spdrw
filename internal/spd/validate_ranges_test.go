@@ -108,7 +108,6 @@ func TestUnprotectedIdentityAreas(t *testing.T) {
 		{"DDR5", makeDDR5(t), []string{"序列号", "生产日期", "部件号", "厂商"}, nil},
 		{"DDR4", makeDDR4(t), []string{"序列号", "生产日期", "部件号", "厂商"}, nil},
 		{"DDR3", makeDDR3(t), []string{"部件号", "修订版本"}, []string{"序列号", "生产日期", "厂商"}},
-		{"DDR2", makeDDR2(t), []string{"序列号", "生产日期", "部件号", "厂商"}, nil},
 	}
 	for _, c := range cases {
 		rt, _, err := Identify(c.dump)
@@ -184,13 +183,6 @@ func TestCRCRangesLayout(t *testing.T) {
 		t.Error("DDR3 部件号(0x80+)不在覆盖范围内")
 	}
 
-	d2 := CRCRanges(makeDDR2(t))
-	if len(d2) != 1 || !d2[0].Checksum || d2[0].End != 63 || d2[0].CRCOff != 63 || d2[0].CRCLen != 1 {
-		t.Fatalf("DDR2 应为 0-62 的 8 位校验和(值在 63): %+v", d2)
-	}
-	if AffectsChecksum(d2, 64) {
-		t.Error("DDR2 身份区(0x40+)不参与校验和")
-	}
 }
 
 // CRCOffsets(写/修复用, "槽内有数据"判据)必须**覆盖** CRCBytes(校验器判据):

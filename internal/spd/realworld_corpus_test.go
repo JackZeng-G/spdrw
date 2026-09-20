@@ -41,8 +41,6 @@ func TestRealDumpCorpus(t *testing.T) {
 		}
 		want := ""
 		switch {
-		case strings.HasPrefix(name, "ddr2"):
-			want = "DDR2"
 		case strings.HasPrefix(name, "ddr3"):
 			want = "DDR3"
 		case strings.HasPrefix(name, "ddr4"):
@@ -179,11 +177,8 @@ func TestRealDumpCRCFixRepairsBadSamples(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		rt, size, err := Identify(dump)
+		size, err := func() (int, error) { _, n, e := Identify(dump); return n, e }()
 		if err != nil || len(dump) != size {
-			continue
-		}
-		if rt == DDR2 || rt == DDR2FBDIMM || rt == DDR2FBDIMMP {
 			continue
 		}
 		if ok, _ := CRCOK(dump); ok {

@@ -28,7 +28,7 @@ const (
 	//
 	// 注意: 它和 swpCmds[3] 的数值都是 0x30, 但语义完全不同 —— 这里是**地址**
 	// (PSWP 器件不再应答这个地址), 那边是 DDR4 SWP3 的**命令**。当前靠
-	// PSWPApplicable() 只在 256B(DDR2/DDR3)器件上探测才没串味, 改名以免误读。
+	// PSWPApplicable() 只在 256B(DDR3)器件上探测才没串味, 改名以免误读。
 	pswpProbeAddr = 0x30
 )
 
@@ -57,7 +57,7 @@ type Device struct {
 	addr      byte
 	ddr5      bool
 	size      int
-	ramType   byte // SPD byte2(DDR2=0x08/0x09/0x0A, DDR3=0x0B, DDR4=0x0C...)
+	ramType   byte // SPD byte2(DDR3=0x0B, DDR4=0x0C, DDR5=0x12...; DDR2=0x08-0x0A 已不支持, 按 Unknown)
 	typeKnown bool // byte2 是否落在已知器件类型里(未知 → 拒绝写入)
 	page      int  // 当前页(DDR4: 0-1; DDR5: 0-7)
 	pageKnown bool // false = 未知(HUB 的 MR11 可能有 BIOS 残留值), 首次切页前须回读
@@ -135,7 +135,7 @@ func New(t smbus.Transport, addr byte) (*Device, error) {
 	// 告诉传输层世代: DDR5 的 MR 寄存器写不需要 25ms 写周期(整片读取要切 7~8 次页)
 	smbus.SetTransportDDR5(t, ddr5)
 
-	// 单页器件(256B: DDR2/DDR3/SDRAM)没有页可切: 直接把页状态标记为已知,
+	// 单页器件(256B: DDR3/SDRAM)没有页可切: 直接把页状态标记为已知,
 	// 否则首次访问会去写 SPA 地址 0x36 —— 那是 SWP/PSWP 的设备类型地址空间,
 	// 在真实主板上 0x36 通常无人应答 → 读整片直接 NACK 失败(DDR3 读不了),
 	// 应答的那一根(SA=6, 即 0x56)则可能被误写 PSWP。审计发现的阻断项。
@@ -156,7 +156,7 @@ func sizeByRAMType(ramType byte) int {
 		return 512
 	case 0x12, 0x13, 0x14, 0x15: // DDR5, LPDDR5, DDR5 NVDIMM-P, LPDDR5X
 		return 1024
-	default: // SDRAM/DDR/DDR2/DDR3 及未知
+	default: // SDRAM/DDR/DDR3 及未知(DDR2 已移除支持)
 		return 256
 	}
 }
@@ -174,7 +174,7 @@ func (d *Device) IsDDR5() bool { return d.ddr5 }
 //
 // DDR5 系由探测得出(器件类型字节在 MR 区, 读不到), 其余按 byte2 映射。
 // 写入前必须用它和待写内容的世代对照: 长度相同的世代不止一个(256/512/1024 各有多个),
-// 光比长度会把 DDR3 的镜像写进 DDR2 条里。
+// 光比长度会把同一长度的其他世代镜像写进去。
 func (d *Device) RAMType() spd.RAMType {
 	if d.ddr5 {
 		return spd.DDR5
@@ -668,12 +668,8 @@ func (d *Device) CRCOffsets(dump []byte) []int {
 	}
 	switch d.size {
 	case 256:
-		// DDR2 是 8 位和校验(byte63 = sum(0..62)); DDR3 是 CRC16(126/127)
-		if isDDR2Type(d.ramType) {
-			out = append(out, 63)
-		} else {
-			out = append(out, 126, 127)
-		}
+		// DDR3 是 CRC16(126/127); DDR2 的 8 位和校验已随 DDR2 支持一起移除
+		out = append(out, 126, 127)
 	case 512:
 		out = append(out, 126, 127, 254, 255)
 	default: // DDR5 1024
@@ -1091,7 +1087,7 @@ func (d *Device) blockSize() int {
 // 设计要点(修掉旧实现的假阳性):
 //   - DDR5 不存在 EE1004 的 PSWP 设备类型(0110b), 旧实现去读 0x30|SA 必然 NACK,
 //     于是把每根 DDR5 都误报成"PSWP 永久保护已生效"。现在 DDR5 直接标 PSWPApplicable=false。
-//   - 只有 DDR2/DDR3 世代(256B SPD)才用 PWPB(0x30|SA)探测永久保护:
+//   - 只有 DDR3 世代(256B SPD)才用 PWPB(0x30|SA)探测永久保护:
 //     器件一旦被永久保护就不再应答 0110b 设备类型([AT34C02D 手册 7.5.1](https://onlinedocs.microchip.com/oxy/GUID-CBD9956C-D3D9-444B-A2AE-BA0049287CAB-en-US-2/GUID-8DF2B692-DDB1-476B-8550-34CD1F325B20.html))。
 //   - DDR4/更早的 RSWP 状态无寄存器可读, 只能用写测试; 写测试失败/无法判定时
 //     该块标 Known=false, 绝不谎报状态。
@@ -1205,7 +1201,10 @@ func (d *Device) Generation() string {
 	case d.size == 512:
 		return "DDR4"
 	case d.size == 256:
-		return "DDR2/DDR3"
+		if spd.RAMTypeFromByte(d.ramType) == spd.DDR3 {
+			return "DDR3"
+		}
+		return "未知世代"
 	default:
 		return "未知世代"
 	}
@@ -1268,16 +1267,16 @@ func (d *Device) RSWPClear() error {
 }
 
 // PSWPApplicable 报告该世代是否存在可用 SMBus 探测的永久写保护设备类型。
-// 只有 DDR2/DDR3 一代(256B SPD, AT34C02 类器件)定义了 PWPB(0110b)设备类型;
+// 只有 DDR3 一代(256B SPD, AT34C02 类器件)定义了 PWPB(0110b)设备类型;
 // DDR4(EE1004)与 DDR5(SPD5118)没有它 —— 对它们探测必然 NACK, 会把"无设备"
 // 误判成"已永久保护", 所以必须直接判为不适用。
 func (d *Device) PSWPApplicable() bool { return !d.ddr5 && d.size == 256 }
 
 // PSWPStatus 检测永久写保护状态: BYTE_DATA 读 0x30|(addr&7)(PWPB 设备类型 0110b)。
-// 器件被永久保护后不再应答该设备类型(NACK)→ true。仅 DDR2/DDR3 适用。
+// 器件被永久保护后不再应答该设备类型(NACK)→ true。仅 DDR3 适用。
 func (d *Device) PSWPStatus() (bool, error) {
 	if !d.PSWPApplicable() {
-		return false, fmt.Errorf("%s 不支持 PSWP 探测(仅 DDR2/DDR3 定义 PWPB 设备类型)", d.Generation())
+		return false, fmt.Errorf("%s 不支持 PSWP 探测(仅 DDR3 定义 PWPB 设备类型)", d.Generation())
 	}
 	_, err := d.t.ReadByteData(pswpProbeAddr|(d.addr&7), 0)
 	if err == nil {
@@ -1322,9 +1321,4 @@ func contains(s, sub string) bool {
 		}
 		return false
 	})()
-}
-
-// isDDR2Type 判断 SPD byte2 是否 DDR2 系(0x08 DDR2 / 0x09 FB-DIMM / 0x0A FB-DIMM Probe)。
-func isDDR2Type(ramType byte) bool {
-	return ramType == 0x08 || ramType == 0x09 || ramType == 0x0A
 }

@@ -1,7 +1,6 @@
 package spd
 
 import (
-	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -178,75 +177,5 @@ func TestPresentToggleIsNonDestructive(t *testing.T) {
 				break
 			}
 		}
-	}
-}
-
-// DDR2 厂商字段必须"设为当前显示值 = 无操作"(审计 H2 复现过: 显示 1 写成 0x01 会把
-// Micron 变成 AMD), bank>7 必须报错而不是写 8 个 0x7F 假装成功。
-func TestDDR2ManufacturerEditing(t *testing.T) {
-	d := make([]byte, 256)
-	d[2] = 0x08               // DDR2
-	d[64], d[65] = 0x7F, 0x2C // 1 个续延 + 厂商码
-	ed, err := NewEditor(d)
-	if err != nil {
-		t.Fatal(err)
-	}
-	before := append([]byte{}, ed.Bytes()...)
-	vals := map[string]string{}
-	for _, f := range ed.Fields() {
-		vals[f.Key] = f.Value
-	}
-	// 把每个身份字段设成它当前显示的值: 必须逐字节无变化
-	for _, key := range []string{"mfgCont", "mfgCode", "manufacturer", "location", "revision"} {
-		v, ok := vals[key]
-		if !ok || v == "" {
-			continue
-		}
-		if err := ed.SetField(key, v); err != nil {
-			t.Errorf("%s=%q 设为当前值应成功: %v", key, v, err)
-			continue
-		}
-	}
-	for i := range before {
-		if ed.Bytes()[i] != before[i] {
-			t.Errorf("设为当前显示值却改动了 @%#x(%02X→%02X)", i, before[i], ed.Bytes()[i])
-			break
-		}
-	}
-	// bank > 7: 必须报错(以前写 8 个 0x7F 却永远写不进厂商码, 还返回成功)
-	d2 := make([]byte, 256)
-	d2[2] = 0x08
-	ed2, err := NewEditor(d2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ed2.setDDR2Manufacturer(8, 0x2C); err == nil {
-		t.Error("bank=8 应报错(DDR2 只有 0x40-0x47 八个字节)")
-	}
-}
-
-// DDR2 的 tCK 小数码与修订码顺序在解析器/编辑器之间必须一致。
-func TestDDR2ParserEditorAgree(t *testing.T) {
-	d := make([]byte, 256)
-	d[2] = 0x08
-	d[9] = 0x2A // 整数 2 + 小数码 A(0.25)
-	d[91], d[92] = 0x12, 0x34
-	b, err := ParseBasic(d)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if math.Abs(b.TCKminNS-2.25) > 1e-9 {
-		t.Errorf("解析器 tCKmin = %v, 期望 2.25(小数码 A=0.25)", b.TCKminNS)
-	}
-	ed, err := NewEditor(d)
-	if err != nil {
-		t.Fatal(err)
-	}
-	id, err := ed.Identity()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if id.Revision != b.Revision {
-		t.Errorf("修订码两层不一致: 编辑器 %#x vs 解析器 %#x", id.Revision, b.Revision)
 	}
 }

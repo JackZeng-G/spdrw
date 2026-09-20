@@ -102,7 +102,7 @@ func DecodeDump(dump []byte) (*DecodeResult, error) {
 		decodeDDR4(dump, r)
 	case rt == spd.DDR5 || rt == spd.LPDDR5 || rt == spd.LPDDR5X || rt == spd.DDR5NVDIMMP:
 		decodeDDR5(dump, r)
-	case rt == spd.DDR3 || rt == spd.DDR2 || rt == spd.DDR || rt == spd.DDR2FBDIMM:
+	case rt == spd.DDR3 || rt == spd.DDR || rt == spd.SDRAM:
 		b, err := spd.ParseBasic(dump)
 		if err != nil {
 			return nil, err
@@ -124,6 +124,10 @@ func DecodeDump(dump []byte) (*DecodeResult, error) {
 			r.TCK = &TimingView{NS: b.TCKminNS}
 		}
 	default:
+		// DDR2(0x08-0x0A)支持已移除: 给一句明确的话, 而不是"未知(0x0)"这种黑话
+		if len(dump) > 2 && dump[2] >= 0x08 && dump[2] <= 0x0A {
+			return nil, fmt.Errorf("DDR2 已不再支持(dump 的器件类型 %#02x)", dump[2])
+		}
 		return nil, fmt.Errorf("不支持的世代 %v", rt)
 	}
 	return r, nil

@@ -16,9 +16,8 @@ import (
 
 // 写入路径的护栏(写入是唯一会"变砖"的操作, 这里承担全部前置检查):
 //
-//	PickWriteFile → PreflightWrite(diff/风险/保护/CRC 预检) → WriteConfirmed(ack)
-//	                                                    └─ 自动备份当前内容
-//	                                                    └─ 干跑模式零写事务
+//	EditApplyToDevice(界面唯一入口, 编辑器内容) / writeConfirmed(按文件路径, 包内+测试)
+//	  → 确认串 ack → 自动备份当前内容 → 预检(diff/风险/保护/CRC) → 写入(干跑模式零写事务)
 //
 // 服务层不提供"绕过预检直接写"的导出方法(测试用同包内未导出函数)。
 
@@ -152,25 +151,6 @@ var ddr3Regions = []spdRegion{
 	{"厂商特定/客户区", 150, 255, "medium"},
 }
 
-// DDR2(JEDEC): byte6 = 模块数据宽度, byte13 = 芯片位宽, byte63 = 校验和,
-// byte64-71 = JEP106 厂商, 72 = 地点, 73-90 = 部件号, 91-92 = 修订, 93-94 = 年月, 95-98 = 序列号。
-var ddr2Regions = []spdRegion{
-	{"头部/行列/bank", 0, 5, "high"},
-	{"模块数据宽度(总线)", 6, 6, "high"},
-	{"接口电压/时序", 7, 30, "medium"},
-	{"保留区", 31, 61, "medium"},
-	{"SPD 修订", 62, 62, "medium"},
-	{"校验和(sum 0-62)", 63, 63, "low"},
-	{"模块厂商 JEP106", 64, 71, "low"},
-	{"生产地点", 72, 72, "low"},
-	{"部件号", 73, 90, "low"},
-	{"模块修订", 91, 92, "low"},
-	{"生产日期", 93, 94, "low"},
-	{"序列号", 95, 98, "low"},
-	{"厂商特定/EPP", 99, 127, "medium"},
-	{"保留区", 128, 255, "medium"},
-}
-
 // regionsFor 返回该世代的区域表。
 func regionsFor(rt spd.RAMType, size int) []spdRegion {
 	switch rt {
@@ -180,8 +160,6 @@ func regionsFor(rt spd.RAMType, size int) []spdRegion {
 		return ddr5Regions
 	case spd.DDR3:
 		return ddr3Regions
-	case spd.DDR2, spd.DDR2FBDIMM, spd.DDR2FBDIMMP:
-		return ddr2Regions
 	default:
 		if size == 1024 {
 			return ddr5Regions
@@ -295,8 +273,9 @@ func (a *App) buildPreflight(label string, dump []byte, force, probeProtection b
 		return pf, nil
 	}
 
-	// 世代必须一致: 长度相同的世代不止一个(256: DDR2/DDR3; 512: DDR4/LPDDR4;
-	// 1024: DDR5/LPDDR5), 写错世代(如给 DDR2 条写 DDR3 的 SPD)基本等于该条不 POST。
+	// 世代必须一致: 长度相同的世代不止一个(512: DDR4/LPDDR4; 1024: DDR5/LPDDR5),
+	// 写错世代(如 LPDDR4 的镜像写 DDR4 条)基本等于该条不 POST。256B 现在只剩 DDR3。
+	// (DDR2 支持已移除: byte2=0x08-0x0A 的目标会在这里按"类型未知"拒绝。)
 	// 这一条只靠 dump 自己的 byte2 判定, 必须与设备自己识别出的世代对照。
 	if !dev.TypeKnown() {
 		pf.Blocked, pf.BlockKind = true, "generation"

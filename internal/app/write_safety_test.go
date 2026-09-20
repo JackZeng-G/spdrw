@@ -82,8 +82,9 @@ func TestBackupHappensBeforeProbeWrite(t *testing.T) {
 }
 
 // TestGateDumpRejectsCrossGeneration —— H2。
-// 长度相同的世代不止一个(256: DDR2/DDR3; 512: DDR4/LPDDR4; 1024: DDR5/LPDDR5),
-// 只比长度会把 DDR3 的镜像写进 DDR2 条里 —— 那基本等于该条不 POST。
+// 长度相同的世代不止一个(512: DDR4/LPDDR4; 1024: DDR5/LPDDR5), 只比长度会把
+// 同长度的其他世代镜像写进去 —— 那基本等于该条不 POST。DDR2 支持移除后,
+// 旧 DDR2 镜像(byte2=0x08-0x0A, 支持已移除)按"类型未知"以 generation 阻断, 一并在这里锁住。
 func TestGateDumpRejectsCrossGeneration(t *testing.T) {
 	// 设备是 256B 的 DDR3
 	f := smbus.NewFake()
@@ -101,11 +102,11 @@ func TestGateDumpRejectsCrossGeneration(t *testing.T) {
 	if err := a.Select(0x50); err != nil {
 		t.Fatal(err)
 	}
-	// 同长度的 DDR2 镜像(FB-DIMM 类型, 与 DDR3 同为 256B)
+	// 同长度的 DDR2 镜像(byte2=0x0A, 现在属"未知类型", 与 DDR3 同为 256B)
 	d2 := make([]byte, 256)
-	d2[2] = 0x0A // DDR2 FB-DIMM probe
+	d2[2] = 0x0A // 曾是 DDR2 FB-DIMM probe, 现按未知类型处理
 	copy(d2[64:72], d3[117:125])
-	d2[63] = ddr2Sum(d2)
+	d2[63] = legacySum(d2)
 
 	pf, err := a.buildPreflight("cross.bin", d2, false, true)
 	if err != nil {
@@ -363,7 +364,9 @@ func TestWriteErrorCountsIncludeReadStageByte(t *testing.T) {
 	}
 }
 
-func ddr2Sum(d []byte) byte {
+// legacySum 与已移除的 DDR2 校验和同款(byte63 = sum 0..62), 仅用于构造
+// "长得像 256B 旧世代"的测试镜像。
+func legacySum(d []byte) byte {
 	sum := byte(0)
 	for _, v := range d[:63] {
 		sum += v
@@ -642,5 +645,43 @@ func TestBackupCurrentVerifiesAndDoesNotOverwrite(t *testing.T) {
 	}
 	if still, err := os.ReadFile(p1); err != nil || !bytes.Equal(still, img1) {
 		t.Fatalf("第一次的备份被破坏: %v", err)
+	}
+}
+
+func TestDDR2DumpDecodesGracefully(t *testing.T) {
+	d := make([]byte, 256)
+	d[2] = 0x08 // 曾是 DDR2
+	d[6] = 64
+	d[63] = 0x12
+	a := New()
+	_, err := a.Decode(d)
+	if err == nil || !strings.Contains(err.Error(), "DDR2 已不再支持") {
+		t.Fatalf("Decode 应明确报 DDR2 不再支持, got %v", err)
+	}
+	// 编辑器也应拒绝(未知类型没有字段布局)
+	if _, err := spd.NewEditor(d); err == nil {
+		t.Error("DDR2 dump 编辑应被拒绝")
+	}
+	// 预检: 设备是 DDR3 时, 同长度的旧 DDR2 镜像必须按 generation 阻断
+	f := smbus.NewFake()
+	d3 := make([]byte, 256)
+	d3[2] = 0x0B
+	if _, err := spd.FixCRC(d3); err != nil {
+		t.Fatal(err)
+	}
+	copy(f.EEProm, d3)
+	a.transports = []smbus.Transport{f}
+	if err := a.Connect(0); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Select(0x50); err != nil {
+		t.Fatal(err)
+	}
+	pf, err := a.buildPreflight("legacy.bin", d, false, true)
+	if err != nil {
+		t.Fatalf("buildPreflight: %v", err)
+	}
+	if !pf.Blocked || pf.BlockKind != "generation" {
+		t.Errorf("旧 DDR2 镜像应按 generation 阻断: %+v", pf)
 	}
 }

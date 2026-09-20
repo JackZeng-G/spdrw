@@ -11,7 +11,7 @@ import (
 
 // 编辑器的独立性校验。
 //
-// 编辑层(editor_*.go)与解析层(ddr4.go/ddr5.go/ddr23.go)是两套**各自独立实现**的
+// 编辑层(editor_*.go)与解析层(ddr4.go/ddr5.go/ddr3.go)是两套**各自独立实现**的
 // 偏移/编码逻辑: 同一根条的同一个时序, 解析器从字节读出来、编辑器也从字节读出来。
 // 如果编辑器把某个字段指错了字节, 两边就会给出不同的值 —— 这是唯一能在没有硬件、
 // 也没有人工逐字段核对的情况下发现"偏移表写错"的办法。
@@ -295,20 +295,6 @@ func TestEditorAgreesWithParser(t *testing.T) {
 				t.Errorf("%s: 序列号 编辑器 %q vs 解析器 %q", name, id.SerialHex, b.SerialHex)
 			}
 
-		case DDR2, DDR2FBDIMM, DDR2FBDIMMP:
-			b, err := ParseBasic(dump)
-			if err != nil {
-				continue
-			}
-			if id.PartNumber != b.PartNumber {
-				t.Errorf("%s: 部件号 编辑器 %q vs 解析器 %q", name, id.PartNumber, b.PartNumber)
-			}
-			if id.Manufacturer != b.Manufacturer {
-				t.Errorf("%s: 厂商 编辑器 %q vs 解析器 %q", name, id.Manufacturer, b.Manufacturer)
-			}
-			if got := fieldNS(t, e, "ddr2.tCKmin"); !closeNS(got, b.TCKminNS) {
-				t.Errorf("%s: ddr2.tCKmin 编辑器 %.4f vs 解析器 %.4f", name, got, b.TCKminNS)
-			}
 		}
 		checked++
 	}
@@ -507,5 +493,57 @@ func TestEditorFieldWritesStayInBounds(t *testing.T) {
 	t.Logf("字段写入边界检查: %d 次改写通过, %d 次跳过(值不可表示/无差异)", checked, skipped)
 	if checked < 500 {
 		t.Fatalf("只检查了 %d 次改写, 覆盖面不足", checked)
+	}
+}
+
+// DDR3 的 tRAS/tRC 共用 byte21 的高低半字节: JEDEC DDR3 Annex K 规定
+// bits3:0 = tRAS MSN、bits7:4 = tRC MSN(与 DDR4 byte27 同序)。
+// 旧实现两者写反;29 份真实 DDR3 语料恰好两个半字节相同、解析层又不解这两字段,
+// 全套测试都没抓到 —— 这里用**非对称半字节**的合成样本锁住(0x21: tRC MSN=2, tRAS MSN=1)。
+func TestDDR3TimingNibbleOrder(t *testing.T) {
+	d := makeDDR3(t)
+	d[22] = 0x64 // tRAS low = 100 计数
+	d[23] = 0xC8 // tRC  low = 200 计数
+	d[21] = 0x21 // tRAS MSN=1(bits3:0), tRC MSN=2(bits7:4)
+
+	e := editorFor(t, d)
+	tr := map[string]float64{}
+	for _, spec := range e.timingSpecs() {
+		if spec.Key == "ddr3.tRAS" || spec.Key == "ddr3.tRC" {
+			if v, ok := spec.Get(e); ok {
+				tr[spec.Key] = v
+			}
+		}
+	}
+	// MTB = 1000/8 = 125ps → tRAS = (100 + 1×256)×0.125 = 44.5ns; tRC = (200 + 2×256)×0.125 = 89ns
+	if want := (100 + 1*256) * 0.125; math.Abs(tr["ddr3.tRAS"]-want) > 1e-9 {
+		t.Errorf("ddr3.tRAS = %v, want %v(bits3:0 必须是 tRAS MSN)", tr["ddr3.tRAS"], want)
+	}
+	if want := (200 + 2*256) * 0.125; math.Abs(tr["ddr3.tRC"]-want) > 1e-9 {
+		t.Errorf("ddr3.tRC = %v, want %v(bits7:4 必须是 tRC MSN)", tr["ddr3.tRC"], want)
+	}
+
+	// 写入路径: 把 tRAS 改成 (300+0)×0.125=37.5ns → byte21 低半字节变 1, 高半字节(tRC MSN)不得被扰动
+	if err := e.SetField("ddr3.tRAS", "37.5"); err != nil {
+		t.Fatalf("SetField(ddr3.tRAS): %v", err)
+	}
+	if got := subByteR(e.dump[21], 7, 4); got != 2 {
+		t.Errorf("改 tRAS 后 byte21[7:4](tRC MSN)被扰动: %d(应为 2)", got)
+	}
+	if got := subByteR(e.dump[21], 3, 4); got != 1 {
+		t.Errorf("改 tRAS 后 byte21[3:0](tRAS MSN)= %d, want 1", got)
+	}
+	// 再改 tRC: tRC = 76ns → medium = 608 = 0x260(byte23=0x60, MSN=2)
+	if err := e.SetField("ddr3.tRC", "76"); err != nil {
+		t.Fatalf("SetField(ddr3.tRC): %v", err)
+	}
+	if got := e.dump[23]; got != 0x60 {
+		t.Errorf("改 tRC 后 byte23 = %#x, want 0x60", got)
+	}
+	if got := subByteR(e.dump[21], 7, 4); got != 2 {
+		t.Errorf("改 tRC 后 byte21[7:4] = %d, want 2", got)
+	}
+	if got := subByteR(e.dump[21], 3, 4); got != 1 {
+		t.Errorf("改 tRC 后 byte21[3:0](tRAS MSN)被扰动: %d(应为 1)", got)
 	}
 }

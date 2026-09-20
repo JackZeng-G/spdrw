@@ -178,12 +178,14 @@ func ddr3TimingSpecs() []timingSpec {
 	add("ddr3.tRCD", "tRCD", "0x12/0x24", g, s)
 	g, s = medFine3(20, 37)
 	add("ddr3.tRP", "tRP", "0x14/0x25", g, s)
-	// tRC = byte23 + nibble21[3:0]<<8, fine byte38
+	// tRC = byte23 + nibble21[7:4]<<8, fine byte38
+	// (JEDEC DDR3 Annex K: byte21 bits7:4 = tRC MSN、bits3:0 = tRAS MSN, 与 DDR4 byte27 同序。
+	//  旧实现把两者写反 —— 审计对照 decode-dimms/JEDEC 原文与本项目 DDR4 实现确认后互换。)
 	out = append(out, timingSpec{
-		Key: "ddr3.tRC", Name: "tRC", Offset: "0x17/0x15[3:0]/0x26",
+		Key: "ddr3.tRC", Name: "tRC", Offset: "0x17/0x15[7:4]/0x26",
 		Get: func(e *Editor) (float64, bool) {
 			m, fp := ddr3TimebaseF(e.dump)
-			med := int(e.dump[23]) | int(subByteR(e.dump[21], 3, 4))<<8
+			med := int(e.dump[23]) | int(subByteR(e.dump[21], 7, 4))<<8
 			v := timingNSF(med, int(int8(e.dump[38])), m, fp)
 			return v, v > 0
 		},
@@ -196,18 +198,18 @@ func ddr3TimingSpecs() []timingSpec {
 			if err := e.set(23, byte(m&0xFF), "ddr3.tRC", "medium"); err != nil {
 				return err
 			}
-			if err := e.set(21, setSubByteR(e.dump[21], 3, 4, byte(m>>8)), "ddr3.tRC", "medium"); err != nil {
+			if err := e.set(21, setSubByteR(e.dump[21], 7, 4, byte(m>>8)), "ddr3.tRC", "medium"); err != nil {
 				return err
 			}
 			return e.set(38, byte(int8(f)), "ddr3.tRC", "medium")
 		},
 	})
-	// tRAS = byte22 + nibble21[7:4]<<8
+	// tRAS = byte22 + nibble21[3:0]<<8
 	out = append(out, timingSpec{
-		Key: "ddr3.tRAS", Name: "tRAS", Offset: "0x16/0x15[7:4]",
+		Key: "ddr3.tRAS", Name: "tRAS", Offset: "0x16/0x15[3:0]",
 		Get: func(e *Editor) (float64, bool) {
 			tb := ddr3Timebase(e.dump)
-			med := int(e.dump[22]) | int(subByteR(e.dump[21], 7, 4))<<8
+			med := int(e.dump[22]) | int(subByteR(e.dump[21], 3, 4))<<8
 			return timingNS(med, 0, tb), med > 0
 		},
 		Set: func(e *Editor, ns float64) error {
@@ -219,7 +221,7 @@ func ddr3TimingSpecs() []timingSpec {
 			if err := e.set(22, byte(m&0xFF), "ddr3.tRAS", "medium"); err != nil {
 				return err
 			}
-			return e.set(21, setSubByteR(e.dump[21], 7, 4, byte(m>>8)), "ddr3.tRAS", "medium")
+			return e.set(21, setSubByteR(e.dump[21], 3, 4, byte(m>>8)), "ddr3.tRAS", "medium")
 		},
 	})
 	med16Simple := func(key, name string, loOff int) {
@@ -338,113 +340,6 @@ func ddr5TimingSpecs() []timingSpec {
 	return out
 }
 
-// ddr2TimingSpecs 返回 DDR2 主要时序。
-//
-// DDR2 的编码与 DDR3/DDR4 完全不同(JEDEC DDR2 SPD):
-//   - byte9/43: tCKmin/tCKmax 是 BCD "纳秒.十分位", 且十分位有扩展码
-//     (A=0.25 B=0.33 C=0.66 D=0.75 E=0.875)
-//   - byte27/28/29/36/37/38: tRP/tRRD/tRCD/tWR/tWTR/tRTP, 单位 1/4 ns(整数计数)
-//   - byte30/41/42: tRAS/tRC/tRFC 整数纳秒; tRC/tRFC 的分数位在 byte40
-//
-// 只支持整数纳秒部分(分数位保持原样), 避免猜测过深。
-func ddr2TimingSpecs() []timingSpec {
-	var out []timingSpec
-	bcdSpec := func(key, name string, off int) {
-		out = append(out, timingSpec{
-			Key: key, Name: name, Offset: fmt.Sprintf("0x%02X(BCD)", off),
-			Get: func(e *Editor) (float64, bool) {
-				v := e.dump[off]
-				// DDR2 tCK: 高 nibble = 纳秒整数(0-15), 低 nibble = 十分位(含扩展码)
-				whole := float64(v >> 4)
-				frac := bcdFraction(v & 0x0F)
-				if frac < 0 {
-					return whole, true
-				}
-				return whole + frac, true
-			},
-			Set: func(e *Editor, ns float64) error {
-				if ns < 0 || ns > 15 {
-					return fmt.Errorf("%s 必须在 0-15 ns 之间", name)
-				}
-				whole := int(ns)
-				frac := ns - float64(whole)
-				nib := fracToBCD(frac)
-				if nib < 0 {
-					return fmt.Errorf("%.3f ns 的十分位无法用 DDR2 BCD 表示(可用 0/0.1-0.9/0.25/0.33/0.66/0.75/0.875)", ns)
-				}
-				return e.set(off, byte((whole<<4)&0xF0)|byte(nib), key, "medium")
-			},
-		})
-	}
-	quarter := func(key, name string, off int) {
-		out = append(out, timingSpec{
-			Key: key, Name: name, Offset: fmt.Sprintf("0x%02X(1/4ns)", off),
-			Get: func(e *Editor) (float64, bool) {
-				return float64(e.dump[off]) / 4, e.dump[off] > 0
-			},
-			Set: func(e *Editor, ns float64) error {
-				v := int(math.Round(ns * 4))
-				if v < 1 || v > 63 {
-					return fmt.Errorf("%s 必须在 0.25-15.75 ns 之间", name)
-				}
-				return e.set(off, byte(v), key, "medium")
-			},
-		})
-	}
-	intNS := func(key, name string, off int) {
-		out = append(out, timingSpec{
-			Key: key, Name: name, Offset: fmt.Sprintf("0x%02X(ns)", off),
-			Get: func(e *Editor) (float64, bool) {
-				return float64(e.dump[off]), e.dump[off] > 0
-			},
-			Set: func(e *Editor, ns float64) error {
-				v := int(math.Round(ns))
-				if v < 1 || v > 255 {
-					return fmt.Errorf("%s 必须在 1-255 ns 之间", name)
-				}
-				return e.set(off, byte(v), key, "medium")
-			},
-		})
-	}
-	bcdSpec("ddr2.tCKmin", "tCKmin", 9)
-	bcdSpec("ddr2.tCKmax", "tCKmax", 43)
-	quarter("ddr2.tRP", "tRP", 27)
-	quarter("ddr2.tRRD", "tRRD", 28)
-	quarter("ddr2.tRCD", "tRCD", 29)
-	quarter("ddr2.tWR", "tWR", 36)
-	quarter("ddr2.tWTR", "tWTR", 37)
-	quarter("ddr2.tRTP", "tRTP", 38)
-	intNS("ddr2.tRAS", "tRAS", 30)
-	intNS("ddr2.tRC", "tRC", 41)
-	intNS("ddr2.tRFC", "tRFC", 42)
-	return out
-}
-
-// bcdFraction 把 DDR2 BCD 扩展码的十分位 nibble 转成小数。-1 = 保留值。
-// bcdFraction 解析 DDR2 tCK 的小数 nibble: 与解析器 ddr2Fraction 共用同一张表;
-// 仅"无效编码(F)"的表示不同 —— 编辑器返回 -1(表示不可用), 解析器按 0 计。
-func bcdFraction(nib byte) float64 {
-	if nib&0x0F == 0xF {
-		return -1
-	}
-	return ddr2Fraction(nib)
-}
-
-// fracToBCD 把小数部分转成 DDR2 BCD 十分位 nibble。-1 = 不可表示。
-func fracToBCD(frac float64) int {
-	for nib := 0; nib <= 9; nib++ {
-		if math.Abs(frac-float64(nib)/10) < 1e-6 {
-			return nib
-		}
-	}
-	for nib, v := range map[int]float64{0xA: 0.25, 0xB: 0.33, 0xC: 0.66, 0xD: 0.75, 0xE: 0.875} {
-		if math.Abs(frac-v) < 1e-6 {
-			return nib
-		}
-	}
-	return -1
-}
-
 // timingSpecs 返回该世代的时序字段。
 func (e *Editor) timingSpecs() []timingSpec {
 	switch e.rt {
@@ -454,8 +349,6 @@ func (e *Editor) timingSpecs() []timingSpec {
 		return ddr5TimingSpecs()
 	case DDR3:
 		return ddr3TimingSpecs()
-	case DDR2, DDR2FBDIMM, DDR2FBDIMMP:
-		return ddr2TimingSpecs()
 	default:
 		return nil
 	}

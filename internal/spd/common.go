@@ -19,9 +19,6 @@ const (
 	Unknown     RAMType = 0x00
 	SDRAM       RAMType = 0x04
 	DDR         RAMType = 0x07
-	DDR2        RAMType = 0x08
-	DDR2FBDIMM  RAMType = 0x09
-	DDR2FBDIMMP RAMType = 0x0A
 	DDR3        RAMType = 0x0B
 	DDR4        RAMType = 0x0C
 	LPDDR3      RAMType = 0x0F
@@ -32,11 +29,13 @@ const (
 	LPDDR5      RAMType = 0x13
 	DDR5NVDIMMP RAMType = 0x14
 	LPDDR5X     RAMType = 0x15
+	// 0x08/0x09/0x0A 曾是 DDR2/DDR2 FB-DIMM/FB-DIMM Probe:
+	// DDR2 支持已于 2026-09-21 移除(太老, 无真实语料, 也没人再用), 这些 byte2
+	// 值现在一律按 Unknown 处理(识别为"未知", 拒绝解析与写入)。
 )
 
 var ramTypeNames = map[RAMType]string{
-	SDRAM: "SDRAM", DDR: "DDR", DDR2: "DDR2", DDR2FBDIMM: "DDR2 FB-DIMM",
-	DDR2FBDIMMP: "DDR2 FB-DIMM Probe", DDR3: "DDR3", DDR4: "DDR4", DDR4E: "DDR4E",
+	SDRAM: "SDRAM", DDR: "DDR", DDR3: "DDR3", DDR4: "DDR4", DDR4E: "DDR4E",
 	LPDDR3: "LPDDR3", LPDDR4: "LPDDR4", LPDDR4X: "LPDDR4X", DDR5: "DDR5",
 	LPDDR5: "LPDDR5", DDR5NVDIMMP: "DDR5 NVDIMM-P", LPDDR5X: "LPDDR5X",
 }
@@ -95,7 +94,7 @@ func ValidateSpd(dump []byte) bool {
 		return len(dump) == 512
 	case DDR5, LPDDR5, DDR5NVDIMMP, LPDDR5X:
 		return len(dump) == 1024
-	case SDRAM, DDR, DDR2, DDR2FBDIMM, DDR2FBDIMMP, DDR3:
+	case SDRAM, DDR, DDR3:
 		return len(dump) == 256
 	default:
 		return false

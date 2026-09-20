@@ -25,7 +25,6 @@ func TestEditorIdentityRoundTripAllGenerations(t *testing.T) {
 		{"DDR4", makeDDR4(t), "TEST16GB-DDR4-3200"},
 		{"DDR5", makeDDR5(t), "DDR5-TEST-16GB"},
 		{"DDR3", makeDDR3(t), "DDR3-TEST-8GB"},
-		{"DDR2", makeDDR2(t), "DDR2-TEST-1GB"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -378,7 +377,7 @@ func TestEditorRejectsInvalidInput(t *testing.T) {
 
 func TestEditorFieldsAllGenerations(t *testing.T) {
 	for name, dump := range map[string][]byte{
-		"DDR4": makeDDR4(t), "DDR5": makeDDR5(t), "DDR3": makeDDR3(t), "DDR2": makeDDR2(t),
+		"DDR4": makeDDR4(t), "DDR5": makeDDR5(t), "DDR3": makeDDR3(t),
 	} {
 		e := editorFor(t, dump)
 		fs := e.Fields()
@@ -395,7 +394,7 @@ func TestEditorFieldsAllGenerations(t *testing.T) {
 			}
 			keys[f.Key] = true
 		}
-		if name == "DDR2" || name == "DDR3" {
+		if name == "DDR3" {
 			if keys["ddr4.tAA"] || keys["ddr5.tAA"] {
 				t.Fatalf("%s 不应出现其它世代的时序字段", name)
 			}
@@ -418,60 +417,6 @@ func TestSearchManufacturers(t *testing.T) {
 	}
 }
 
-func TestEditorDDR2Timings(t *testing.T) {
-	e := editorFor(t, makeDDR2(t))
-	// tCKmin 是 BCD "ns.十分位"
-	if err := e.SetField("ddr2.tCKmin", "2.5"); err != nil {
-		t.Fatalf("ddr2.tCKmin: %v", err)
-	}
-	vals := map[string]string{}
-	for _, f := range e.Fields() {
-		vals[f.Key] = f.Value
-	}
-	if vals["ddr2.tCKmin"] != "2.5" {
-		t.Fatalf("DDR2 tCKmin 回读 = %q", vals["ddr2.tCKmin"])
-	}
-	// BCD 扩展码: 0.25
-	if err := e.SetField("ddr2.tCKmax", "3.25"); err != nil {
-		t.Fatalf("ddr2.tCKmax(0.25): %v", err)
-	}
-	vals = map[string]string{}
-	for _, f := range e.Fields() {
-		vals[f.Key] = f.Value
-	}
-	if vals["ddr2.tCKmax"] != "3.25" {
-		t.Fatalf("DDR2 tCKmax 回读 = %q", vals["ddr2.tCKmax"])
-	}
-	// 不可表示的十分位应被拒
-	if err := e.SetField("ddr2.tCKmin", "2.05"); err == nil {
-		t.Fatal("DDR2 不可表示的十分位应被拒")
-	}
-	// 1/4ns 粒度
-	if err := e.SetField("ddr2.tRP", "3.75"); err != nil {
-		t.Fatalf("ddr2.tRP: %v", err)
-	}
-	vals = map[string]string{}
-	for _, f := range e.Fields() {
-		vals[f.Key] = f.Value
-	}
-	if vals["ddr2.tRP"] != "3.75" {
-		t.Fatalf("DDR2 tRP 回读 = %q", vals["ddr2.tRP"])
-	}
-	// 整数 ns 字段
-	if err := e.SetField("ddr2.tRFC", "128"); err != nil {
-		t.Fatalf("ddr2.tRFC: %v", err)
-	}
-	if _, err := e.FixCRC(); err != nil {
-		t.Fatalf("DDR2 校验和重算: %v", err)
-	}
-	if !e.CRCOK() {
-		t.Fatal("DDR2 改动后校验和应可重算")
-	}
-}
-
-// TestDDR3SingleByteMediumRejectsOversize DDR3 的 tCKmin/tAA/tRCD/tRP 是**单字节** medium:
-// 超出 255 必须报错。上一步把 FTB 改成小数时放宽了编码器上限, 结果这些字段被静默截断
-// (40ns -> medium 320 -> byte 0x40 = 8ns), 属回归, 由第二轮审查实测发现。
 func TestDDR3SingleByteMediumRejectsOversize(t *testing.T) {
 	e := editorFor(t, makeDDR3(t))
 	orig := editorFieldValues(e)

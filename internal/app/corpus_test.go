@@ -195,7 +195,7 @@ func TestCorpusEditPreflightDryRun(t *testing.T) {
 		}
 
 		// 2a) 故意不修 CRC 时必须被 CRC 门拦住(至少对带 CRC 的世代)
-		if rt != spd.DDR2 && rt != spd.DDR2FBDIMM && rt != spd.DDR2FBDIMMP {
+		if true {
 			raw := append([]byte{}, target...)
 			// 直接改一个数据字节, 不动 CRC
 			raw[10] ^= 0x01
