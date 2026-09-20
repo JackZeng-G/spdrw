@@ -10,6 +10,7 @@ package eeprom
 
 import (
 	"fmt"
+	"time"
 
 	"spdrw/internal/smbus"
 )
@@ -37,23 +38,26 @@ const (
 
 // Device 是连接到一条 SMBus 总线上某个 SPD 地址的 EEPROM。
 type Device struct {
-	t    smbus.Transport
-	addr byte
-	ddr5 bool
-	size int
-	page int // 当前页(DDR4: 0-1; DDR5: 0-15)
+	t         smbus.Transport
+	addr      byte
+	ddr5      bool
+	size      int
+	page      int  // 当前页(DDR4: 0-1; DDR5: 0-7)
+	pageKnown bool // false = 未知(HUB 的 MR11 可能有 BIOS 残留值), 首次切页前须回读
 }
 
-// New 建立设备连接: 探测地址、识别 DDR5 与 SPD 大小,并复位到页 0。
+// New 建立设备连接: 探测地址、识别 DDR5 与 SPD 大小。
+// 不假设初始页状态 —— DDR5 HUB 的 MR11 可能残留任意页(对齐 RAMSPDToolkit:
+// 每次 NVM 访问前回读 MR11 决定是否切页)。
 func New(t smbus.Transport, addr byte) (*Device, error) {
 	if addr>>3 != 0b1010 {
 		return nil, fmt.Errorf("无效 EEPROM 地址 %#x (应在 0x50-0x57)", addr)
 	}
 	d := &Device{t: t, addr: addr}
 
-	// DDR5 检测: SPD byte0 == 0x51 即为 DDR5(决定性, 不依赖 PMIC 探测;
-	// 部分平台 PMIC 地址被隐藏/占用会导致原版探测误判为 DDR4, 进而在
-	// DDR5 总线上做 0x36 页切换而 NACK)。
+	// DDR5 检测(对齐 RAMSPDToolkit DDR5Accessor.IsAvailable):
+	// 读 MR0(Device Type, cmd=0, bit7=0 → 寄存器区) == 0x51 即 DDR5。
+	// MR0 是寄存器不受 MR11 页残留影响, 比读 NVM 字节更可靠。
 	ddr5 := false
 	if b, err2 := t.ReadByteData(addr, 0); err2 == nil && b == 0x51 {
 		ddr5 = true
@@ -62,6 +66,11 @@ func New(t smbus.Transport, addr byte) (*Device, error) {
 
 	if ddr5 {
 		d.size = 1024
+		// 回读 MR11 确认初始页(不写!有些模块写保护, 只读同步缓存)
+		if cur, err := t.ReadByteData(addr, MR11); err == nil {
+			d.page = int(cur & 0x07)
+			d.pageKnown = true
+		}
 	} else {
 		ramType, err := t.ReadByteData(addr, 2)
 		if err != nil {
@@ -106,26 +115,44 @@ func (d *Device) pageSize() int {
 // pageCount 返回总页数。
 func (d *Device) pageCount() int { return d.size / d.pageSize() }
 
-// setPage 切换 EEPROM 页。
+// setPage 切换 EEPROM 页。DDR5 在写之后回读 MR11 校验(对齐 RAMSPDToolkit
+// GetPage/SetPage): HUB 对页写的实际生效与控制器返回值未必一致。
 func (d *Device) setPage(p int) error {
 	if p < 0 || p >= d.pageCount() {
 		return fmt.Errorf("页 %d 越界(共 %d 页)", p, d.pageCount())
 	}
 	var err error
 	if d.ddr5 {
-		err = d.t.WriteByteData(d.addr, MR11, byte(p))
-	} else {
-		// DDR4 页切换: 首选 Quick 写(EE1004 SPA), 失败回退 BYTE 写
-		// (与原版一致的退化路径, 部分控制器对 Quick 支持不佳)
-		err = d.t.Quick(byte(spa0+p), true)
-		if err != nil {
-			err = d.t.WriteByteNoData(byte(spa0 + p))
+		for attempt := 0; attempt < 2; attempt++ {
+			if attempt > 0 {
+				time.Sleep(2 * time.Millisecond)
+			}
+			if err = d.t.WriteByteData(d.addr, MR11, byte(p)); err != nil {
+				continue
+			}
+			// 回读校验(只读, 不落 NVM)
+			if cur, rerr := d.t.ReadByteData(d.addr, MR11); rerr == nil && int(cur&0x07) == p {
+				d.page, d.pageKnown = p, true
+				return nil
+			}
+			err = fmt.Errorf("页寄存器校验失败(期望 %d)", p)
 		}
+		if err != nil {
+			return err
+		}
+		d.page, d.pageKnown = p, true
+		return nil
+	}
+	// DDR4 页切换: 首选 Quick 写(EE1004 SPA), 失败回退 BYTE 写
+	// (与原版一致的退化路径, 部分控制器对 Quick 支持不佳)
+	err = d.t.Quick(byte(spa0+p), true)
+	if err != nil {
+		err = d.t.WriteByteNoData(byte(spa0 + p))
 	}
 	if err != nil {
 		return err
 	}
-	d.page = p
+	d.page, d.pageKnown = p, true
 	return nil
 }
 
@@ -144,7 +171,7 @@ func (d *Device) physOffset(off uint16) (byte, byte, error) {
 		p = int(off) >> 8
 		phys = byte(off)
 	}
-	if p != d.page {
+	if p != d.page || !d.pageKnown {
 		if err := d.setPage(p); err != nil {
 			return 0, 0, err
 		}
@@ -152,7 +179,8 @@ func (d *Device) physOffset(off uint16) (byte, byte, error) {
 	return byte(p), phys, nil
 }
 
-// Read 读取 n 字节(n 为 0 时报错)。
+// Read 读取 n 字节(n 为 0 时报错)。每字节读后间隔 1ms(对齐 RAMSPDToolkit
+// SPD_IO_DELAY): DDR5 HUB 对背靠背事务敏感, 连发会导致数据错位。
 func (d *Device) Read(off uint16, n int) ([]byte, error) {
 	if n <= 0 {
 		return nil, fmt.Errorf("读取长度必须为正")
@@ -171,6 +199,7 @@ func (d *Device) Read(off uint16, n int) ([]byte, error) {
 			return nil, fmt.Errorf("读取 %#x 失败: %w", off+uint16(i), err)
 		}
 		out[i] = b
+		time.Sleep(time.Millisecond)
 	}
 	return out, nil
 }

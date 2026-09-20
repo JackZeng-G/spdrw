@@ -22,6 +22,10 @@ type FakeTransport struct {
 	// DDR5 为 true 时按 DDR5 分页(MR11, 128 字节页, 读命令 |0x80); 否则按 DDR4(SPA quick, 256 字节页)。
 	DDR5 bool
 
+	// MR 覆盖表(仅 DDR5, cmd bit7=0 的寄存器读): 测试注入 MR12/13/48 等状态用。
+	// 未覆盖的寄存器按默认模拟(MR0=0x51, MR11=当前页, 其余 0)。
+	MR map[byte]byte
+
 	// 页切换状态模拟。
 	page     int
 	pageSpan int
@@ -40,6 +44,7 @@ type WriteOp struct {
 
 func NewFake() *FakeTransport {
 	return &FakeTransport{
+		MR:            map[byte]byte{},
 		ProtectedFrom: -1,
 		Ctrl:          Controller{Kind: KindI801, Index: 0, IOBase: 0xEFA0, Name: "Fake"},
 		EEProm:        make([]byte, 1024),
@@ -85,7 +90,8 @@ func (f *FakeTransport) Quick(addr byte, write bool) error {
 	return nil
 }
 
-// idx 计算当前页下的物理偏移。DDR5 页内命令含 0x80 位(NVM 读地址空间),需掩掉。
+// idx 计算当前页下的物理偏移。DDR5: cmd bit7=1 访问 NVM 页(掩 0x7F 得页内偏移),
+// bit7=0 访问 MR 寄存器区(模拟 MR0=0x51 DeviceType, MR11=当前页, 其余 0)。
 func (f *FakeTransport) idx(cmd byte) (int, error) {
 	c := int(cmd)
 	if f.DDR5 {
@@ -98,11 +104,32 @@ func (f *FakeTransport) idx(cmd byte) (int, error) {
 	return i, nil
 }
 
+// mrRead 模拟 DDR5 MR 寄存器读(cmd bit7=0)。
+func (f *FakeTransport) mrRead(cmd byte) (byte, bool) {
+	if !f.DDR5 || cmd&0x80 != 0 {
+		return 0, false
+	}
+	if v, ok := f.MR[cmd&0x7F]; ok {
+		return v, true
+	}
+	switch int(cmd & 0x7F) {
+	case 0: // MR0: Device Type = 0x51
+		return 0x51, true
+	case 11: // MR11: 当前 NVM 页
+		return byte(f.page), true
+	default:
+		return 0x00, true
+	}
+}
+
 func (f *FakeTransport) ReadByteData(addr byte, cmd byte) (byte, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.Present != nil && !f.Present[addr] {
 		return 0, fmt.Errorf("设备无响应 NACK(0xC000000E)")
+	}
+	if v, ok := f.mrRead(cmd); ok {
+		return v, nil
 	}
 	i, err := f.idx(cmd)
 	if err != nil {
@@ -118,6 +145,15 @@ func (f *FakeTransport) WriteByteData(addr byte, cmd byte, val byte) error {
 	if f.DDR5 && cmd == 11 {
 		f.WriteLog = append(f.WriteLog, WriteOp{Addr: addr, Cmd: cmd, Val: val})
 		f.page, f.pageSpan = int(val), 128
+		return nil
+	}
+	// DDR5 寄存器写(MR12/13/48 等): 记录到 MR 表, 不落 NVM 数组。
+	if f.DDR5 && cmd&0x80 == 0 {
+		f.WriteLog = append(f.WriteLog, WriteOp{Addr: addr, Cmd: cmd, Val: val})
+		if f.MR == nil {
+			f.MR = map[byte]byte{}
+		}
+		f.MR[cmd] = val
 		return nil
 	}
 	if f.ProtectedFrom >= 0 && int(cmd) >= f.ProtectedFrom {
