@@ -162,6 +162,9 @@ func (c *CountingTransport) ReadWordData(addr byte, cmd byte) (uint16, error) {
 
 func (c *CountingTransport) Close() error { return c.Inner.Close() }
 
+// InnerTuner 把"总线调优"能力从内层透出来(包装器自己不实现 Tuner)。
+func (c *CountingTransport) InnerTuner() (Tuner, bool) { return TunerOf(c.Inner) }
+
 // NVMWrites 从写日志里挑出"真正写到 SPD NVM 窗口"的字节写, 依据该世代的语义:
 //   - DDR5: 写 MR 寄存器/切页时 cmd bit7=0(寄存器区), 访问 NVM 时 cmd bit7=1
 //   - DDR4 及更早: byte-data 写的 cmd 就是页内偏移(NVM), 但 quick 命令(页选择/保护命令)

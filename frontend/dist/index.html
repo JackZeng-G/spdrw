@@ -57,6 +57,8 @@
         <button id="btn-bus-stats" disabled>读取总线统计</button>
         <button id="btn-bus-reset" disabled>清零计数</button>
         <label class="chk"><input type="checkbox" id="chk-fastread" checked> 读加速(块读 32B / 字读 2B; 关掉则逐字节兼容)</label>
+        <label class="chk"><input type="checkbox" id="chk-lowsleep"> 低 CPU 模式(每次事务休眠, 读取慢几十倍)</label>
+        <div id="bus-tuning" class="bus-stats muted">—</div>
         <div id="read-mode" class="bus-stats muted">—</div>
         <div class="muted small">
           真机验证"干跑不写盘"用: 干跑前后各读一次, <b>NVM 写</b>必须为 0。<br>

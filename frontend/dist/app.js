@@ -195,6 +195,7 @@ async function doDump() {
   enableOps(true);
   await decodeCurrent();
   await refreshReadMode().catch(() => {});
+  await refreshBusTuning().catch(() => {});
   await refreshCRCStatus().catch(() => {});
 }
 
@@ -622,11 +623,45 @@ async function resyncAfterFailure() {
 // ---------- 总线统计 ----------
 // 真机 V2 验证: 干跑前后各读一次计数, NVM 写必须为 0。
 $("btn-bus-stats").onclick = async () => {
-  try { await refreshBusStats(); } catch (e) { addLog("", "读取总线统计失败: " + e); }
+  try {
+    await refreshBusStats();
+    await refreshBusTuning();
+  } catch (e) { addLog("", "读取总线统计失败: " + e); }
 };
 $("btn-bus-reset").onclick = async () => {
   try { await call("ResetBusStats"); addLog("", "总线计数已清零"); await refreshBusStats(); }
   catch (e) { addLog("", "清零失败: " + e); }
+};
+
+// 总线调优: SMBus 时钟频率 + 等待模式。
+//
+// 等待模式决定读速的量级: 休眠模式下模块的每次等待都交给 Windows 线程休眠, 一个时钟
+// 中断约 15.6ms, 于是一次 2 字节读固定花 ~31ms(整片 1024 字节 = 512 次事务 ≈ 16 秒);
+// 忙等模式回到真实总线时间(396kHz 下一次约 116µs)。
+async function refreshBusTuning() {
+  try {
+    const t = await call("BusTuning");
+    if (!t) return;
+    const clock = t.clockHz ? `${(t.clockHz / 1000).toFixed(1)} kHz` : (t.clockNote || "时钟未知");
+    $("bus-tuning").innerHTML = `SMBus 时钟 <b>${escapeHtml(clock)}</b> · 等待模式 ` +
+      `<b class="${t.sleepMode === 2 ? "warn" : "ok"}">${escapeHtml(t.sleepModeName || "?")}</b>` +
+      (t.note ? `<br><span class="warn">${escapeHtml(t.note)}</span>` : "");
+    $("chk-lowsleep").checked = t.sleepMode === 2;
+  } catch (e) { /* 未连接 */ }
+}
+
+$("chk-lowsleep").onchange = async () => {
+  const mode = $("chk-lowsleep").checked ? 2 : 0; // 2=休眠(省 CPU) 0=忙等(最快)
+  try {
+    await call("SetSleepMode", mode);
+    addLog("", mode === 2
+      ? "等待模式: 休眠(省 CPU;每次事务多花约 31ms, 整片读取会慢几十倍)"
+      : "等待模式: 忙等(最快;读取回到真实总线时间)");
+    await refreshBusTuning();
+  } catch (e) {
+    addLog("", "切换等待模式失败: " + e);
+    await refreshBusTuning().catch(() => {});
+  }
 };
 
 // 块读加速开关(真机上对照慢/快用)
@@ -1067,4 +1102,5 @@ enableOps = function (on) {
   $("btn-edit-load-dev").disabled = !on;
   $("btn-bus-stats").disabled = !on;
   $("btn-bus-reset").disabled = !on;
+  refreshBusTuning().catch(() => {});
 };

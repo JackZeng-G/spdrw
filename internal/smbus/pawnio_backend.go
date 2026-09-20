@@ -18,10 +18,13 @@ const (
 	fnPiix4PortSel    = "ioctl_piix4_port_sel"
 	fnSmbusIndex      = "ioctl_smbus_index"
 	fnSetSleepMode    = "ioctl_set_sleep_mode"
+	fnClockFreq       = "ioctl_clock_freq"
 )
 
-// SleepMode AlwaysSleep: 模块在长等待时真正休眠,降低 CPU 占用(OpenRGB 同款默认)。
-const sleepModeAlwaysSleep = 2
+// 说明: OpenRGB 用 SleepMode_AlwaysSleep 省 CPU, 但那是"每个事务的等待都交给
+// Windows 线程休眠" —— 休眠粒度是一个时钟中断(约 15.6ms), 于是一次 2 字节读要
+// 花 1~2 个中断 ≈ 31ms, 整片 1024 字节 = 512 次事务 ≈ 16 秒(实测值)。真机对比
+// Thaiphoon 只要 0.2 秒, 差距全在这里。默认改成忙等(见 tuning.go)。
 
 // pawnioTransport 是绑定到一条 SMBus 总线(一个已加载模块会话)的 Transport。
 type pawnioTransport struct {
@@ -29,6 +32,8 @@ type pawnioTransport struct {
 	ctrl      Controller
 	piix4Port int // -1 = 非 PIIX4 会话
 	lastPort  int // 上次选中的端口(-2 = 未选), 避免每事务重复选路
+	sleepMode SleepMode
+	clockHz   int // 0 = 未知(模块不支持 ioctl_clock_freq)
 }
 
 // Discover 枚举本机全部可用 SMBus 总线。
@@ -47,7 +52,10 @@ func Discover() ([]Transport, error) {
 			s.close()
 			return
 		}
-		_, _ = s.execute(fnSetSleepMode, []uint64{sleepModeAlwaysSleep}, nil)
+		if err := applySleepMode(s, DefaultSleepMode); err != nil {
+			// 模块不接受该模式就退回忙等(0), 再不行就保持模块默认
+			_ = applySleepMode(s, SleepModeAlwaysBusy)
+		}
 		if selectFn != nil {
 			if err := selectFn(s); err != nil {
 				s.close()
@@ -59,7 +67,11 @@ func Discover() ([]Transport, error) {
 			s.close()
 			return
 		}
-		result = append(result, &pawnioTransport{session: s, ctrl: ctrl, piix4Port: piix4Port, lastPort: -2})
+		tr := &pawnioTransport{session: s, ctrl: ctrl, piix4Port: piix4Port, lastPort: -2, sleepMode: DefaultSleepMode}
+		if hz, err := readClockHz(s); err == nil {
+			tr.clockHz = hz
+		}
+		result = append(result, tr)
 	}
 
 	try("SmbusI801.bin", KindI801, 0, -1, nil)
@@ -78,6 +90,21 @@ func Discover() ([]Transport, error) {
 		return ni.Name < nj.Name
 	})
 	return result, nil
+}
+
+// applySleepMode 设置模块的等待模式(0=忙等 / 1=折中 / 2=休眠)。
+func applySleepMode(s *pawnioSession, mode SleepMode) error {
+	_, err := s.execute(fnSetSleepMode, []uint64{uint64(mode)}, nil)
+	return err
+}
+
+// readClockHz 读取控制器当前的 SMBus 时钟频率(Hz)。模块不支持时返回错误。
+func readClockHz(s *pawnioSession) (int, error) {
+	out := make([]uint64, 1)
+	if _, err := s.execute(fnClockFreq, []uint64{^uint64(0)}, out); err != nil { // in = -1: 只读不改
+		return 0, err
+	}
+	return int(out[0]), nil
 }
 
 func piix4SelectPort(s *pawnioSession, port int) error {
@@ -140,6 +167,29 @@ func decodeName(v uint64) string {
 }
 
 func (p *pawnioTransport) Identity() (Controller, error) { return p.ctrl, nil }
+
+// SleepMode / SetSleepMode / ClockHz 实现 smbus.Tuner。
+func (p *pawnioTransport) SleepMode() SleepMode { return p.sleepMode }
+
+func (p *pawnioTransport) SetSleepMode(mode SleepMode) error {
+	if !ValidSleepMode(int(mode)) {
+		return fmt.Errorf("等待模式 %d 无效(0=忙等 / 1=折中 / 2=休眠)", int(mode))
+	}
+	if err := applySleepMode(p.session, mode); err != nil {
+		return err
+	}
+	p.sleepMode = mode
+	return nil
+}
+
+func (p *pawnioTransport) ClockHz() (int, error) {
+	hz, err := readClockHz(p.session)
+	if err != nil {
+		return 0, err
+	}
+	p.clockHz = hz
+	return hz, nil
+}
 
 // piix4Port 记录本会话绑定的 AMD 端口; >=0 表示事务前确保端口选择指向本会话
 // (KernCZ 的端口选择寄存器是全局硬件状态, 多会话/外部工具会互相覆盖)。

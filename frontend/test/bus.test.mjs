@@ -93,3 +93,44 @@ test("读取方式: 后端给 mode/wordBytes/elapsedMs 时按加速档渲染(块
   assert.match(html, /字读 1024B/, "应分别显示块读/字读/逐字节字节数");
   assert.match(html, /NACK/, "块读失败原因要能看到");
 });
+
+test("总线调优: 显示 SMBus 时钟与等待模式, 勾选低 CPU 模式会切到休眠", async () => {
+  const { stub, calls } = makeAppStub({
+    BusTuning: () => ({ tunable: true, clockHz: 396000, sleepMode: 0, sleepModeName: "忙等(最快)", fastRead: true }),
+    SetSleepMode: () => 2,
+    BusStats: () => stats,
+  });
+  const { el } = loadApp({ appStub: stub });
+  await flush();
+  await el("btn-bus-stats").onclick();
+  await flush();
+
+  assert.match(el("bus-tuning").innerHTML, /396\.0 kHz/, "应显示 SMBus 时钟频率");
+  assert.match(el("bus-tuning").innerHTML, /忙等/, "应显示等待模式");
+  assert.equal(el("chk-lowsleep").checked, false, "忙等模式下不该勾选低 CPU 模式");
+
+  // 勾上 → 切休眠(2)
+  el("chk-lowsleep").checked = true;
+  await el("chk-lowsleep").onchange();
+  await flush();
+  const call = calls.find((c) => c.name === "SetSleepMode");
+  assert.ok(call, "应调用 SetSleepMode");
+  assert.deepEqual([...call.args], [2]);
+  assert.match(el("log").text(), /休眠/);
+});
+
+test("总线调优: 休眠模式会给出「慢几十倍」的警示", async () => {
+  const { stub } = makeAppStub({
+    BusTuning: () => ({
+      tunable: true, clockHz: 396000, sleepMode: 2, sleepModeName: "休眠(最省 CPU, 最慢)",
+      note: "当前为休眠模式: 每次事务固定多花约 31ms, 整片读取会慢几十倍;除非要省 CPU, 建议切成忙等",
+    }),
+    BusStats: () => stats,
+  });
+  const { el } = loadApp({ appStub: stub });
+  await flush();
+  await el("btn-bus-stats").onclick();
+  await flush();
+  assert.match(el("bus-tuning").innerHTML, /31ms/, "休眠模式要提示代价");
+  assert.equal(el("chk-lowsleep").checked, true);
+});

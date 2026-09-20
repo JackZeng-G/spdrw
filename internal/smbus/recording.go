@@ -282,3 +282,6 @@ func (r *RecordingTransport) ReadWordData(addr byte, cmd byte) (uint16, error) {
 }
 
 func (r *RecordingTransport) Close() error { return r.Inner.Close() }
+
+// InnerTuner 把"总线调优"能力从内层透出来(包装器自己不实现 Tuner)。
+func (r *RecordingTransport) InnerTuner() (Tuner, bool) { return TunerOf(r.Inner) }

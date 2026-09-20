@@ -43,6 +43,8 @@ func TestNoSelfDeadlockInBoundMethods(t *testing.T) {
 		{"EditVerifyFile", func(a *App) error { _, err := a.EditVerifyFile(); return err }},
 		{"EditReset", func(a *App) error { _, err := a.EditReset(); return err }},
 		{"CRCStatus", func(a *App) error { _, err := a.CRCStatus([]int{0, 1, 2}); return err }},
+		{"BusTuning", func(a *App) error { _, err := a.BusTuning(); return err }},
+		{"SetSleepMode", func(a *App) error { _, err := a.SetSleepMode(0); return err }},
 	}
 	for _, c := range cases {
 		c := c

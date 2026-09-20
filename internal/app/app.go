@@ -283,6 +283,10 @@ func (a *App) Select(addr byte) error {
 	if c, ok := a.active.(*smbus.CountingTransport); ok {
 		c.SetDDR5(dev.IsDDR5()) // NVM 写的判据随世代不同(cmd bit7)
 	}
+	// 把总线环境打进日志: 读速异常时第一眼要看的就是这两项(时钟频率 + 等待模式)
+	if tune := a.busTuningNoteLocked(); tune != "" {
+		a.logf("总线环境: %s", tune)
+	}
 	a.lastDump = nil // 换设备后缓存失效
 	a.editor = nil   // 换设备后编辑器内容失效(避免把 A 条的编辑写进 B 条)
 	a.editSource = ""
@@ -312,6 +316,9 @@ func (a *App) Dump() ([]byte, error) {
 	}
 	line := fmt.Sprintf("读取 %d 字节: %s; 事务 %d 次, 耗时 %s(等待 %d ms)",
 		len(data), mode, st.Transactions, time.Since(start).Round(time.Millisecond), st.SleepMS)
+	if tune := a.busTuningNoteLocked(); tune != "" {
+		line += "; " + tune
+	}
 	if st.Note != "" && st.FallbackBytes > 0 {
 		line += "; 回退原因: " + st.Note
 	}

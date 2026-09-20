@@ -101,6 +101,8 @@ export function makeAppStub(overrides = {}) {
     Decode: null,
     ReadFileBytes: dumpB64,
     BusStats: null,
+    BusTuning: { tunable: true, clockHz: 396000, sleepMode: 0, sleepModeName: "忙等(最快)", fastRead: true },
+    SetSleepMode: 0,
     SetFastRead: null,
     ReadStats: null,
     ResetBusStats: null,

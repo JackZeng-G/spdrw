@@ -32,6 +32,9 @@
     await $("btn-bus-reset").onclick();
     await wait(40);
     step("清零调用后端", window.__CALLS.some((c) => c.name === "ResetBusStats"));
+    // 读速的关键环境: SMBus 时钟 + 等待模式(休眠模式会让每次事务固定多花 ~31ms)
+    step("显示总线时钟与等待模式", /kHz|时钟/.test($("bus-tuning").textContent) && /忙等|休眠/.test($("bus-tuning").textContent));
+    step("低 CPU 模式开关存在", !!document.getElementById("chk-lowsleep"));
 
     // 写保护
     await $("btn-wp-status").onclick();

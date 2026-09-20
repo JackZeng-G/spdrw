@@ -77,6 +77,8 @@
     SetFastRead: rec("SetFastRead", true),
     ReadStats: rec("ReadStats", { bytes: 1024, transactions: 33, blockBytes: 1024, fallbackBytes: 0, blockReadOK: true, blockReadKnown: true }),
     BusStats: rec("BusStats", { generation: "DDR4", reads: 2140, quickWrites: 3, byteDataWrites: 2, byteWrites: 14, nvmWrites: 0 }),
+    BusTuning: rec("BusTuning", { tunable: true, clockHz: 396000, sleepMode: 0, sleepModeName: "忙等(最快)", fastRead: true }),
+    SetSleepMode: rec("SetSleepMode", 0),
     ResetBusStats: rec("ResetBusStats", null),
     WPStatus: rec("WPStatus", ddr4Status),
     WPSet: rec("WPSet", null),

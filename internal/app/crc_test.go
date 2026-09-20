@@ -196,3 +196,29 @@ func hasArea(areas []spd.Area, name string) bool {
 	}
 	return false
 }
+
+// 总线调优绑定: 测试用的 Fake 没有调优能力, 必须报"不支持"而不是假装成功。
+func TestBusTuningUnsupportedOnFake(t *testing.T) {
+	a, _ := newWriteTestApp(t)
+	res, err := a.BusTuning()
+	if err != nil {
+		t.Fatalf("BusTuning: %v", err)
+	}
+	if res.Tunable {
+		t.Fatalf("Fake 不应报告可调优: %+v", res)
+	}
+	if res.Note == "" {
+		t.Fatal("应说明为什么不可调优")
+	}
+	if _, err := a.SetSleepMode(0); err == nil {
+		t.Fatal("不可调优时 SetSleepMode 应报错")
+	}
+	// 未连接控制器时也要报可读错误
+	empty := New()
+	if _, err := empty.BusTuning(); err == nil {
+		t.Fatal("未连接时应报错")
+	}
+	if _, err := empty.SetSleepMode(0); err == nil {
+		t.Fatal("未连接时 SetSleepMode 应报错")
+	}
+}
