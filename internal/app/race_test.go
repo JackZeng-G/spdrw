@@ -35,9 +35,9 @@ func TestConcurrentOperationsDoNotRace(t *testing.T) {
 		}(i)
 		go func(n int) {
 			defer wg.Done()
-			_ = a.Logs()
+			_ = a.logEntries()
 			_, _ = a.EditFields()
-			_, _ = a.BusStats()
+			_, _ = a.busStats()
 		}(i)
 	}
 	wg.Wait()

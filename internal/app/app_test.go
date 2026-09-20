@@ -187,6 +187,21 @@ func newWriteTestApp(t *testing.T) (*App, *smbus.FakeTransport) {
 	return a, f
 }
 
+// setDryRunForTest 直接开"设备级"干跑。
+// 绑定层已不再暴露 App.SetDryRun(干跑改由 ack/参数显式传入), 所以测试自己拿设备开关。
+func setDryRunForTest(t *testing.T, a *App, on bool) {
+	t.Helper()
+	a.mu.Lock()
+	dev := a.dev
+	a.mu.Unlock()
+	if dev == nil {
+		t.Fatal("测试需要先选择设备")
+	}
+	if err := dev.SetDryRun(on); err != nil {
+		t.Fatalf("SetDryRun(%v): %v", on, err)
+	}
+}
+
 func TestWriteFlowWithPreflight(t *testing.T) {
 	a, f := newWriteTestApp(t)
 	cur := ddr4Fixture()
@@ -198,7 +213,7 @@ func TestWriteFlowWithPreflight(t *testing.T) {
 	spd.FixCRC(want)
 	path := writeTempFile(t, want)
 
-	pf, err := a.PreflightWrite(path, false)
+	pf, err := a.preflightWrite(path, false)
 	if err != nil {
 		t.Fatalf("PreflightWrite: %v", err)
 	}
@@ -231,11 +246,11 @@ func TestWriteFlowWithPreflight(t *testing.T) {
 	}
 
 	// 确认串错误 → 拒绝
-	if _, err := a.WriteConfirmed(path, false, false, "yes"); err == nil {
+	if _, err := a.writeConfirmed(path, false, false, "yes"); err == nil {
 		t.Fatal("确认串错误应被拒绝")
 	}
 	// 正确确认 → 写入
-	res, err := a.WriteConfirmed(path, false, false, "WRITE")
+	res, err := a.writeConfirmed(path, false, false, "WRITE")
 	if err != nil {
 		t.Fatalf("WriteConfirmed: %v", err)
 	}
@@ -273,14 +288,14 @@ func TestWritePreflightBlocks(t *testing.T) {
 
 	// 1) 长度不符
 	short := writeTempFile(t, make([]byte, 256))
-	pf, err := a.PreflightWrite(short, false)
+	pf, err := a.preflightWrite(short, false)
 	if err != nil {
 		t.Fatalf("PreflightWrite: %v", err)
 	}
 	if !pf.Blocked || pf.SizeOK {
 		t.Fatalf("长度不符必须阻断: %+v", pf)
 	}
-	if _, err := a.WriteConfirmed(short, false, false, "WRITE"); err == nil {
+	if _, err := a.writeConfirmed(short, false, false, "WRITE"); err == nil {
 		t.Fatal("长度不符必须拒绝写入")
 	}
 
@@ -288,7 +303,7 @@ func TestWritePreflightBlocks(t *testing.T) {
 	bad := append([]byte{}, cur...)
 	bad[200] = 0x77 // 改动数据但不修 CRC
 	badPath := writeTempFile(t, bad)
-	pf, err = a.PreflightWrite(badPath, false)
+	pf, err = a.preflightWrite(badPath, false)
 	if err != nil {
 		t.Fatalf("PreflightWrite: %v", err)
 	}
@@ -304,14 +319,14 @@ func TestWritePreflightBlocks(t *testing.T) {
 	// 注意: 预览用的 PreflightWrite 不做写保护探测(DDR4 的探测要真写一个字节),
 	// 所以它把保护状态报成"未知"; 真正的判定发生在写入路径上。
 	f.ProtectedFrom = 0 // 全部块 NACK
-	pf, err = a.PreflightWrite(badPath, false)
+	pf, err = a.preflightWrite(badPath, false)
 	if err != nil {
 		t.Fatalf("PreflightWrite: %v", err)
 	}
 	if len(pf.UnknownBlocks) == 0 {
 		t.Fatalf("预览应把保护状态报成未知(不写测试): %+v", pf)
 	}
-	if _, err := a.WriteConfirmed(badPath, false, false, "WRITE"); err == nil {
+	if _, err := a.writeConfirmed(badPath, false, false, "WRITE"); err == nil {
 		t.Fatal("受保护块有变更时真实写入必须被拒绝")
 	} else if !strings.Contains(err.Error(), "写保护") && !strings.Contains(err.Error(), "CRC") {
 		t.Fatalf("拒绝原因应可解释: %v", err)
@@ -331,7 +346,7 @@ func TestWritePreflightHighRiskFields(t *testing.T) {
 	spd.FixCRC(want)
 	path := writeTempFile(t, want)
 
-	pf, err := a.PreflightWrite(path, false)
+	pf, err := a.preflightWrite(path, false)
 	if err != nil {
 		t.Fatalf("PreflightWrite: %v", err)
 	}
@@ -364,13 +379,11 @@ func TestWriteDryRunNoBusDataWrites(t *testing.T) {
 	spd.FixCRC(want)
 	path := writeTempFile(t, want)
 
-	pf, err := a.PreflightWrite(path, false)
+	pf, err := a.preflightWrite(path, false)
 	if err != nil {
 		t.Fatalf("PreflightWrite: %v", err)
 	}
-	if _, err := a.SetDryRun(true); err != nil {
-		t.Fatalf("SetDryRun: %v", err)
-	}
+	setDryRunForTest(t, a, true)
 	// 只统计干跑写入阶段(预检里的 DDR4 块首写测试本身会写字节, 不属干跑范围)
 	rec.Reset()
 	res, err := a.writeWithPreflight(pf, want, false, true, nil, "")
@@ -388,7 +401,7 @@ func TestWriteDryRunNoBusDataWrites(t *testing.T) {
 	}
 	// 完整入口(含预检)同样不得写入目标字节
 	rec.Reset()
-	if _, err := a.WriteConfirmed(path, false, true, "DRYRUN"); err != nil {
+	if _, err := a.writeConfirmed(path, false, true, "DRYRUN"); err != nil {
 		t.Fatalf("WriteConfirmed(干跑): %v", err)
 	}
 	for _, w := range rec.DataWrites() {
@@ -397,10 +410,10 @@ func TestWriteDryRunNoBusDataWrites(t *testing.T) {
 		}
 	}
 	// 干跑时真实写入必须被拒绝
-	if _, err := a.WriteConfirmed(path, false, false, "WRITE"); err == nil {
+	if _, err := a.writeConfirmed(path, false, false, "WRITE"); err == nil {
 		t.Fatal("干跑模式下真实写入应被拒绝")
 	}
-	if err := func() error { _, e := a.SetDryRun(false); return e }(); err != nil {
+	if err := func() error { setDryRunForTest(t, a, false); return nil }(); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -485,7 +498,7 @@ func TestCloseDevice(t *testing.T) {
 	if err := a.Select(0x50); err != nil {
 		t.Fatal(err)
 	}
-	a.CloseDevice()
+	a.closeDevice()
 	if _, err := a.Dump(); err == nil {
 		t.Fatal("CloseDevice 后 Dump 应报错")
 	}
@@ -648,7 +661,7 @@ func TestEditorBlocksWriteWhenFileStale(t *testing.T) {
 	// 这里文件与设备内容一致 → 无需写入(changes = 0), 走的是"无需写入"分支。
 	dump := ddr4Fixture()
 	path := writeTempFile(t, dump)
-	if _, err := a.EditLoadPath(path); err != nil {
+	if _, err := a.editLoadPath(path); err != nil {
 		t.Fatal(err)
 	}
 	res, err := a.EditApplyToDevice(false, false, "WRITE")
@@ -667,7 +680,7 @@ func TestEditorBlocksWriteWhenFileStale(t *testing.T) {
 		t.Fatal(err)
 	}
 	d3path := writeTempFile(t, d3)
-	if _, err := a.EditLoadPath(d3path); err != nil {
+	if _, err := a.editLoadPath(d3path); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.EditApplyToDevice(false, false, "WRITE"); err == nil {
@@ -700,7 +713,7 @@ func TestEditExportDefaultName(t *testing.T) {
 		return filepath.Join(dir, "out.bin"), nil
 	}
 	a.OpenDialog = func(string) (string, error) { return src, nil }
-	if _, err := a.EditLoadPath(src); err != nil {
+	if _, err := a.editLoadPath(src); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.EditExportDialog(); err != nil {

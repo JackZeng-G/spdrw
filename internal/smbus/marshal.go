@@ -28,7 +28,10 @@ const (
 //   - BlockData(写): data[0] = 长度(1..32), data[1..len] = 数据 —— 模块用
 //     unpack_bytes_le(in, in_data, 33, 4*8, 0) 从第 4 个 cell 起解出这 33 字节
 //   - BlockData(读): 无输入数据
-func MarshalXfer(addr byte, write bool, cmd byte, proto byte, data []byte) []uint64 {
+//
+// 越界/自相矛盾的入参**返回错误**而不是截断: 模块只会看上面前 33 字节, 静默截断会让
+// "写 40 字节"变成"悄悄只写 33 字节", 而调用方以为全写进去了(审计遗留项)。
+func MarshalXfer(addr byte, write bool, cmd byte, proto byte, data []byte) ([]uint64, error) {
 	in := make([]uint64, XferInSize)
 	in[0] = uint64(addr)
 	if write {
@@ -39,6 +42,8 @@ func MarshalXfer(addr byte, write bool, cmd byte, proto byte, data []byte) []uin
 	in[2] = uint64(cmd)
 	in[3] = uint64(proto)
 	switch proto {
+	case ProtoQuick, ProtoByte:
+		// 无数据字节(写这两种协议时模块忽略 data)
 	case ProtoByteData:
 		if len(data) > 0 {
 			in[4] = uint64(data[0])
@@ -52,14 +57,20 @@ func MarshalXfer(addr byte, write bool, cmd byte, proto byte, data []byte) []uin
 		}
 	case ProtoBlockData:
 		// 长度字节 + 最多 32 字节数据, 小端按字节铺在 in[4..8](5 个 cell = 40 字节)
+		if len(data) > BlockMaxPayload+1 {
+			return nil, fmt.Errorf("smbus: 块写入参 %d 字节超出上限 %d(1 长度字节 + %d 数据字节)",
+				len(data), BlockMaxPayload+1, BlockMaxPayload)
+		}
+		if len(data) > 0 && int(data[0]) != len(data)-1 {
+			return nil, fmt.Errorf("smbus: 块写长度字节 %d 与实际数据 %d 字节不符", data[0], len(data)-1)
+		}
 		for i, b := range data {
-			if i >= 33 {
-				break
-			}
 			in[4+i/8] |= uint64(b) << (8 * uint(i%8))
 		}
+	default:
+		return nil, fmt.Errorf("smbus: 不支持的协议 %d", proto)
 	}
-	return in
+	return in, nil
 }
 
 // BlockMaxPayload 是 SMBus Block Write 单次最多携带的数据字节数。

@@ -412,7 +412,7 @@ func TestDryRunReportsZeroNVMWrites(t *testing.T) {
 		t.Fatalf("干跑消息应明确写出零写入: %q", res.Message)
 	}
 	// BusStats() 绑定方法也要能读到(真机验证用)
-	st, err := a.BusStats()
+	st, err := a.busStats()
 	if err != nil {
 		t.Fatalf("BusStats: %v", err)
 	}
@@ -475,15 +475,13 @@ func TestDryRunPreflightNeverWritesBus(t *testing.T) {
 	path := writeTempFile(t, target)
 
 	// 先打开干跑, 再走"预检 + 干跑"完整流程
-	if _, err := a.SetDryRun(true); err != nil {
-		t.Fatal(err)
-	}
+	setDryRunForTest(t, a, true)
 	rec.Reset()
-	pf, err := a.PreflightWrite(path, false)
+	pf, err := a.preflightWrite(path, false)
 	if err != nil {
 		t.Fatalf("预检: %v", err)
 	}
-	res, err := a.WriteConfirmed(path, false, true, "DRYRUN")
+	res, err := a.writeConfirmed(path, false, true, "DRYRUN")
 	if err != nil {
 		t.Fatalf("干跑: %v", err)
 	}
@@ -514,7 +512,7 @@ func TestDryRunPreflightNeverWritesBus(t *testing.T) {
 	if !pf.Blocked && len(pf.ProtectedBlocks) != 0 {
 		t.Fatalf("干跑下不应报告受保护块: %+v", pf.ProtectedBlocks)
 	}
-	_, _ = a.SetDryRun(false)
+	setDryRunForTest(t, a, false)
 
 	// 关闭干跑后: 真正的写入路径会做写测试, 且能被计数看到(证明仪表没坏)
 	rec.Reset()
@@ -526,7 +524,7 @@ func TestDryRunPreflightNeverWritesBus(t *testing.T) {
 	}
 	// 而"预览"用的 PreflightWrite 永远不写: 这是给用户先看计划用的
 	rec.Reset()
-	if _, err := a.PreflightWrite(path, false); err != nil {
+	if _, err := a.preflightWrite(path, false); err != nil {
 		t.Fatalf("预览预检: %v", err)
 	}
 	if n := len(rec.DataWrites()); n != 0 {

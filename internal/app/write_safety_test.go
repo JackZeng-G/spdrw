@@ -1,10 +1,12 @@
 package app
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -52,7 +54,7 @@ func TestBackupHappensBeforeProbeWrite(t *testing.T) {
 	rec.FailWriteFrom = 2
 	rec.FailWriteCmdFilter = func(cmd byte) bool { return true }
 
-	_, err := a.WriteConfirmed(path, false, false, "WRITE")
+	_, err := a.writeConfirmed(path, false, false, "WRITE")
 	if err == nil {
 		t.Fatal("还原写失败时写入必须中止")
 	}
@@ -171,7 +173,7 @@ func TestPreviewNeverWritesEvenWhenShadowFails(t *testing.T) {
 	// 到这里连接/选择都做完了, 再让"整片读取建立影子"失败
 	f.FailReads = true
 	rec.Reset() // 统计窗口只覆盖这次预览(连接/选择阶段的写不算)
-	_, err := a.PreflightWrite(path, false)
+	_, err := a.preflightWrite(path, false)
 	if err == nil {
 		t.Fatal("无法建立影子时预览应中止")
 	}
@@ -514,7 +516,7 @@ func TestRejectedTargetIsProbedNever(t *testing.T) {
 	bad[20] ^= 0x0F
 	path := writeTempFile(t, bad)
 	rec.Reset()
-	if _, err := a.WriteConfirmed(path, false, false, "WRITE"); err == nil {
+	if _, err := a.writeConfirmed(path, false, false, "WRITE"); err == nil {
 		t.Fatal("CRC 不通过的目标必须被拒绝")
 	}
 	if n := len(rec.NVMWrites()); n != 0 {
@@ -524,5 +526,121 @@ func TestRejectedTargetIsProbedNever(t *testing.T) {
 		if q.Write {
 			t.Fatalf("被拒绝的目标不应触发写保护探测的 Quick 写(@%#x)", q.Addr)
 		}
+	}
+}
+
+// 备份落盘必须是原子的: 只可能出现完整文件或 *.tmp 残留, 不会出现半份 .bin。
+func TestWriteFileAtomicLeavesNoTemp(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "spd-0x50-x.bin")
+	want := []byte{1, 2, 3, 4, 5}
+	if err := writeFileAtomic(dir, path, want); err != nil {
+		t.Fatalf("writeFileAtomic: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, want) {
+		t.Fatalf("内容不符: %v %v", got, err)
+	}
+	ents, _ := os.ReadDir(dir)
+	for _, e := range ents {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Fatalf("不应留下临时文件: %s", e.Name())
+		}
+	}
+	// 覆盖写(rename 覆盖已存在文件)也要成功
+	if err := writeFileAtomic(dir, path, []byte{9}); err != nil {
+		t.Fatalf("覆盖写: %v", err)
+	}
+	if got, _ := os.ReadFile(path); len(got) != 1 || got[0] != 9 {
+		t.Fatalf("覆盖后内容不符: %v", got)
+	}
+}
+
+// 备份目录要有界: 只保留最近 backupKeep 份, 并清掉中断留下的 *.tmp。
+func TestPruneBackupsKeepsNewestAndCleansTmp(t *testing.T) {
+	dir := t.TempDir()
+	total := backupKeep + 5
+	for i := 0; i < total; i++ {
+		name := fmt.Sprintf("spd-0x50-20260101-0000%02d.000000000.bin", i)
+		if err := os.WriteFile(filepath.Join(dir, name), []byte{byte(i)}, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, n := range []string{"spd-1.tmp", "spd-2.tmp"} {
+		if err := os.WriteFile(filepath.Join(dir, n), []byte{0}, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// 无关文件不能被误删
+	other := filepath.Join(dir, "manual-backup.bin")
+	if err := os.WriteFile(other, []byte{0xFF}, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := pruneBackups(dir, backupKeep); n != 5+2 {
+		t.Fatalf("应删除 5 份过期备份 + 2 份 tmp, 实际 %d", n)
+	}
+	ents, _ := os.ReadDir(dir)
+	var bins []string
+	for _, e := range ents {
+		switch {
+		case strings.HasSuffix(e.Name(), ".tmp"):
+			t.Fatalf("残留临时文件: %s", e.Name())
+		case strings.HasPrefix(e.Name(), "spd-") && strings.HasSuffix(e.Name(), ".bin"):
+			bins = append(bins, e.Name())
+		}
+	}
+	if len(bins) != backupKeep {
+		t.Fatalf("应保留 %d 份, 实际 %d", backupKeep, len(bins))
+	}
+	// 保留的必须是最新的那批(名字最大的)
+	sort.Strings(bins)
+	oldest := fmt.Sprintf("spd-0x50-20260101-0000%02d.000000000.bin", 5)
+	if bins[0] != oldest {
+		t.Fatalf("保留的最旧一份应为 %s, 实际 %s", oldest, bins[0])
+	}
+	if _, err := os.Stat(other); err != nil {
+		t.Fatalf("非本工具命名的备份不应被删: %v", err)
+	}
+	// 再跑一次(幂等)不该删任何东西
+	if n := pruneBackups(dir, backupKeep); n != 0 {
+		t.Fatalf("已收敛后不应再删: %d", n)
+	}
+}
+
+// 真实备份路径: 回读校验通过、镜像与设备一致、连续两次不互相覆盖。
+func TestBackupCurrentVerifiesAndDoesNotOverwrite(t *testing.T) {
+	a, f := newWriteTestApp(t)
+	a.mu.Lock()
+	dev := a.dev
+	a.mu.Unlock()
+	img1, p1, err := a.backupCurrent(dev)
+	if err != nil {
+		t.Fatalf("backupCurrent: %v", err)
+	}
+	if len(img1) == 0 || !bytes.Equal(img1, f.EEProm[:len(img1)]) {
+		t.Fatal("返回的镜像应与设备内容一致")
+	}
+	onDisk, err := os.ReadFile(p1)
+	if err != nil || !bytes.Equal(onDisk, img1) {
+		t.Fatalf("备份文件内容不符: %v", err)
+	}
+	if a.lastBackupPath != p1 {
+		t.Fatalf("lastBackupPath 应指向最新备份: %s", a.lastBackupPath)
+	}
+	// 改动设备内容后再备份: 第一次的备份必须还在(名字带纳秒, 不互相覆盖)
+	f.EEProm[10] = 0x77
+	img2, p2, err := a.backupCurrent(dev)
+	if err != nil {
+		t.Fatalf("第二次 backupCurrent: %v", err)
+	}
+	if p1 == p2 {
+		t.Fatal("两次备份不应复用同一路径")
+	}
+	if !bytes.Equal(img2, f.EEProm[:len(img2)]) {
+		t.Fatal("第二次镜像应是改动后的内容")
+	}
+	if still, err := os.ReadFile(p1); err != nil || !bytes.Equal(still, img1) {
+		t.Fatalf("第一次的备份被破坏: %v", err)
 	}
 }

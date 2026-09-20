@@ -3,7 +3,8 @@
   (async () => {
     const $ = (id) => document.getElementById(id);
     const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-    const out = { steps: [], errors: window.__ERRORS, calls: () => window.__CALLS.map((c) => c.name) };
+    // 注: 桩会把每次绑定调用记进 window.__CALLS, 排障时可在控制台直接看调用序列。
+    const out = { steps: [], errors: window.__ERRORS };
     const step = (name, v) => out.steps.push({ name, ok: !!v, detail: v === undefined ? "" : String(v) });
     await wait(120); // 等绑定轮询与 checkEnv/autoConnectAll
 

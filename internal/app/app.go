@@ -456,36 +456,6 @@ func (a *App) dumpDiagnostics() {
 	a.logf("HUB 诊断: %s", sb.String())
 }
 
-// SaveDump 保存到文件: 优先复用最近一次读取的缓存, 无缓存时现读。
-func (a *App) SaveDump(path string) error {
-	defer a.lockOp()()
-	a.mu.Lock()
-	if a.dev == nil {
-		a.mu.Unlock()
-		return fmt.Errorf("请先选择设备")
-	}
-	var data []byte
-	if a.lastDump != nil && a.lastDumpAddr == a.dev.Addr() {
-		data = a.lastDump
-	} else {
-		// 无缓存: 现读。注意走 dumpLocked(本函数已持 opMu, 再调 Dump 会自锁死)
-		a.mu.Unlock()
-		var err error
-		if data, err = a.dumpLocked(); err != nil {
-			return err
-		}
-		a.mu.Lock()
-	}
-	c := make([]byte, len(data))
-	copy(c, data)
-	a.mu.Unlock()
-	if err := os.WriteFile(path, c, 0o644); err != nil {
-		return fmt.Errorf("写入 %s: %w", path, err)
-	}
-	a.logf("已保存 %s (%d 字节)", path, len(c))
-	return nil
-}
-
 // WriteFileDialog 已由 PickWriteFile + PreflightWrite + WriteConfirmed 取代
 // (旧实现弹框后直接写, 没有 diff/风险/备份环节), 保留此名会诱导绕过预检, 故删除。
 
@@ -495,47 +465,6 @@ func (a *App) dialogGuard() error {
 		return fmt.Errorf("文件对话框不可用(运行环境未注入)")
 	}
 	return nil
-}
-
-// SaveDumpDialog 弹出保存对话框并把缓存/现读的 dump 写入所选路径。
-func (a *App) SaveDumpDialog() error {
-	if err := a.dialogGuard(); err != nil {
-		return err
-	}
-	a.mu.Lock()
-	name := "spd-1024B.bin"
-	if a.dimm != nil {
-		name = fmt.Sprintf("spd-%#x-%d.bin", a.dimm.Addr, a.dimm.Size)
-	}
-	a.mu.Unlock()
-	path, err := a.SaveDialog("保存 SPD dump", name)
-	if err != nil {
-		return err
-	}
-	if path == "" {
-		a.logf("已取消保存")
-		return nil
-	}
-	return a.SaveDump(path)
-}
-
-// DecodeFileDialog 弹出打开对话框并解析所选 dump 文件。
-func (a *App) DecodeFileDialog() (*DecodeResult, error) {
-	if err := a.dialogGuard(); err != nil {
-		return nil, err
-	}
-	path, err := a.OpenDialog("选择 SPD dump 文件")
-	if err != nil {
-		return nil, err
-	}
-	if path == "" {
-		return nil, fmt.Errorf("已取消")
-	}
-	r, err := a.DecodeFile(path)
-	if r != nil {
-		r.Path = path
-	}
-	return r, err
 }
 
 // VerifyFileDialog 弹出打开对话框并校验所选文件与设备当前内容, 返回文件路径。
@@ -550,39 +479,11 @@ func (a *App) VerifyFileDialog() (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("已取消")
 	}
-	return path, a.VerifyFile(path)
-}
-
-// SaveDumpData 把前端传入的 dump 写到文件。
-func (a *App) SaveDumpData(path string, data []byte) error {
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		return fmt.Errorf("写入 %s: %w", path, err)
-	}
-	a.mu.Lock()
-	a.logf("已保存 %s (%d 字节)", path, len(data))
-	a.mu.Unlock()
-	return nil
-}
-
-// DecodeFile 离线解析 dump 文件(不依赖设备)。
-func (a *App) DecodeFile(path string) (*DecodeResult, error) {
-	dump, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("读取 %s: %w", path, err)
-	}
-	a.mu.Lock()
-	a.logf("解析 %s", path)
-	a.mu.Unlock()
-	return DecodeDump(dump)
-}
-
-// ReadFileBytes 读取文件的原始字节(前端展示用)。
-func (a *App) ReadFileBytes(path string) ([]byte, error) {
-	return os.ReadFile(path)
+	return path, a.verifyFile(path)
 }
 
 // VerifyFile 比对文件与设备内容。
-func (a *App) VerifyFile(path string) error {
+func (a *App) verifyFile(path string) error {
 	defer a.lockOp()()
 	a.mu.Lock()
 	dev := a.dev
@@ -894,7 +795,7 @@ func (a *App) disconnectLocked() {
 }
 
 // CloseDevice 仅断开设备选择。
-func (a *App) CloseDevice() {
+func (a *App) closeDevice() {
 	defer a.lockOp()()
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -906,7 +807,7 @@ func (a *App) CloseDevice() {
 }
 
 // Logs 返回全部日志。
-func (a *App) Logs() []LogEntry {
+func (a *App) logEntries() []LogEntry {
 	a.logMu.Lock()
 	defer a.logMu.Unlock()
 	out := make([]LogEntry, len(a.logs))
@@ -932,7 +833,7 @@ func (a *App) emit(event string, data ...interface{}) {
 
 // BusStats 返回当前控制器自上次 Reset 以来的总线事务计数, 外加"对 SPD NVM 的字节写"
 // 数量(按当前设备的世代判定)。真机验证干跑时用这个作为"确实没写"的证据。
-func (a *App) BusStats() (*BusStatsResult, error) {
+func (a *App) busStats() (*BusStatsResult, error) {
 	defer a.lockOp()()
 	a.mu.Lock()
 	dev := a.dev
@@ -956,20 +857,6 @@ func (a *App) BusStats() (*BusStatsResult, error) {
 	return res, nil
 }
 
-// ResetBusStats 清零总线计数(真机验证前后各调一次即可看到本次操作的净事务数)。
-func (a *App) ResetBusStats() error {
-	defer a.lockOp()()
-	a.mu.Lock()
-	active := a.active
-	a.mu.Unlock()
-	c, ok := active.(*smbus.CountingTransport)
-	if !ok {
-		return fmt.Errorf("当前控制器没有总线计数")
-	}
-	c.Reset()
-	return nil
-}
-
 // BusStatsResult 是总线事务统计。
 type BusStatsResult struct {
 	Generation     string `json:"generation"`
@@ -978,20 +865,6 @@ type BusStatsResult struct {
 	ByteDataWrites int    `json:"byteDataWrites"`
 	ByteWrites     int    `json:"byteWrites"`
 	NVMWrites      int    `json:"nvmWrites"`
-}
-
-// SetFastRead 开关块读加速(默认开)。关掉可对照"逐字节"的兼容模式。
-func (a *App) SetFastRead(on bool) (bool, error) {
-	defer a.lockOp()()
-	a.mu.Lock()
-	dev := a.dev
-	a.mu.Unlock()
-	if dev == nil {
-		return false, fmt.Errorf("请先选择设备")
-	}
-	dev.SetFastRead(on)
-	a.logf("块读加速: %v", map[bool]string{true: "开启(快)", false: "关闭(逐字节兼容)"}[on])
-	return dev.FastRead(), nil
 }
 
 // ReadStats 返回当前设备的读取方式统计(界面显示"这次是快读还是慢读")。

@@ -265,7 +265,7 @@ func TestCorpusEditPreflightDryRun(t *testing.T) {
 				t.Fatalf("%s: 干跑改动了设备内容 @%#x", name, i)
 			}
 		}
-		_, _ = a.SetDryRun(false)
+		setDryRunForTest(t, a, false)
 		ran++
 	}
 	if ran == 0 {

@@ -53,6 +53,8 @@ func main() {
 			}
 			a.LogVersion()
 		},
+		// 关窗时释放设备会话与全局 SMBus 锁(否则句柄与互斥量要等进程退出才回收)
+		OnShutdown: func(ctx context.Context) { a.Close() },
 		Bind: []interface{}{
 			a,
 		},

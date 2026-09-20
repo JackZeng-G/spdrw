@@ -25,7 +25,10 @@ func TestMarshalXfer(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := MarshalXfer(c.addr, c.write, c.cmd, c.proto, c.data)
+			got, err := MarshalXfer(c.addr, c.write, c.cmd, c.proto, c.data)
+			if err != nil {
+				t.Fatalf("MarshalXfer: %v", err)
+			}
 			if len(got) != XferInSize {
 				t.Fatalf("in_size = %d, want %d", len(got), XferInSize)
 			}
@@ -35,6 +38,43 @@ func TestMarshalXfer(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// 块写入参不允许被静默截断: 模块只认前 33 字节, 多出来的必须报错,
+// 否则调用方会以为 40 字节都写进去了。
+func TestMarshalXferRejectsOverlongBlockWrite(t *testing.T) {
+	payload := make([]byte, 0, 34)
+	payload = append(payload, 33) // 长度字节声称 33 > 协议上限 32
+	payload = append(payload, make([]byte, 33)...)
+	if _, err := MarshalXfer(0x50, true, 0, ProtoBlockData, payload); err == nil {
+		t.Fatal("长度字节 33 应被拒绝(协议上限 32)")
+	}
+	over := append([]byte{40}, make([]byte, 40)...) // 41 字节, 远超 33
+	if _, err := MarshalXfer(0x50, true, 0, ProtoBlockData, over); err == nil ||
+		!strings.Contains(err.Error(), "超出上限") {
+		t.Fatalf("超长块写应报错, got %v", err)
+	}
+	// 长度字节与实际数据不符也要拒绝(会让器件按错误字节数读)
+	if _, err := MarshalXfer(0x50, true, 0, ProtoBlockData, []byte{4, 1, 2}); err == nil {
+		t.Fatal("长度字节与实际数据不符应被拒绝")
+	}
+	// 未知协议不能静默跳过
+	if _, err := MarshalXfer(0x50, true, 0, 0x7F, nil); err == nil {
+		t.Fatal("未知协议应报错")
+	}
+	// 上限内的 32 字节块写要能正确铺进 5 个 cell
+	ok := make([]byte, 0, 33)
+	ok = append(ok, 32)
+	for i := 0; i < 32; i++ {
+		ok = append(ok, byte(i+1))
+	}
+	got, err := MarshalXfer(0x50, true, 0, ProtoBlockData, ok)
+	if err != nil {
+		t.Fatalf("32 字节块写应通过: %v", err)
+	}
+	if byte(got[4]) != 32 || byte(got[4]>>8) != 1 || byte(got[8]>>(8*0)) != 32 {
+		t.Fatalf("块写铺字节错误: %v", got)
 	}
 }
 

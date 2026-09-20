@@ -50,16 +50,6 @@
       { name: "部件号", start: 329, end: 349 },
     ],
   };
-  const preflight = {
-    path: "/tmp/dump.bin", addr: 0x50, generation: "DDR4", deviceSize: 512, fileSize: 512, sizeOk: true,
-    changeCount: 3, crcBytes: 2, changes: [
-      { offset: 325, old: 1, new: 0xab, block: 2, isCRC: false },
-      { offset: 126, old: 0x11, new: 0x40, block: 0, isCRC: true },
-    ],
-    changesTruncated: false, fields: [{ region: "序列号", risk: "low", count: 1, ranges: "0x145" }],
-    highRiskCount: 0, protectedBlocks: [], unknownBlocks: [], pswp: false,
-    targetCrcValid: true, currentCrcValid: true, dryRun: false, warnings: [], blocked: false, blockReason: "", blockKind: "",
-  };
   window.go = { app: { App: {
     ListControllers: rec("ListControllers", [{ index: 0, name: "Intel PCH SMBus (I801)", kind: "i801", noSpdWp: true, wpKnown: true }]),
     AutoConnectAll: rec("AutoConnectAll", { ctlIndex: 0, dimms: [{ addr: 0x50, isDdr5: false, ramType: "DDR4", size: 512 }] }),
@@ -68,20 +58,10 @@
     Select: rec("Select", null),
     Dump: rec("Dump", dumpB64),
     Decode: rec("Decode", { valid: true, ramType: "DDR4", moduleType: "UDIMM", totalMib: 8192, totalHuman: "8 GiB", ranks: 2, deviceWidth: 8, busWidth: 64, manufacturer: "Micron Technology", partNumber: "TEST-PN", dateYear: 2024, dateWeek: 15, serialHex: "DEADBEEF", crcOk: true, hasTimings: true, tck: { ns: 0.75, cycles: 0 }, casLatencies: "17,18,19,20" }),
-    ReadFileBytes: rec("ReadFileBytes", dumpB64),
-    SaveDumpDialog: rec("SaveDumpDialog", null),
-    DecodeFileDialog: rec("DecodeFileDialog", null),
     VerifyFileDialog: rec("VerifyFileDialog", "/tmp/x.bin"),
-    PickWriteFile: rec("PickWriteFile", "/tmp/dump.bin"),
-    PreflightWrite: rec("PreflightWrite", preflight),
-    WriteConfirmed: rec("WriteConfirmed", { dryRun: false, written: 3, total: 3, backupPath: "/root/.spdrw/backups/x.bin", verified: true, message: "写入并校验通过" }),
-    SetFastRead: rec("SetFastRead", true),
     ReadStats: rec("ReadStats", { bytes: 1024, transactions: 33, blockBytes: 1024, fallbackBytes: 0, blockReadOK: true, blockReadKnown: true }),
-    BusStats: rec("BusStats", { generation: "DDR4", reads: 2140, quickWrites: 3, byteDataWrites: 2, byteWrites: 14, nvmWrites: 0 }),
     BusTuning: rec("BusTuning", { tunable: true, clockHz: 396000, sleepMode: 0, sleepModeName: "忙等(最快)", fastRead: true }),
-    SetSleepMode: rec("SetSleepMode", 0),
     WriteProbe: rec("WriteProbe", { addr: 80, offset: 560, offsetText: "0x230", old: 0, new: 255, readBack: 255, verdict: "ok", note: "写入生效", restored: true, verified: true, backupPath: "/tmp/b.bin" }),
-    ResetBusStats: rec("ResetBusStats", null),
     WPStatus: rec("WPStatus", ddr4Status),
     WPSet: rec("WPSet", null),
     WPClear: rec("WPClear", null),

@@ -74,9 +74,7 @@ func TestWriteProbeVerdicts(t *testing.T) {
 // 探测在干跑模式下必须拒绝(否则会给出误导性结论)。
 func TestWriteProbeRefusesDryRun(t *testing.T) {
 	a, _ := newWriteTestApp(t)
-	if _, err := a.SetDryRun(true); err != nil {
-		t.Fatal(err)
-	}
+	setDryRunForTest(t, a, true)
 	if _, err := a.WriteProbe(); err == nil || !strings.Contains(err.Error(), "干跑") {
 		t.Fatalf("干跑模式下应拒绝探测: %v", err)
 	}
@@ -214,7 +212,7 @@ func TestWPStatusDDR5DoesNotRequireBackup(t *testing.T) {
 			t.Fatalf("DDR5 保护状态查询不得产生任何写事务: %s@%#x", op.Kind, op.Cmd)
 		}
 	}
-	logs := a.Logs()
+	logs := a.logEntries()
 	for _, l := range logs {
 		if strings.Contains(l.Text, "会做写测试") {
 			t.Fatalf("DDR5 不该出现「会做写测试」: %s", l.Text)

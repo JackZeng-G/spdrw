@@ -118,7 +118,7 @@ func TestDumpKeepsDirtyEditor(t *testing.T) {
 		t.Fatal("编辑器应仍是 dirty(改动被保留)")
 	}
 	found := false
-	for _, l := range a.Logs() {
+	for _, l := range a.logEntries() {
 		if strings.Contains(l.Text, "未保存改动") {
 			found = true
 		}

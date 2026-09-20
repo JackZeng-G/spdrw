@@ -193,27 +193,12 @@ func regionsFor(rt spd.RAMType, size int) []spdRegion {
 	}
 }
 
-// PickWriteFile 只弹打开对话框并返回路径(不写入), 供前端先做预检。
-func (a *App) PickWriteFile() (string, error) {
-	if err := a.dialogGuard(); err != nil {
-		return "", err
-	}
-	path, err := a.OpenDialog("选择要写入的 dump 文件")
-	if err != nil {
-		return "", err
-	}
-	if path == "" {
-		return "", fmt.Errorf("已取消")
-	}
-	return path, nil
-}
-
 // PreflightWrite 是**预览**: 算写入计划与风险, 但绝不写设备。
 //
 // 注意 probeProtection=false: DDR4/更早世代的写保护状态只能靠"取反写一字节再还原"探测,
 // 而这一步在用户勾"干跑"之前就会发生(前端是先预检、再弹出面板)。预览因此不做写测试,
 // 保护状态显示为"未知"; 真正写入时(WriteConfirmed)会带写测试重做一次并在受保护时拒绝。
-func (a *App) PreflightWrite(path string, force bool) (*WritePreflight, error) {
+func (a *App) preflightWrite(path string, force bool) (*WritePreflight, error) {
 	defer a.lockOp()()
 	return a.preflightNoLock(path, force, false)
 }
@@ -540,28 +525,25 @@ func compactRanges(offs []int) string {
 	return strings.Join(parts, ", ")
 }
 
-// SetDryRun 开关干跑模式: 开启时写入只落在内存影子, 一个字节都不上总线。
-func (a *App) SetDryRun(on bool) (bool, error) {
-	defer a.lockOp()()
-	a.mu.Lock()
-	dev := a.dev
-	a.mu.Unlock()
-	if dev == nil {
-		return false, fmt.Errorf("请先选择设备")
-	}
-	if err := dev.SetDryRun(on); err != nil {
-		return false, err
-	}
-	a.logf("干跑模式: %v", map[bool]string{true: "开启(写入不会真正执行)", false: "关闭"}[on])
-	return dev.DryRun(), nil
-}
+// backupKeep 是备份目录保留的份数(超出后按文件名里的时间戳删最旧的)。
+// 名字形如 spd-0x50-20260920-153000.123456789.bin, 字典序即时序。
+const backupKeep = 20
 
 // backupCurrent 把设备当前整片内容存到备份目录, 返回**镜像内容**与文件路径。
 // 镜像要一直留在内存里: 写入失败时它就是回滚源(不能只依赖磁盘文件, 免得盘满/权限问题)。
+//
+// 落盘要求(审计遗留项):
+//   - **原子**: 先写同目录的临时文件 + fsync, 再 rename。中断只会留下 *.tmp, 不会留下
+//     半份"看起来像备份"的文件 —— 回滚时按它写回去才是真的灾难。
+//   - **回读校验**: rename 之后读回来逐字节比对, 不一致就报错拒绝写入。
+//   - **有界**: 只保留最近 backupKeep 份, 顺带清掉中断留下的 *.tmp。
 func (a *App) backupCurrent(dev *eeprom.Device) ([]byte, string, error) {
 	img, err := dev.ReadAll()
 	if err != nil {
 		return nil, "", fmt.Errorf("备份失败(读取当前内容): %w", err)
+	}
+	if len(img) == 0 {
+		return nil, "", fmt.Errorf("备份失败: 设备返回 0 字节")
 	}
 	dir, err := backupDir()
 	if err != nil {
@@ -573,14 +555,91 @@ func (a *App) backupCurrent(dev *eeprom.Device) ([]byte, string, error) {
 	// 纳秒 + 地址: 同一秒内连续两次真实写入不能互相覆盖(第一次的备份才是"原始内容")
 	name := fmt.Sprintf("spd-%#x-%s.bin", dev.Addr(), time.Now().Format("20060102-150405.000000000"))
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, img, 0o644); err != nil {
+	if err := writeFileAtomic(dir, path, img); err != nil {
 		return nil, "", fmt.Errorf("写备份 %s: %w", path, err)
+	}
+	back, err := os.ReadFile(path)
+	if err != nil {
+		return nil, "", fmt.Errorf("备份回读 %s: %w", path, err)
+	}
+	if len(back) != len(img) {
+		return nil, "", fmt.Errorf("备份回读长度不符(%d != %d): %s", len(back), len(img), path)
+	}
+	for i := range img {
+		if back[i] != img[i] {
+			return nil, "", fmt.Errorf("备份回读内容不符(@0x%03X: %02X != %02X): %s", i, back[i], img[i], path)
+		}
 	}
 	a.mu.Lock()
 	a.lastBackupPath = path
 	a.mu.Unlock()
 	a.logf("已备份当前 SPD: %s (%d 字节)", path, len(img))
+	if n := pruneBackups(dir, backupKeep); n > 0 {
+		a.logf("已清理 %d 份较早的备份(保留最近 %d 份)", n, backupKeep)
+	}
 	return img, path, nil
+}
+
+// writeFileAtomic 在 dir 内写临时文件 → fsync → rename 到 path。
+func writeFileAtomic(dir, path string, data []byte) error {
+	f, err := os.CreateTemp(dir, "spd-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	cleanup := func() { _ = f.Close(); _ = os.Remove(tmp) }
+	if _, err := f.Write(data); err != nil {
+		cleanup()
+		return err
+	}
+	if err := f.Sync(); err != nil { // 崩溃/断电时不留半份内容
+		cleanup()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// pruneBackups 只保留最近的 keep 份 spd-*.bin, 并清掉中断留下的 *.tmp; 返回删除份数。
+func pruneBackups(dir string, keep int) int {
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	removed := 0
+	var bins []string
+	for _, e := range ents {
+		if e.IsDir() {
+			continue
+		}
+		n := e.Name()
+		switch {
+		case strings.HasPrefix(n, "spd-") && strings.HasSuffix(n, ".bin"):
+			bins = append(bins, n)
+		case strings.HasSuffix(n, ".tmp"):
+			// 中断留下的临时文件: 永远不是有效备份
+			if os.Remove(filepath.Join(dir, n)) == nil {
+				removed++
+			}
+		}
+	}
+	if len(bins) <= keep {
+		return removed
+	}
+	sort.Strings(bins) // 名字里带纳秒时间戳 → 字典序即时序
+	for _, n := range bins[:len(bins)-keep] {
+		if os.Remove(filepath.Join(dir, n)) == nil {
+			removed++
+		}
+	}
+	return removed
 }
 
 // restoreImage 用给定镜像覆盖设备内容并整片校验(回滚与测试共用)。
@@ -707,7 +766,7 @@ func backupDir() (string, error) {
 //  4. 预检(含写保护探测);
 //  5. 探测后整片复核, 与备份不一致 → 回滚 + 中止;
 //  6. 写入(CRC 最后) → 逐字节回读 → 整片校验 → 失败自动回滚。
-func (a *App) WriteConfirmed(path string, force, dryRun bool, ack string) (*WriteResult, error) {
+func (a *App) writeConfirmed(path string, force, dryRun bool, ack string) (*WriteResult, error) {
 	defer a.lockOp()()
 	want := "WRITE"
 	if dryRun {

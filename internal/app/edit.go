@@ -86,7 +86,7 @@ func (a *App) EditLoadFromDevice() (*EditState, error) {
 }
 
 // EditLoadPath 从文件载入编辑器(用于离线修改 dump)。
-func (a *App) EditLoadPath(path string) (*EditState, error) {
+func (a *App) editLoadPath(path string) (*EditState, error) {
 	defer a.lockOp()()
 	dump, err := os.ReadFile(path)
 	if err != nil {
@@ -117,7 +117,7 @@ func (a *App) EditLoadFileDialog() (*EditState, error) {
 	if path == "" {
 		return nil, fmt.Errorf("已取消")
 	}
-	return a.EditLoadPath(path)
+	return a.editLoadPath(path)
 }
 
 // EditState 返回编辑器状态(对外入口, 持操作锁)。

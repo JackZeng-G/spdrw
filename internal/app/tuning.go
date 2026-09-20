@@ -58,30 +58,6 @@ func (a *App) BusTuning() (*BusTuningResult, error) {
 	return res, nil
 }
 
-// SetSleepMode 切换等待模式(0=忙等 / 1=折中 / 2=休眠), 返回设置后的模式。
-func (a *App) SetSleepMode(mode int) (int, error) {
-	defer a.lockOp()()
-	a.mu.Lock()
-	active := a.active
-	a.mu.Unlock()
-	if active == nil {
-		return 0, fmt.Errorf("尚未连接控制器")
-	}
-	tuner, ok := smbus.TunerOf(active)
-	if !ok {
-		return 0, fmt.Errorf("当前控制器不支持切换等待模式(测试/非 PawnIO 会话)")
-	}
-	if !smbus.ValidSleepMode(mode) {
-		return 0, fmt.Errorf("等待模式 %d 无效(0=忙等 / 1=折中 / 2=休眠)", mode)
-	}
-	if err := tuner.SetSleepMode(smbus.SleepMode(mode)); err != nil {
-		return 0, fmt.Errorf("设置等待模式失败: %w", err)
-	}
-	cur := int(tuner.SleepMode())
-	a.logf("总线等待模式: %s", smbus.SleepModeName(tuner.SleepMode()))
-	return cur, nil
-}
-
 // busTuningNoteLocked 假定调用方已持 a.mu。
 func (a *App) busTuningNoteLocked() string {
 	tuner, ok := smbus.TunerOf(a.active)

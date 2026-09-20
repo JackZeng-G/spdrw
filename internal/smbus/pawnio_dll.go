@@ -166,24 +166,36 @@ func (s *pawnioSession) close() {
 // 全局 SMBus 互斥体(与 Thaiphoon/OpenRGB 仲裁同一总线)。
 var (
 	smbusMutex     windows.Handle
+	smbusMutexErr  error
 	smbusMutexOnce sync.Once
 )
 
-// lockSMBus 获取跨进程 SMBus 仲裁互斥。
+// lockSMBus 获取跨进程 SMBus 仲裁互斥, 返回 (unlock, err)。
+//
+// err != nil 表示**没拿到仲裁**, 调用方必须放弃本次事务。以前创建互斥体失败时会返回一个
+// 空 unlock(静默不作仲裁), 于是"以为有互斥、其实没有": 与 Thaiphoon/厂家工具并发时可能
+// 读到错数据, 写 SPD 时更危险。现在一律 fail-closed, 并把原因报上来(审计遗留项)。
+//
 // 关键: WaitForSingleObject 与 ReleaseMutex 必须在同一 OS 线程上执行
 // (Windows mutex 的所有权属于线程), 否则 Go 调度器在两次 syscall 之间
 // 把 goroutine 换到别的线程时 ReleaseMutex 报 ERROR_NOT_OWNER,
 // 互斥被遗弃, 之后所有等待都误报"被占用"。故 LockOSThread 包住临界区。
-func lockSMBus() func() {
+func lockSMBus() (func(), error) {
 	smbusMutexOnce.Do(func() {
 		name, _ := syscall.UTF16PtrFromString(`Global\Access_SMBUS.HTP.Method`)
 		h, err := windows.CreateMutex(nil, false, name)
-		if err == nil {
-			smbusMutex = h
+		if err != nil {
+			smbusMutexErr = fmt.Errorf("无法创建 SMBus 仲裁互斥体(Global\\Access_SMBUS.HTP.Method): %w; "+
+				"为避免与其它 SMBus 工具并发访问, 已拒绝本次事务(通常需要以管理员身份运行)", err)
+			return
 		}
+		smbusMutex = h
 	})
 	if smbusMutex == 0 {
-		return func() {}
+		if smbusMutexErr == nil {
+			smbusMutexErr = fmt.Errorf("SMBus 仲裁互斥体不可用, 已拒绝本次事务")
+		}
+		return nil, smbusMutexErr
 	}
 	runtime.LockOSThread()
 	const lockTimeoutMs = 2000
@@ -191,16 +203,16 @@ func lockSMBus() func() {
 	switch {
 	case err != nil:
 		runtime.UnlockOSThread()
-		return nil
+		return nil, fmt.Errorf("等待 SMBus 仲裁互斥体失败: %w", err)
 	case ev == windows.WAIT_OBJECT_0, ev == windows.WAIT_ABANDONED:
 		// WAIT_ABANDONED: 前任 owner 线程已死, 系统把所有权让渡给本线程;
 		// SMBus 事务是短临界区, 视为获取成功。
 		return func() {
 			_ = windows.ReleaseMutex(smbusMutex)
 			runtime.UnlockOSThread()
-		}
+		}, nil
 	default: // WAIT_TIMEOUT: 被其他工具长期占用
 		runtime.UnlockOSThread()
-		return nil
+		return nil, fmt.Errorf("SMBus 正被其他程序占用(等待 %d 毫秒超时), 请关闭 Thaiphoon/厂家工具后重试", lockTimeoutMs)
 	}
 }

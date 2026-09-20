@@ -196,11 +196,14 @@ func (p *pawnioTransport) ClockHz() (int, error) {
 // (KernCZ 的端口选择寄存器是全局硬件状态, 多会话/外部工具会互相覆盖)。
 // 同一会话内端口不变, 只在首次和出错后重选 —— 每字节省一次内核 execute(约减半耗时)。
 func (p *pawnioTransport) xfer(addr byte, write bool, cmd byte, proto byte, data []byte, wantOut bool) ([]uint64, error) {
-	in := MarshalXfer(addr, write, cmd, proto, data)
+	in, err := MarshalXfer(addr, write, cmd, proto, data)
+	if err != nil {
+		return nil, err
+	}
 	out := make([]uint64, XferOutSize)
-	unlock := lockSMBus()
-	if unlock == nil {
-		return nil, fmt.Errorf("SMBus 正被其他程序占用(等待 2 秒超时), 请关闭 Thaiphoon/厂家工具后重试")
+	unlock, err := lockSMBus()
+	if err != nil {
+		return nil, err
 	}
 	defer unlock()
 
@@ -227,7 +230,6 @@ func (p *pawnioTransport) xfer(addr byte, write bool, cmd byte, proto byte, data
 	// 而 DDR5 SPD5 HUB/I3C 桥在空闲后的首次访问可能更慢; 原版轮询 1000ms 所以
 	// "慢但能读"。这里对状态错误(NACK/超时)重试, 多数 HUB 重试一次即可恢复。
 	var ret uint64
-	var err error
 	for attempt := 0; attempt < 3; attempt++ {
 		if attempt > 0 {
 			time.Sleep(5 * time.Millisecond)

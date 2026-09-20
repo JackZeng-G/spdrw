@@ -212,16 +212,11 @@ func TestBusTuningUnsupportedOnFake(t *testing.T) {
 	if res.Note == "" {
 		t.Fatal("应说明为什么不可调优")
 	}
-	if _, err := a.SetSleepMode(0); err == nil {
-		t.Fatal("不可调优时 SetSleepMode 应报错")
-	}
-	// 未连接控制器时也要报可读错误
+	// 未连接控制器时也要报可读错误。
+	// (切换等待模式本身已不再是对外绑定: 忙等/折中是自动选路 + 失败降级, 见 smbus.Tuner 用例。)
 	empty := New()
 	if _, err := empty.BusTuning(); err == nil {
 		t.Fatal("未连接时应报错")
-	}
-	if _, err := empty.SetSleepMode(0); err == nil {
-		t.Fatal("未连接时 SetSleepMode 应报错")
 	}
 }
 
@@ -271,7 +266,7 @@ func TestListControllersKeepsOnlyWithDevices(t *testing.T) {
 
 func logTexts(a *App) []string {
 	var out []string
-	for _, l := range a.Logs() {
+	for _, l := range a.logEntries() {
 		out = append(out, l.Text)
 	}
 	return out
