@@ -194,3 +194,9 @@ table.timing th { background: var(--bg3); color: var(--muted); text-align: left;
 .edit-diff { font-size: 11px; line-height: 1.7; max-height: 120px; overflow-y: auto; }
 .edit-diff .danger { color: var(--danger); }
 .edit-diff .warn { color: #ffd479; }
+
+/* 总线统计 */
+.ops.bus { gap: 4px !important; }
+.bus-stats { font-size: 11px; line-height: 1.7; }
+.bus-stats .ok { color: var(--ok); }
+.bus-stats .bad { color: var(--danger); }
