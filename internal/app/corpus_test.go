@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"spdrw/internal/eeprom"
 	"spdrw/internal/smbus"
 	"spdrw/internal/spd"
 )
@@ -108,11 +109,10 @@ func manufacturerCodeByte(dump []byte) byte {
 // 上跑一遍。真机写入前, 这些步骤是我们能离线验证的全部内容 —— 语料覆盖 DDR3/DDR4/DDR5
 // 三代, 能发现跨世代的 CRC 偏移、分页、保护探测问题。
 func TestCorpusEditPreflightDryRun(t *testing.T) {
-	// 逐份读整片(每字节 1ms 的读间隔) + 写保护探测, 67 份约 5 分钟:
-	// 默认跳过, 用 SPDRW_FULL_CORPUS=1 显式运行。
-	if os.Getenv("SPDRW_FULL_CORPUS") == "" {
-		t.Skip("慢测试(约 5 分钟): SPDRW_FULL_CORPUS=1 go test ./internal/app/ -run TestCorpusEditPreflightDryRun")
-	}
+	// 关掉逐字节读间隔(默认 1ms, 真机需要; 测试里纯属浪费)
+	old := eeprom.ReadDelay
+	eeprom.ReadDelay = 0
+	defer func() { eeprom.ReadDelay = old }()
 	dir := filepath.Join("..", "..", "testdata", "spd")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -233,18 +233,22 @@ func TestCorpusEditPreflightDryRun(t *testing.T) {
 		if st.Generation == "" || st.Size != size {
 			t.Errorf("%s: 编辑器状态异常: %+v", name, st)
 		}
-		if _, err := a.SetDryRun(true); err != nil {
-			t.Errorf("%s: SetDryRun: %v", name, err)
-			continue
-		}
+		// 走应用的真实路径(自己开干跑), 这样"建立影子"的读也会计入总线统计
 		res, err := a.writeWithPreflight(pf, target, false, true)
 		if err != nil {
 			t.Errorf("%s: 干跑失败: %v", name, err)
-			_, _ = a.SetDryRun(false)
 			continue
 		}
 		if res.Written == 0 || !res.DryRun {
 			t.Errorf("%s: 干跑结果异常: %+v", name, res)
+		}
+		// 干跑必须能从总线计数上证明"零 NVM 写"(真机 V2 靠的就是这个信号)
+		if res.BusStats == nil {
+			t.Errorf("%s: 干跑结果缺少总线统计", name)
+		} else if res.BusStats.NVMWrites != 0 || res.NVMWrites != 0 {
+			t.Errorf("%s: 干跑出现 NVM 写: %+v", name, res.BusStats)
+		} else if res.BusStats.Reads == 0 {
+			t.Errorf("%s: 总线统计没有读事务, 计数可能没生效", name)
 		}
 		// 设备(Eeprom)必须原封不动
 		for i := 0; i < size; i++ {

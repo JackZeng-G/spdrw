@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"spdrw/internal/eeprom"
+	"spdrw/internal/smbus"
 	"spdrw/internal/spd"
 )
 
@@ -59,12 +60,14 @@ type WritePreflight struct {
 
 // WriteResult 是一次写入(或干跑)的结果。
 type WriteResult struct {
-	DryRun     bool   `json:"dryRun"`
-	Written    int    `json:"written"`
-	Total      int    `json:"total"`
-	BackupPath string `json:"backupPath"`
-	Verified   bool   `json:"verified"`
-	Message    string `json:"message"`
+	DryRun     bool            `json:"dryRun"`
+	Written    int             `json:"written"`
+	Total      int             `json:"total"`
+	BackupPath string          `json:"backupPath"`
+	Verified   bool            `json:"verified"`
+	Message    string          `json:"message"`
+	NVMWrites  int             `json:"nvmWrites"`
+	BusStats   *BusStatsResult `json:"busStats,omitempty"`
 }
 
 // spdRegion 描述一段 SPD 字节区域。
@@ -207,6 +210,13 @@ func (a *App) PreflightWrite(path string, force bool) (*WritePreflight, error) {
 		return nil, fmt.Errorf("读取 %s: %w", path, err)
 	}
 	return a.buildPreflight(path, dump, force)
+}
+
+// activeTransport 返回当前选中的传输(用于取总线计数包装)。
+func (a *App) activeTransport() smbus.Transport {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.active
 }
 
 // buildPreflight 对一份内存 dump 做写入前检查(编辑器与文件写入共用)。
@@ -492,6 +502,10 @@ func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun 
 
 	// 干跑: 不改动设备状态, 只把结果算进影子
 	if dryRun {
+		counter, _ := a.activeTransport().(*smbus.CountingTransport)
+		if counter != nil {
+			counter.Reset()
+		}
 		if !dev.DryRun() {
 			if err := dev.SetDryRun(true); err != nil {
 				return nil, err
@@ -506,7 +520,25 @@ func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun 
 			return nil, err
 		}
 		res.Total, res.Written, res.Verified = len(changes), len(changes), true
-		res.Message = fmt.Sprintf("干跑完成: 将写入 %d 字节(总线上零写事务)", len(changes))
+		res.Message = fmt.Sprintf("干跑完成: 将写入 %d 字节", len(changes))
+		if counter != nil {
+			st := counter.Stats()
+			nvm := smbus.NVMWrites(counter.WriteLog(), dev.IsDDR5())
+			res.BusStats = &BusStatsResult{
+				Generation: dev.Generation(), Reads: st.Reads, QuickWrites: st.QuickWrites,
+				ByteDataWrites: st.ByteDataWrites, ByteWrites: st.ByteWrites, NVMWrites: len(nvm),
+			}
+			res.NVMWrites = len(nvm)
+			res.Message += fmt.Sprintf("; 期间总线事务: 读 %d 次 / 页选择与命令写 %d 次 / 字节写 %d 次, 其中对 SPD NVM 的数据写 %d 次",
+				st.Reads, st.QuickWrites+st.ByteWrites, st.ByteDataWrites, len(nvm))
+			if len(nvm) == 0 {
+				res.Message += "(零写入)"
+			} else {
+				res.Message += " —— 警告: 干跑模式出现了 NVM 写, 请勿在真机使用!"
+			}
+		} else {
+			res.Message += "(总线上零写事务)"
+		}
 		if pf.Blocked {
 			res.Message += "; 注意: " + pf.BlockReason
 		}
@@ -517,6 +549,10 @@ func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun 
 	// 真实写入: 先备份, 再写, 最后整片校验
 	if dev.DryRun() {
 		return nil, fmt.Errorf("设备处于干跑模式, 本次不会真正写入; 请先关闭干跑模式再执行真实写入")
+	}
+	counter, _ := a.activeTransport().(*smbus.CountingTransport)
+	if counter != nil {
+		counter.Reset()
 	}
 	backup, err := a.backupCurrent(dev)
 	if err != nil {
@@ -538,6 +574,16 @@ func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun 
 	}
 	res.Verified = true
 	res.Message = fmt.Sprintf("写入并校验通过: %d 字节(备份 %s)", len(changes), backup)
+	if counter != nil {
+		st := counter.Stats()
+		nvm := smbus.NVMWrites(counter.WriteLog(), dev.IsDDR5())
+		res.NVMWrites = len(nvm)
+		res.BusStats = &BusStatsResult{
+			Generation: dev.Generation(), Reads: st.Reads, QuickWrites: st.QuickWrites,
+			ByteDataWrites: st.ByteDataWrites, ByteWrites: st.ByteWrites, NVMWrites: len(nvm),
+		}
+		res.Message += fmt.Sprintf("; 总线: 读 %d / 字节写 %d(其中 NVM %d)", st.Reads, st.ByteDataWrites, len(nvm))
+	}
 	a.logf("%s", res.Message)
 	return res, nil
 }
