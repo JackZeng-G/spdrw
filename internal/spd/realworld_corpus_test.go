@@ -1,6 +1,7 @@
 package spd
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -536,4 +537,77 @@ func TestRealDumpXMP2TimingsMatchVendorSpec(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestRealDumpDDR5ProfilesMatchVendorSpec 用厂商型号里公开的规格核对 DDR5 的
+// JEDEC/XMP3/EXPO 解析。型号本身就把规格写在名字里, 因此这是**外部参照**:
+// 代码与它不一致就是代码错(与 XMP 2.0 那条 nibble 位序 bug 同一类)。
+func TestRealDumpDDR5ProfilesMatchVendorSpec(t *testing.T) {
+	dir := filepath.Join("..", "..", "testdata", "spd")
+	cases := []struct {
+		file       string
+		mtPerS     float64 // 数据率 MT/s
+		vdd        float64
+		wantCL     int
+		wantEXPO   bool
+		expoMTPerS float64
+	}{
+		// Corsair CMK32GX5M2B5600Z40: DDR5-5600, CL40, 1.25V(XMP3 + EXPO 都有)
+		{"ddr5-corsair-cmk32gx5m2b5600z40-cityson.bin", 5600, 1.25, 40, true, 5600},
+		// GeIL D5-8000 CL38: DDR5-8000, CL38, 1.45V
+		{"ddr5-geil-d5-8000-cl38-cityson.bin", 8000, 1.45, 38, true, 8000},
+		// G.Skill F5-6000J3636F16G: DDR5-6000, 1.35V(只有 EXPO)
+		{"ddr5-gskill-f5-6000j3636f16g-cityson.bin", 0, 1.35, 0, true, 6000},
+		// TEAMGROUP UD5-6000: XMP3 两个 profile(6000 CL38 / 5600 CL40) + 对应 EXPO
+		{"ddr5-teamgroup-ud5-6000-omi.spd", 6000, 1.25, 38, true, 6000},
+	}
+	for _, c := range cases {
+		dump, err := os.ReadFile(filepath.Join(dir, c.file))
+		if err != nil {
+			t.Errorf("缺少样本 %s: %v", c.file, err)
+			continue
+		}
+		ed, err := NewEditor(dump)
+		if err != nil {
+			t.Fatalf("%s: NewEditor: %v", c.file, err)
+		}
+		fields := editorFieldValues(ed)
+		parse := func(key string) float64 {
+			v, _ := strconv.ParseFloat(fields[key], 64)
+			return v
+		}
+		if c.mtPerS > 0 {
+			tck := parse("xmp3.p1.tCK")
+			if tck <= 0 {
+				t.Errorf("%s: xmp3.p1.tCK = %q", c.file, fields["xmp3.p1.tCK"])
+			} else if got := 2000 / tck; math.Abs(got-c.mtPerS) > 20 {
+				t.Errorf("%s: XMP3 频率 = %.0f MT/s, 期望 %.0f", c.file, got, c.mtPerS)
+			}
+			if vdd := parse("xmp3.p1.vdd"); math.Abs(vdd-c.vdd) > 0.006 {
+				t.Errorf("%s: XMP3 VDD = %.3f V, 期望 %.2f", c.file, vdd, c.vdd)
+			}
+			if cl := fields["xmp3.p1.cl"]; !strings.Contains(cl, strconv.Itoa(c.wantCL)) {
+				t.Errorf("%s: XMP3 CL 列表 %q 应含 CL%d", c.file, cl, c.wantCL)
+			}
+		}
+		if c.wantEXPO {
+			if !EXPOPresenceOf(dump) {
+				t.Errorf("%s: 应存在 EXPO", c.file)
+			}
+			tck := parse("expo.p1.tCK")
+			if tck <= 0 {
+				t.Errorf("%s: expo.p1.tCK = %q", c.file, fields["expo.p1.tCK"])
+			} else if got := 2000 / tck; math.Abs(got-c.expoMTPerS) > 20 {
+				t.Errorf("%s: EXPO 频率 = %.0f MT/s, 期望 %.0f", c.file, got, c.expoMTPerS)
+			}
+			if vdd := parse("expo.p1.vdd"); math.Abs(vdd-c.vdd) > 0.006 {
+				t.Errorf("%s: EXPO VDD = %.3f V, 期望 %.2f", c.file, vdd, c.vdd)
+			}
+		}
+	}
+}
+
+// EXPOPresenceOf 是给测试用的小helper(避免测试里再构造解析器)。
+func EXPOPresenceOf(dump []byte) bool {
+	return len(dump) >= expoOffset+4 && string(dump[expoOffset:expoOffset+4]) == "EXPO"
 }
