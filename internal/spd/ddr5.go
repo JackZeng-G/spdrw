@@ -182,6 +182,21 @@ func XMP30SlotPresent(dump []byte, idx int) bool {
 	return vpp >= 0x20 && vpp != 0xFF
 }
 
+// XMP30SlotHasData 判断槽内是否有内容(62 字节非全 0/全 FF)。
+// 与 XMP30SlotPresent 的区别: 后者按 VPP 判定"是不是一份有效 profile"(用于 CRC 硬校验,
+// 免得厂商残留数据把正常内存条误报成 CRC 失败); 前者用于"要不要给这个槽重算 CRC"——
+// 用户可能只填了时序还没填 VPP, 这时写出的槽也必须带正确 CRC。
+func XMP30SlotHasData(dump []byte, idx int) bool {
+	if idx < 0 || idx >= len(XMP30ProfileOffsets) {
+		return false
+	}
+	off := XMP30ProfileOffsets[idx]
+	if off+64 > len(dump) {
+		return false
+	}
+	return !isBlank(dump[off : off+62])
+}
+
 // XMP30Slots 返回各 XMP 3.0 槽位是否存在。
 // EXPO 存在时 0x340/0x380 两槽被 EXPO 占用, 一律报 false。
 func (d *DDR5SPD) XMP30Slots() [5]bool {

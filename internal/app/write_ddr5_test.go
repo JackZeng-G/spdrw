@@ -333,3 +333,77 @@ func TestNVMWriteClassification(t *testing.T) {
 		t.Fatalf("DDR4 应识别 1 个 NVM 写, got %+v", got)
 	}
 }
+
+// TestDryRunPreflightNeverWritesBus 干跑(含预检)在整个流程里不得产生任何写事务 ——
+// 这是"干跑零风险"的实质, 也是审查发现的问题: DDR4/更早世代的保护状态查询靠
+// "取反写一个字节再还原"的写测试, 它在预检阶段就会真的写总线, 而旧实现的
+// "零 NVM 写"统计窗口从预检之后才开始, 于是既真的写了、又报告"零写入"。
+func TestDryRunPreflightNeverWritesBus(t *testing.T) {
+	// DDR4: 保护状态必须靠写测试判定(最容易踩到)
+	f := smbus.NewFake()
+	copy(f.EEProm, ddr4Fixture())
+	rec := smbus.NewRecording(f)
+	a := New()
+	a.transports = []smbus.Transport{rec}
+	if err := a.Connect(0); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Select(0x50); err != nil {
+		t.Fatal(err)
+	}
+	target := append([]byte{}, ddr4Fixture()...)
+	target[325] = 0x77
+	spd.FixCRC(target)
+	path := writeTempFile(t, target)
+
+	// 先打开干跑, 再走"预检 + 干跑"完整流程
+	if _, err := a.SetDryRun(true); err != nil {
+		t.Fatal(err)
+	}
+	rec.Reset()
+	pf, err := a.PreflightWrite(path, false)
+	if err != nil {
+		t.Fatalf("预检: %v", err)
+	}
+	res, err := a.WriteConfirmed(path, false, true, "DRYRUN")
+	if err != nil {
+		t.Fatalf("干跑: %v", err)
+	}
+	// 全部数据写(排除 DDR4 页选择用的 quick 写)必须为 0
+	if n := len(rec.DataWrites()); n != 0 {
+		t.Fatalf("干跑流程出现了 %d 次数据写: %s", n, rec)
+	}
+	if res.NVMWrites != 0 {
+		t.Fatalf("干跑报告了 NVM 写: %d", res.NVMWrites)
+	}
+	// 干跑下保护状态应为"未知"而不是"受保护"或"开放"
+	det, err := a.dev.WPStatusDetail()
+	if err != nil {
+		t.Fatalf("WPStatusDetail: %v", err)
+	}
+	for i := range det.Known {
+		if det.Known[i] {
+			t.Fatalf("干跑下块 %d 的保护状态应未知: %+v", i, det)
+		}
+		if det.Protected[i] {
+			t.Fatalf("干跑下不应把块 %d 判成受保护", i)
+		}
+	}
+	joined := strings.Join(det.Warnings, "; ")
+	if !strings.Contains(joined, "干跑") {
+		t.Fatalf("应有干跑跳过写测试的警告: %v", det.Warnings)
+	}
+	if !pf.Blocked && len(pf.ProtectedBlocks) != 0 {
+		t.Fatalf("干跑下不应报告受保护块: %+v", pf.ProtectedBlocks)
+	}
+	_, _ = a.SetDryRun(false)
+
+	// 关闭干跑后: 写测试恢复, 且能被计数看到(证明仪表没坏)
+	rec.Reset()
+	if _, err := a.PreflightWrite(path, false); err != nil {
+		t.Fatalf("预检(非干跑): %v", err)
+	}
+	if n := len(rec.DataWrites()); n == 0 {
+		t.Fatal("关闭干跑后预检应包含块首写测试(否则保护状态无法判定)")
+	}
+}

@@ -74,7 +74,8 @@ func CRCOffsets(dump []byte) []int {
 			if expo && (i == 2 || i == 3) {
 				continue
 			}
-			if XMP30SlotPresent(dump, i) {
+			// 用"有数据"而不是"有 VPP": 只填了时序的空槽也必须重算 CRC
+			if XMP30SlotHasData(dump, i) {
 				out = append(out, XMP30ProfileOffsets[i]+62, XMP30ProfileOffsets[i]+63)
 			}
 		}
@@ -132,7 +133,7 @@ func FixCRC(dump []byte) ([]int, error) {
 			if expo && (i == 2 || i == 3) {
 				continue
 			}
-			if !XMP30SlotPresent(dump, i) {
+			if !XMP30SlotHasData(dump, i) {
 				continue
 			}
 			s := dump[off : off+64]

@@ -31,6 +31,7 @@ type pfKind string
 
 const (
 	pfPS16   pfKind = "ps16"    // 16bit 小端, 单位 ps(界面 ns)
+	pfMTB16  pfKind = "mtb16"   // 16bit 小端, 单位 = 该 SPD 的 MTB(通常 125ps)
 	pfNS16   pfKind = "ns16"    // 16bit 小端, 单位 ns
 	pfVolt5  pfKind = "volt5"   // DDR5 电压: (ones<<5)|(hundredths/5)
 	pfMedFin pfKind = "medfine" // medium 字节 + fine 字节(字节相对偏移由 Fine 给出)
@@ -62,11 +63,17 @@ var xmp2ProfileSpecs = []pfSpec{
 	{"tAA", "tAA", pfMedFin, 0x11, 0x2E, 0, "medium", "", 0, 0},
 	{"tRCD", "tRCD", pfMedFin, 0x12, 0x2D, 0, "medium", "", 0, 0},
 	{"tRP", "tRP", pfMedFin, 0x13, 0x2C, 0, "medium", "", 0, 0},
-	{"tRAS", "tRAS", pfNib12, 0x15, 0x14, 7, "medium", "", 0, 0},
-	{"tRC", "tRC", pfMedFin, 0x16, 0x2B, 0, "medium", "", 0, 0},
-	{"tRFC1", "tRFC1", pfPS16, 0x17, 0, 0, "medium", "", 0, 0},
-	{"tRFC2", "tRFC2", pfPS16, 0x19, 0, 0, "medium", "", 0, 0},
-	{"tRFC4", "tRFC4", pfPS16, 0x1B, 0, 0, "medium", "", 0, 0},
+	// 高位 nibble 的位序与 JEDEC DDR4 一致: byte+0x14 的 bits3:0 = tRAS MSN,
+	// bits7:4 = tRC MSN(实测 Viper4 3200 的 0x10 解释为 tRC MSN=1 时 tRAS/tRC =
+	// 36/64 周期, 与厂商规格 16-18-18-36 吻合; 按原版 C# 的相反位序会得到 87/12.8 周期)
+	{"tRAS", "tRAS", pfNib12, 0x15, 0x14, 3, "medium", "", 0, 0},
+	{"tRC", "tRC", pfNib12, 0x16, 0x14, 7, "medium", "", 0, 0},
+	// tRFC1/2/4 是 16bit **MTB 计数**(与 JEDEC 一致), 不是 ps:
+	// 实测三份 XMP dump 的 0x17-0x1C 都是 F0 0A / 20 08 / 00 05
+	// = 2800/2080/1280 × 0.125ns = 350/260/160 ns(8Gb 标准值)
+	{"tRFC1", "tRFC1", pfMTB16, 0x17, 0, 0, "medium", "", 0, 0},
+	{"tRFC2", "tRFC2", pfMTB16, 0x19, 0, 0, "medium", "", 0, 0},
+	{"tRFC4", "tRFC4", pfMTB16, 0x1B, 0, 0, "medium", "", 0, 0},
 	{"tFAW", "tFAW", pfNib12, 0x1E, 0x1D, 3, "medium", "", 0, 0},
 	{"tRRD_S", "tRRD_S", pfMedFin, 0x1F, 0x2A, 0, "medium", "", 0, 0},
 	{"tRRD_L", "tRRD_L", pfMedFin, 0x20, 0x29, 0, "medium", "", 0, 0},
@@ -241,12 +248,15 @@ func (e *Editor) fieldFromSpec(key string, sp pfSpec, base int, prefix, group st
 		Offset: fmt.Sprintf("0x%03X", base+sp.Off), Min: sp.MinVal, Max: sp.MaxVal,
 	}
 	switch sp.Kind {
-	case pfPS16, pfNS16:
+	case pfPS16, pfNS16, pfMTB16:
 		v := int(e.dump[base+sp.Off]) | int(e.dump[base+sp.Off+1])<<8
 		f.Kind, f.Unit, f.Step = "float", "ns", 0.001
 		ns := float64(v) / 1000 // ps
-		if sp.Kind == pfNS16 {
+		switch sp.Kind {
+		case pfNS16:
 			ns = float64(v) // 已是 ns(如 XMP3/EXPO 的 tRFC*)
+		case pfMTB16:
+			ns = float64(v) * float64(DDR4Timebase(e.dump).Medium) / 1000
 		}
 		f.Value = timingValue(ns, v > 0)
 	case pfVolt5:
@@ -448,7 +458,7 @@ func (e *Editor) setProfileField(key, value string) error {
 func (e *Editor) applySpec(base int, sp pfSpec, value, group string) error {
 	// 数值型时序: 时间没变就不动字节(等价编码可能不同)
 	switch sp.Kind {
-	case pfPS16, pfNS16, pfMedFin, pfNib12:
+	case pfPS16, pfNS16, pfMTB16, pfMedFin, pfNib12:
 		if ns, err := strconv.ParseFloat(value, 64); err == nil {
 			if cur, ok := e.specValue(base, sp); ok && math.Abs(cur-ns) < 6e-4 {
 				return nil
@@ -456,14 +466,21 @@ func (e *Editor) applySpec(base int, sp pfSpec, value, group string) error {
 		}
 	}
 	switch sp.Kind {
-	case pfPS16, pfNS16:
+	case pfPS16, pfNS16, pfMTB16:
 		ns, err := strconv.ParseFloat(value, 64)
 		if err != nil {
 			return fmt.Errorf("%s 必须是数值(ns): %q", sp.Name, value)
 		}
 		v := int(math.Round(ns * 1000))
-		if sp.Kind == pfNS16 {
+		switch sp.Kind {
+		case pfNS16:
 			v = int(math.Round(ns))
+		case pfMTB16:
+			mtb := DDR4Timebase(e.dump).Medium
+			if mtb <= 0 {
+				return fmt.Errorf("MTB 无效, 无法编码 %s", sp.Name)
+			}
+			v = int(math.Round(ns * 1000 / float64(mtb)))
 		}
 		if v < 0 || v > 0xFFFF {
 			return fmt.Errorf("%s(%.3f) 超出 16 位范围", sp.Name, ns)
@@ -611,14 +628,9 @@ func clMaskString(dump []byte, off, n int, ddr5Mask bool) string {
 		}
 	} else {
 		mask := uint32(dump[off]) | uint32(dump[off+1])<<8 | uint32(dump[off+2])<<16
-		high := mask&0x80000000 != 0
-		for i := 0; i < 29; i++ {
+		for i := 0; i < 24; i++ { // 3 字节掩码: bit i → CL i+7(7..30)
 			if mask&(1<<i) != 0 {
-				base := i + 7
-				if high {
-					base += 16
-				}
-				cls = append(cls, base)
+				cls = append(cls, i+7)
 			}
 		}
 	}
@@ -663,12 +675,16 @@ func (e *Editor) setCLMask(off, n int, value string, ddr5Mask bool, group string
 			}
 			continue
 		}
-		// XMP 2.0(3 字节掩码): bit i → CL i+7, 支持 7..35
-		if cl < 7 || cl > 35 {
-			return fmt.Errorf("CL %d 非法(XMP 2.0 支持 7-35)", cl)
+		// XMP 2.0 是 **3 字节**掩码(24 位): bit i → CL i+7, 因此最大只能到 CL30。
+		// (旧实现允许到 35, 会把 bit 写到掩码之外的相邻字段并静默清空整张 CL 表)
+		if cl < 7 || cl > 30 {
+			return fmt.Errorf("CL %d 非法(XMP 2.0 的 3 字节掩码支持 7-30)", cl)
 		}
 		idx := cl - 7
 		bi, b := idx/8, idx%8
+		if off+bi >= len(e.dump) || bi >= n {
+			return fmt.Errorf("CL %d 编码越界(掩码只有 %d 字节)", cl, n)
+		}
 		if err := e.set(off+bi, e.dump[off+bi]|(1<<b), group+" CL 掩码", "medium"); err != nil {
 			return err
 		}
@@ -685,6 +701,9 @@ func (e *Editor) specValue(base int, sp pfSpec) (float64, bool) {
 	case pfNS16:
 		v := int(e.dump[base+sp.Off]) | int(e.dump[base+sp.Off+1])<<8
 		return float64(v), v > 0
+	case pfMTB16:
+		v := int(e.dump[base+sp.Off]) | int(e.dump[base+sp.Off+1])<<8
+		return float64(v) * float64(DDR4Timebase(e.dump).Medium) / 1000, v > 0
 	case pfMedFin:
 		tb := DDR4Timebase(e.dump)
 		v := timingNS(int(e.dump[base+sp.Off]), int(int8(e.dump[base+sp.Aux])), tb)

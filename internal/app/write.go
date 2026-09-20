@@ -205,11 +205,51 @@ func (a *App) PickWriteFile() (string, error) {
 
 // PreflightWrite 计算写入计划并做全部前置检查(不写任何字节)。
 func (a *App) PreflightWrite(path string, force bool) (*WritePreflight, error) {
+	defer a.lockOp()()
+	return a.preflightNoLock(path, force)
+}
+
+// preflightNoLock 假定调用方已持操作锁(WriteConfirmed 内部用, 不能再次加锁)。
+func (a *App) preflightNoLock(path string, force bool) (*WritePreflight, error) {
+	a.resetBusCounter()
 	dump, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("读取 %s: %w", path, err)
 	}
 	return a.buildPreflight(path, dump, force)
+}
+
+// beginDryRunIfRequested 在"用户要求干跑"时, **先**把设备切到干跑模式再走预检。
+//
+// 这一点很关键: DDR4/更早世代的保护状态查询靠"取反写一个字节再还原"的写测试,
+// 若先跑预检再切干跑, 那么"干跑"这个动作本身就已经真的写过总线了。
+// 返回的 restore 用于在操作结束后恢复(用户本来就开着干跑时不关)。
+func (a *App) beginDryRunIfRequested(dryRun bool) (func(), error) {
+	noop := func() {}
+	if !dryRun {
+		return noop, nil
+	}
+	a.mu.Lock()
+	dev := a.dev
+	a.mu.Unlock()
+	if dev == nil {
+		return nil, fmt.Errorf("请先选择设备")
+	}
+	if dev.DryRun() {
+		return noop, nil // 用户显式开着干跑, 由用户自己关
+	}
+	if err := dev.SetDryRun(true); err != nil {
+		return nil, fmt.Errorf("开启干跑模式失败: %w", err)
+	}
+	a.logf("干跑模式: 已开启(本次操作不会向 SPD 写入任何字节)")
+	return func() { _ = dev.SetDryRun(false) }, nil
+}
+
+// resetBusCounter 清零当前控制器的总线计数(若已套计数包装)。
+func (a *App) resetBusCounter() {
+	if c, ok := a.activeTransport().(*smbus.CountingTransport); ok {
+		c.Reset()
+	}
 }
 
 // activeTransport 返回当前选中的传输(用于取总线计数包装)。
@@ -419,6 +459,7 @@ func compactRanges(offs []int) string {
 
 // SetDryRun 开关干跑模式: 开启时写入只落在内存影子, 一个字节都不上总线。
 func (a *App) SetDryRun(on bool) (bool, error) {
+	defer a.lockOp()()
 	a.mu.Lock()
 	dev := a.dev
 	a.mu.Unlock()
@@ -464,6 +505,7 @@ func backupDir() (string, error) {
 
 // WriteConfirmed 执行写入。必须带确认串: 真实写入要求 "WRITE", 干跑要求 "DRYRUN"。
 func (a *App) WriteConfirmed(path string, force, dryRun bool, ack string) (*WriteResult, error) {
+	defer a.lockOp()()
 	want := "WRITE"
 	if dryRun {
 		want = "DRYRUN"
@@ -471,7 +513,12 @@ func (a *App) WriteConfirmed(path string, force, dryRun bool, ack string) (*Writ
 	if strings.ToUpper(strings.TrimSpace(ack)) != want {
 		return nil, fmt.Errorf("确认串不正确(应输入 %s)", want)
 	}
-	pf, err := a.PreflightWrite(path, force)
+	restore, err := a.beginDryRunIfRequested(dryRun)
+	if err != nil {
+		return nil, err
+	}
+	defer restore()
+	pf, err := a.preflightNoLock(path, force)
 	if err != nil {
 		return nil, err
 	}
@@ -484,6 +531,9 @@ func (a *App) WriteConfirmed(path string, force, dryRun bool, ack string) (*Writ
 
 // writeWithPreflight 在预检通过后执行写入(文件写入、编辑器写入与测试共用)。
 func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun bool) (*WriteResult, error) {
+	// 注意: 不在这里清零总线计数 —— 统计窗口从"预检开始"算起,
+	// 这样干跑报告里的数字覆盖了预检(含可能发生的写保护探测), 不会漏报。
+
 	if pf.Blocked {
 		// 干跑只是内存演算, 不碰硬件: 只有"数据本身不合格"(长度/CRC)才拒绝,
 		// 写保护/PSWP 这类"硬件此刻不接受"的原因允许继续(结果里带警示)。
@@ -503,9 +553,6 @@ func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun 
 	// 干跑: 不改动设备状态, 只把结果算进影子
 	if dryRun {
 		counter, _ := a.activeTransport().(*smbus.CountingTransport)
-		if counter != nil {
-			counter.Reset()
-		}
 		if !dev.DryRun() {
 			if err := dev.SetDryRun(true); err != nil {
 				return nil, err
@@ -551,9 +598,6 @@ func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun 
 		return nil, fmt.Errorf("设备处于干跑模式, 本次不会真正写入; 请先关闭干跑模式再执行真实写入")
 	}
 	counter, _ := a.activeTransport().(*smbus.CountingTransport)
-	if counter != nil {
-		counter.Reset()
-	}
 	backup, err := a.backupCurrent(dev)
 	if err != nil {
 		return nil, fmt.Errorf("写入前备份失败, 已中止: %w", err)

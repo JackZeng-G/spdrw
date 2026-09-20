@@ -153,20 +153,20 @@ func ddr3TimingSpecs() []timingSpec {
 	// DDR3 的 MTB/FTB 在 byte9(FTB)/10-11(MTB), 与 DDR4 的 byte15 不同
 	medFine3 := func(medOff, fineOff int) (func(*Editor) (float64, bool), func(*Editor, float64) error) {
 		get := func(e *Editor) (float64, bool) {
-			tb := ddr3Timebase(e.dump)
-			v := timingNS(int(e.dump[medOff]), int(int8(e.dump[fineOff])), tb)
+			m, f := ddr3TimebaseF(e.dump)
+			v := timingNSF(int(e.dump[medOff]), int(int8(e.dump[fineOff])), m, f)
 			return v, v > 0
 		}
 		set := func(e *Editor, ns float64) error {
-			tb := ddr3Timebase(e.dump)
-			m, f, err := encodeTiming(ns, tb)
+			m, fp := ddr3TimebaseF(e.dump)
+			med, fine, err := encodeTimingF(ns, m, fp)
 			if err != nil {
 				return err
 			}
-			if err := e.set(medOff, byte(m), "tCK/timing", "medium"); err != nil {
+			if err := e.set(medOff, byte(med), "tCK/timing", "medium"); err != nil {
 				return err
 			}
-			return e.set(fineOff, byte(int8(f)), "tCK/timing", "medium")
+			return e.set(fineOff, byte(int8(fine)), "tCK/timing", "medium")
 		}
 		return get, set
 	}
@@ -182,14 +182,14 @@ func ddr3TimingSpecs() []timingSpec {
 	out = append(out, timingSpec{
 		Key: "ddr3.tRC", Name: "tRC", Offset: "0x17/0x15[3:0]/0x26",
 		Get: func(e *Editor) (float64, bool) {
-			tb := ddr3Timebase(e.dump)
+			m, fp := ddr3TimebaseF(e.dump)
 			med := int(e.dump[23]) | int(subByteR(e.dump[21], 3, 4))<<8
-			v := timingNS(med, int(int8(e.dump[38])), tb)
+			v := timingNSF(med, int(int8(e.dump[38])), m, fp)
 			return v, v > 0
 		},
 		Set: func(e *Editor, ns float64) error {
-			tb := ddr3Timebase(e.dump)
-			m, f, err := encodeTimingMax(ns, tb, 0xFFF)
+			mps, fp := ddr3TimebaseF(e.dump)
+			m, f, err := encodeTimingF(ns, mps, fp)
 			if err != nil {
 				return err
 			}
@@ -470,25 +470,69 @@ func (e *Editor) timingSpecs() []timingSpec {
 	}
 }
 
-// ddr3Timebase 计算 DDR3 时间基准: byte9 高 4 位/低 4 位 = FTB 皮秒分子/分母,
-// byte10/byte11 = MTB 纳秒分子/分母。
-func ddr3Timebase(dump []byte) Timebase {
-	tb := Timebase{Fine: 1, Medium: 125}
-	fnum := int(subByteR(dump[9], 7, 4))
-	fden := int(subByteR(dump[9], 3, 4))
-	if fden > 0 && fnum > 0 {
-		tb.Fine = fnum / fden
-	}
-	if tb.Fine <= 0 {
-		tb.Fine = 1
+// ddr3TimebaseF 计算 DDR3 时间基准, 返回 MTB(皮秒, 整数) 与 FTB(**皮秒, 可为小数**)。
+//
+// FTB 是分数: byte9 高 4 位/低 4 位 = 分子/分母, 语料里常见 5/2 = 2.5ps、1/2 = 0.5ps。
+// 原来的实现做整数除法(5/2 得 2ps、1/2 得 1ps), 会把 fine 修正量按错比例换算 ——
+// fine 不为 0 的条上会写出错误时序。
+func ddr3TimebaseF(dump []byte) (mediumPS int, finePS float64) {
+	mediumPS, finePS = 125, 1
+	fnum := float64(subByteR(dump[9], 7, 4))
+	fden := float64(subByteR(dump[9], 3, 4))
+	if fnum > 0 && fden > 0 {
+		finePS = fnum / fden
 	}
 	if dump[10] > 0 && dump[11] > 0 {
-		tb.Medium = int(dump[10]) * 1000 / int(dump[11])
+		if v := int(dump[10]) * 1000 / int(dump[11]); v > 0 {
+			mediumPS = v
+		}
 	}
-	if tb.Medium <= 0 {
-		tb.Medium = 125
+	return mediumPS, finePS
+}
+
+// ddr3Timebase 把 DDR3 时间基准折算成 Timebase(FTB 取整, 仅供解析层显示使用)。
+func ddr3Timebase(dump []byte) Timebase {
+	m, f := ddr3TimebaseF(dump)
+	return Timebase{Medium: m, Fine: int(math.Round(f))}
+}
+
+// encodeTimingF 与 encodeTimingMax 同理, 但允许小数 FTB(皮秒)。
+func encodeTimingF(ns float64, mediumPS int, finePS float64) (medium, fine int, err error) {
+	if ns <= 0 || math.IsNaN(ns) || math.IsInf(ns, 0) {
+		return 0, 0, fmt.Errorf("时间必须为正数")
 	}
-	return tb
+	if mediumPS <= 0 {
+		return 0, 0, fmt.Errorf("时间基准 MTB 无效")
+	}
+	totalPS := ns * 1000
+	medium = int(math.Ceil(totalPS / float64(mediumPS)))
+	rem := totalPS - float64(medium*mediumPS)
+	if finePS > 0 {
+		fine = int(math.Round(rem / finePS))
+		for float64(fine)*finePS > float64(mediumPS)/2 {
+			medium++
+			fine = int(math.Round((totalPS - float64(medium*mediumPS)) / finePS))
+		}
+		for float64(fine)*finePS < -float64(mediumPS)/2 {
+			medium--
+			fine = int(math.Round((totalPS - float64(medium*mediumPS)) / finePS))
+		}
+	}
+	if medium < 0 || medium > 0xFFF {
+		return 0, 0, fmt.Errorf("%.3f ns 超出该字段可表示范围", ns)
+	}
+	if fine > 127 {
+		fine = 127
+	}
+	if fine < -128 {
+		fine = -128
+	}
+	return medium, fine, nil
+}
+
+// timingNSF 由 medium + 小数 fine 还原纳秒。
+func timingNSF(medium, fine int, mediumPS int, finePS float64) float64 {
+	return (float64(medium*mediumPS) + float64(fine)*finePS) / 1000
 }
 
 // timingValue 把 ns 值格式化为表单字符串。
