@@ -200,3 +200,20 @@ table.timing th { background: var(--bg3); color: var(--muted); text-align: left;
 .bus-stats { font-size: 11px; line-height: 1.7; }
 .bus-stats .ok { color: var(--ok); }
 .bus-stats .bad { color: var(--danger); }
+
+/* 编辑器字段分组 */
+.edit-groups { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 10px 0; }
+.edit-groups button {
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 4px;
+  padding: 2px 8px; font-size: 11px; color: var(--muted); cursor: pointer;
+}
+.edit-groups button.active { color: inherit; border-color: #4a5568; font-weight: 600; }
+/* 左侧 hex 可直接点击修改 */
+#hexgrid.editable .c0, #hexgrid.editable .c1, #hexgrid.editable .c2, #hexgrid.editable .c3,
+#hexgrid.editable .c4, #hexgrid.editable .c5, #hexgrid.editable .c6, #hexgrid.editable .c7,
+#hexgrid.editable .c8, #hexgrid.editable .c9, #hexgrid.editable .ca, #hexgrid.editable .cb,
+#hexgrid.editable .cc, #hexgrid.editable .cd, #hexgrid.editable .ce, #hexgrid.editable .cf {
+  cursor: pointer; border-radius: 2px;
+}
+#hexgrid.editable .hexbyte:hover { background: #3a4256; outline: 1px solid #5a6b8c; }
+.hexbyte.changed { background: #4a3a1f; outline: 1px solid #ffd479; }
