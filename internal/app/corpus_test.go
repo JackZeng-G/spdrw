@@ -108,6 +108,11 @@ func manufacturerCodeByte(dump []byte) byte {
 // 上跑一遍。真机写入前, 这些步骤是我们能离线验证的全部内容 —— 语料覆盖 DDR3/DDR4/DDR5
 // 三代, 能发现跨世代的 CRC 偏移、分页、保护探测问题。
 func TestCorpusEditPreflightDryRun(t *testing.T) {
+	// 逐份读整片(每字节 1ms 的读间隔) + 写保护探测, 67 份约 5 分钟:
+	// 默认跳过, 用 SPDRW_FULL_CORPUS=1 显式运行。
+	if os.Getenv("SPDRW_FULL_CORPUS") == "" {
+		t.Skip("慢测试(约 5 分钟): SPDRW_FULL_CORPUS=1 go test ./internal/app/ -run TestCorpusEditPreflightDryRun")
+	}
 	dir := filepath.Join("..", "..", "testdata", "spd")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
