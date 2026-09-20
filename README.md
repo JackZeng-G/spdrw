@@ -21,17 +21,26 @@ SPD-Reader-Writer 的 Go 复刻版: Windows 桌面工具, 通过 **PawnIO** 内�
 
 ## 构建
 
-需 Go 1.21+ (开发用 1.24)。Windows 上:
+需 Go 1.21+ (开发用 1.24)。
+
+**必须带 `desktop,production` 构建标签**, 否则启动时报
+"Wails applications will not build without the correct build tags"(这是 Wails 的运行时保护, 不是代码问题)。
+
+Windows PowerShell:
 
 ```powershell
-go build -ldflags="-H windowsgui" -trimpath -o SPDReaderWriter.exe
+.\build.ps1
+# 等价于:
+go build -tags desktop,production -ldflags="-H windowsgui -s -w" -trimpath -o bin\SPDReaderWriter.exe .
 ```
 
 或从 Linux/macOS 交叉编译 (无 CGO):
 
 ```bash
-GOOS=windows GOARCH=amd64 go build -ldflags="-H windowsgui" -trimpath -o SPDReaderWriter.exe
+GOOS=windows GOARCH=amd64 go build -tags desktop,production -ldflags="-H windowsgui -s -w" -trimpath -o bin/SPDReaderWriter.exe .
 ```
+
+安装了 Wails CLI 的话也可以直接 `wails build` (自动加标签)。
 
 测试:
 
