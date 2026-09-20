@@ -30,11 +30,12 @@ type DecodeResult struct {
 	BusWidth    byte   `json:"busWidth"`
 
 	// 身份
-	Manufacturer string `json:"manufacturer"`
-	PartNumber   string `json:"partNumber"`
-	DateYear     int    `json:"dateYear"`
-	DateWeek     int    `json:"dateWeek"`
-	SerialHex    string `json:"serialHex"`
+	Manufacturer     string `json:"manufacturer"`
+	ManufacturerNote string `json:"manufacturerNote,omitempty"`
+	PartNumber       string `json:"partNumber"`
+	DateYear         int    `json:"dateYear"`
+	DateWeek         int    `json:"dateWeek"`
+	SerialHex        string `json:"serialHex"`
 
 	// 时序(DDR4 详尽; DDR5 原版不含时序字段)
 	HasTimings bool        `json:"hasTimings"`
@@ -140,7 +141,9 @@ func decodeDDR4(dump []byte, r *DecodeResult) {
 	r.BusWidth = bus
 	r.TotalMib = d.TotalCapacityBytes() / 1024 / 1024
 	r.TotalHuman = humanMib(r.TotalMib)
-	r.Manufacturer, _, _ = d.Manufacturer()
+	mfg, cont, code := d.Manufacturer()
+	r.Manufacturer = mfg
+	r.ManufacturerNote = spd.ManufacturerIDNote(cont, code)
 	r.PartNumber = d.PartNumber()
 	r.DateYear, r.DateWeek = d.DateCode()
 	sn := d.SerialNumber()
@@ -191,7 +194,9 @@ func decodeDDR5(dump []byte, r *DecodeResult) {
 	r.DeviceWidth = d.DeviceWidth()
 	r.TotalMib = d.TotalCapacityBytes() * 1024 // 公式单位为 GiB
 	r.TotalHuman = humanMib(r.TotalMib)
-	r.Manufacturer, _, _ = d.Manufacturer()
+	mfg, cont, code := d.Manufacturer()
+	r.Manufacturer = mfg
+	r.ManufacturerNote = spd.ManufacturerIDNote(cont, code)
 	r.PartNumber = d.PartNumber()
 	r.DateYear, r.DateWeek = d.DateCode()
 	sn := d.SerialNumber()

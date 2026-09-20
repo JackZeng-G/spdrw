@@ -116,10 +116,19 @@ func TestIdcodesIntegrity(t *testing.T) {
 	if err := json.Unmarshal(raw, &tables); err != nil {
 		t.Fatal(err)
 	}
-	if len(tables) != 14 {
-		t.Fatalf("表数 = %d, want 14", len(tables))
+	// 15 个银行: 原资源的块 1 把 JEP106 银行 1(125 条)与银行 2(126 条)放在一起,
+	// 提取脚本按实测对齐点拆开 → 共 15 行(见 tools/extract_idcodes)
+	if len(tables) != 15 {
+		t.Fatalf("表数 = %d, want 15", len(tables))
 	}
 	if tables[0][0] != "AMD" {
 		t.Fatalf("bank0[0] = %q", tables[0][0])
+	}
+	// 关键锚点(实测真实 dump 校验过): 银行 2 第 30 条 = Corsair, 银行 5 第 27 条 = Crucial
+	if got := ManufacturerName(0x02, 0x9E); got != "Corsair" {
+		t.Fatalf("bank2[30] = %q, want Corsair", got)
+	}
+	if got := ManufacturerName(0x85, 0x9B); got != "Crucial Technology" {
+		t.Fatalf("bank5[27] = %q, want Crucial Technology", got)
 	}
 }

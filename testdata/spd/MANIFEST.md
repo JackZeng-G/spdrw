@@ -292,3 +292,20 @@ python3 testdata/spd/tools/spdcheck.py testdata/spd/corrupt/
 
 **验证**:`go test ./internal/spd/ -run "TestRealDump|TestCorrupt" -v`
 → 67/67 识别与 CRC 通过; 67/67 编辑器身份往返逐字节一致; 2698 个字段赋值零字节变化; 9 份负样本无 panic。
+
+---
+
+## JEP106 厂商表: 银行映射修正(2026-09-21)
+
+原版资源(`Resources.cs` 的 `IdCodes`)按 gzip 块存放, 但**块号 ≠ JEP106 银行号**:
+块 0 = 银行 0;块 1 里塞了银行 1(125 条)与银行 2(126 条)两段;块 n(n≥2) = 银行 n+1。
+旧提取脚本按"块号 = 银行号"直接输出, 导致**所有 bank ≥ 1 的厂商名都查错或查不到**
+(G.Skill→"PLX Technology"、Corsair→"Chipcon AS"、Crucial→"Memory Corp NV"…)。
+
+修正 `tools/extract_idcodes` 后重建 `internal/spd/data/idcodes.json`(15 个银行),
+并用本目录 18 份厂商已知的实物条逐条核对(见 `TestRealDumpManufacturerNames`), 全部命中。
+
+已知仍无法解析的厂商写入:
+- `ddr5-klevv-kd58gu880-cityson.bin`: cont=0x18 的奇校验不成立, 推得银行 24 超出 JEP106 范围。
+  界面会显示原因("厂商 ID 0x18/0x98 无法定位…"), 编辑器里可手工改厂商码。
+- coreboot 官方模拟数据集与 `*-sample-edlf.spd` 的身份区本身就是 0x00/0x00(未写入)。
