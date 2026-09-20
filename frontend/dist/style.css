@@ -55,12 +55,12 @@
   --sp-4: 16px;
   --sp-5: 24px;
 
-  --fs-xs: 12px;
-  --fs-sm: 13px;
-  --fs: 14px;
-  --fs-lg: 16px;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs: 13px;
+  --fs-lg: 15px;
 
-  --hctl: 28px;            /* 控件统一高度 */
+  --hctl: 26px;            /* 控件统一高度 */
   --bar-h: 44px;
   --mono: "Cascadia Mono", "Consolas", "SF Mono", "DejaVu Sans Mono", monospace;
   --sans: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
@@ -254,7 +254,7 @@ button.q:hover { color: var(--accent); border-color: var(--accent); background: 
 /* ---------- 主布局 ---------- */
 #layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) clamp(400px, 42%, 680px);
+  grid-template-columns: minmax(0, 1fr) clamp(400px, 48%, 700px);
   grid-template-rows: minmax(0, 1fr);
   flex: 1;
   min-height: 0;
@@ -481,7 +481,7 @@ button.q:hover { color: var(--accent); border-color: var(--accent); background: 
 .tabview.hidden { display: none; }
 
 /* 信息面板: 卡片分区 */
-.info-body { padding: var(--sp-3); display: flex; flex-direction: column; gap: var(--sp-3); flex: 1; }
+.info-body { padding: 8px 10px; display: flex; flex-direction: column; gap: 8px; flex: 1; }
 .card {
   background: var(--surface-2);
   border: 1px solid var(--line);
@@ -492,7 +492,7 @@ button.q:hover { color: var(--accent); border-color: var(--accent); background: 
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  padding: 7px var(--sp-3);
+  padding: 4px var(--sp-3);
   font-size: var(--fs-xs);
   font-weight: 600;
   letter-spacing: .5px;
@@ -501,7 +501,7 @@ button.q:hover { color: var(--accent); border-color: var(--accent); background: 
   background: rgba(255, 255, 255, .02);
   border-bottom: 1px solid var(--line-soft);
 }
-.card > .card-body { padding: var(--sp-2) var(--sp-3) var(--sp-3); overflow-x: auto; }
+.card > .card-body { padding: 6px var(--sp-3) 10px; overflow-x: auto; }
 .card .card-head .tag {
   margin-left: auto;
   font-size: var(--fs-xs);
@@ -513,9 +513,9 @@ button.q:hover { color: var(--accent); border-color: var(--accent); background: 
 .card.accent > .card-head { color: var(--fg); }
 .card.accent { border-color: var(--line-strong); }
 
-.kv { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 6px var(--sp-3); }
-.kv .k { color: var(--fg-3); font-size: var(--fs); }
-.kv .v { color: var(--fg); word-break: break-word; user-select: text; font-size: var(--fs); }
+.kv { display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content minmax(0, 1fr); gap: 3px var(--sp-3); }
+.kv .k { color: var(--fg-3); font-size: var(--fs-sm); }
+.kv .v { color: var(--fg); word-break: break-word; user-select: text; font-size: var(--fs-sm); }
 .kv .v.mono, .kv .v .mono { font-family: var(--mono); }
 .kv .v.good { color: var(--ok); }
 .kv .v.bad { color: var(--danger); }
@@ -523,7 +523,7 @@ button.q:hover { color: var(--accent); border-color: var(--accent); background: 
 
 /* 读取方式: 概要卡片底部单独一行(时钟/事务数/耗时), 挤在 kv 行里会折行 */
 .read-line {
-  margin-top: var(--sp-2);
+  margin-top: 6px;
   padding-top: 6px;
   border-top: 1px dashed var(--line);
   font-size: var(--fs-xs);
@@ -536,16 +536,17 @@ button.q:hover { color: var(--accent); border-color: var(--accent); background: 
 table.timing { border-collapse: collapse; width: 100%; }
 table.timing td, table.timing th {
   border-bottom: 1px solid var(--line-soft);
-  padding: 5px var(--sp-3);
-  font-size: var(--fs);
+  padding: 1px 5px;
+  font-size: var(--fs-xs);
+  line-height: 1.4;
   text-align: left;
 }
 table.timing tr:last-child td, table.timing tr:last-child th { border-bottom: none; }
 table.timing th { color: var(--fg-3); font-weight: 400; white-space: nowrap; }
 table.timing td { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 table.timing tr:hover td, table.timing tr:hover th { background: rgba(255, 255, 255, .025); }
-table.timing.two-col th { width: 4.6em; }
-table.timing.two-col td { white-space: nowrap; padding-right: var(--sp-3); }
+table.timing.two-col th { width: 4.2em; }
+table.timing.two-col td { white-space: nowrap; padding-right: 6px; }
 
 /* XMP 3.0 槽位: 每槽一张小卡(3 份 Profile + 2 份 User), 空槽/EXPO 占用用虚线区分 */
 .slot-grid { display: flex; flex-direction: column; gap: var(--sp-2); }
@@ -876,4 +877,8 @@ table.timing.two-col td { white-space: nowrap; padding-right: var(--sp-3); }
 }
 @media (max-width: 1040px) {
   .field-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 1180px) {
+  /* 面板窄时键值对两列并排会挤成一团, 恢复单列 */
+  .kv { grid-template-columns: max-content minmax(0, 1fr); }
 }

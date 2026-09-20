@@ -189,6 +189,8 @@ function measureDefaultLogHeight() {
 }
 
 let LOG_H_DEFAULT = 226;   // CSS 里的兜底值; 启动时会被实测值覆盖
+// 日志默认高度固定为"标题栏 + 10 行": 信息面板要一屏看全靠排版压缩来做,
+// 不靠压缩日志(用户明确要求日志保持 10 行)。
 try { LOG_H_DEFAULT = measureDefaultLogHeight(); } catch (e) { /* 用兜底值 */ }
 // 记住"展开时"的高度: 折叠后 CSS 高度只有 34px, 从折叠态开始拖要用记忆值做基准,
 // 否则一按下去就把面板拖成一个很矮的尺寸。
@@ -864,7 +866,7 @@ function renderXmp3SlotGrid(r, x3) {
 function timingCols() {
   const panel = $("info-panel");
   const w = panel && panel.getBoundingClientRect ? panel.getBoundingClientRect().width : 0;
-  return w >= 640 ? 2 : 1;
+  return w >= 560 ? 2 : 1;   // 默认窗口(1200)下面板 ~576px → 双列
 }
 
 function timingRowsHTML(items, cellFn, cols) {
@@ -941,7 +943,7 @@ function renderInfo(r) {
     const cellsOf = (x) => {
       const ns = (x.ns != null) ? `${x.ns.toFixed(3)} ns` : "—";
       const cyc = x.cycles ? ` · ${x.cycles} clk` : "";
-      const low = x.lower ? ` <span class="muted">(下限 ${x.lower})</span>` : "";
+      const low = x.lower ? ` <span class="muted">↓${x.lower}</span>` : "";
       return `<th>${escapeHtml(x.name)}</th><td>${ns}${cyc}${low}</td>`;
     };
     t += timingRowsHTML(r.ddr5Timings, cellsOf);
