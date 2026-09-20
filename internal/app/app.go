@@ -559,12 +559,17 @@ func (a *App) WPStatus() (*WPStatusResult, error) {
 	if dev == nil {
 		return nil, fmt.Errorf("请先选择设备")
 	}
-	img, backup, err := a.backupIfNeeded(dev, dev.DryRun())
-	if err != nil {
-		return nil, fmt.Errorf("查询保护状态需要先备份当前内容(该世代用写测试探测): %w", err)
-	}
-	if img != nil {
-		a.logf("保护状态查询: 会做写测试, 已先备份当前内容(%s)", backup)
+	// 只有"靠写测试探测"的世代(DDR4 及更早)才需要先备份; DDR5 读 MR12/MR13 位图,
+	// 一个字节都不写 —— 那就别做无谓的整片备份, 日志也不该说"会做写测试"。
+	var img []byte
+	var backup string
+	if dev.NeedsWriteTest() && !dev.DryRun() {
+		var berr error
+		img, backup, berr = a.backupCurrent(dev)
+		if berr != nil {
+			return nil, fmt.Errorf("查询保护状态需要先备份当前内容(该世代用写测试探测): %w", berr)
+		}
+		a.logf("保护状态查询: 该世代用写测试探测, 已先备份当前内容(%s)", backup)
 	}
 	det, err := dev.WPStatusDetail()
 	if err != nil {

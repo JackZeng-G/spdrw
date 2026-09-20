@@ -190,3 +190,34 @@ func TestWriteProbeDetectsBlockWriteOnly(t *testing.T) {
 		}
 	}
 }
+
+// DDR5 的保护状态查询只读 MR12/MR13, 不应该做"写测试备份"、也不该说"会做写测试"。
+func TestWPStatusDDR5DoesNotRequireBackup(t *testing.T) {
+	f := smbus.NewFake()
+	f.SetDDR5(true)
+	copy(f.EEProm, ddr5WriteFixture())
+	rec := smbus.NewRecording(f)
+	a := New()
+	a.transports = []smbus.Transport{rec}
+	if err := a.Connect(0); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Select(0x50); err != nil {
+		t.Fatal(err)
+	}
+	rec.Reset()
+	if _, err := a.WPStatus(); err != nil {
+		t.Fatalf("WPStatus: %v", err)
+	}
+	for _, op := range rec.Ops() {
+		if op.Write {
+			t.Fatalf("DDR5 保护状态查询不得产生任何写事务: %s@%#x", op.Kind, op.Cmd)
+		}
+	}
+	logs := a.Logs()
+	for _, l := range logs {
+		if strings.Contains(l.Text, "会做写测试") {
+			t.Fatalf("DDR5 不该出现「会做写测试」: %s", l.Text)
+		}
+	}
+}
