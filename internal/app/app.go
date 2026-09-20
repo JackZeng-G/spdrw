@@ -329,50 +329,8 @@ func (a *App) SaveDump(path string) error {
 	return nil
 }
 
-// WriteFromFile 从文件写入(读取文件 → eeprom.Write)。
-// force=false 跳过相同字节; verify 写后回读已内置。
-func (a *App) WriteFromFile(path string, force bool) error {
-	a.mu.Lock()
-	dev := a.dev
-	a.mu.Unlock()
-	if dev == nil {
-		return fmt.Errorf("请先选择设备")
-	}
-	dump, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("读取 %s: %w", path, err)
-	}
-	// 写前保护检查
-	status, err := dev.RSWPStatus()
-	if err == nil {
-		for i, protected := range status {
-			if protected {
-				return fmt.Errorf("块 %d 处于写保护, 写入被拒绝; 可先执行 RSWP 清除(若可逆)", i)
-			}
-		}
-	} else {
-		a.mu.Lock()
-		a.logf("保护状态查询失败(继续): %v", err)
-		a.mu.Unlock()
-	}
-	a.mu.Lock()
-	size := dev.Size()
-	a.mu.Unlock()
-	if len(dump) > size {
-		return fmt.Errorf("文件 %d 字节超过 SPD 大小 %d", len(dump), size)
-	}
-	err = dev.Write(dump[:size], force, func(written int) {
-		a.emit("write:progress", written)
-	})
-	if err != nil {
-		a.mu.Lock()
-		a.logf("写入失败: %v", err)
-		a.mu.Unlock()
-		return err
-	}
-	a.logf("写入完成: %s (%d 字节)", path, size)
-	return nil
-}
+// WriteFileDialog 已由 PickWriteFile + PreflightWrite + WriteConfirmed 取代
+// (旧实现弹框后直接写, 没有 diff/风险/备份环节), 保留此名会诱导绕过预检, 故删除。
 
 // dialogGuard 返回对话框函数是否可用(测试环境未注入时给出明确错误)。
 func (a *App) dialogGuard() error {
@@ -436,21 +394,6 @@ func (a *App) VerifyFileDialog() (string, error) {
 		return "", fmt.Errorf("已取消")
 	}
 	return path, a.VerifyFile(path)
-}
-
-// WriteFileDialog 弹出打开对话框并把所选文件写入当前设备, 返回文件路径。
-func (a *App) WriteFileDialog(force bool) (string, error) {
-	if err := a.dialogGuard(); err != nil {
-		return "", err
-	}
-	path, err := a.OpenDialog("选择要写入的 dump 文件")
-	if err != nil {
-		return "", err
-	}
-	if path == "" {
-		return "", fmt.Errorf("已取消")
-	}
-	return path, a.WriteFromFile(path, force)
 }
 
 // SaveDumpData 把前端传入的 dump 写到文件。

@@ -10,6 +10,7 @@ package eeprom
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"spdrw/internal/smbus"
@@ -46,6 +47,10 @@ type Device struct {
 	size      int
 	page      int  // 当前页(DDR4: 0-1; DDR5: 0-7)
 	pageKnown bool // false = 未知(HUB 的 MR11 可能有 BIOS 残留值), 首次切页前须回读
+
+	// 干跑模式: 写只落在 shadow(整片镜像), 总线上一字节都不写。
+	dryRun bool
+	shadow []byte
 }
 
 // New 建立设备连接: 探测地址、识别 DDR5 与 SPD 大小。
@@ -223,63 +228,259 @@ func (d *Device) WriteByteAt(off uint16, val byte) error {
 	return nil
 }
 
-// Write 将 dump 写入 EEPROM。
-//
-// force=false: update 模式,跳过与当前值相同的字节(原版 Update);
-// force=true: 全量强制写(原版 /writeforce)。
-// 每字节写入后立即回读校验。progress(已写字节数) 可为 nil。
-func (d *Device) Write(dump []byte, force bool, progress func(written int)) error {
-	if len(dump) == 0 {
+// ByteChange 是一个待写字节的变更(写入计划的最小单位)。
+type ByteChange struct {
+	Offset int  `json:"offset"`
+	Old    byte `json:"old"`
+	New    byte `json:"new"`
+	Block  int  `json:"block"`
+	IsCRC  bool `json:"isCRC"` // CRC/校验字节: 排在计划最后写
+}
+
+// ProgressFunc 报告写入进度(已写字节数 / 计划总字节数)。
+type ProgressFunc func(written, total int)
+
+// WriteError 描述一次中止的写入: 已经写了多少、卡在哪个偏移。
+// 半写状态是真实风险(SPD 可能开不了机), 所以必须把"已写/未写"和恢复建议讲清楚。
+type WriteError struct {
+	Offset  int
+	Written int
+	Total   int
+	Err     error
+	Stage   string // "read" / "write" / "verify"
+}
+
+func (e *WriteError) Error() string {
+	return fmt.Sprintf("写入中止(%s)@ 0x%03X: 已写 %d/%d 字节, 未写 %d 字节: %v;"+
+		" 建议立即用备份重写该条 SPD(或离线恢复)", e.Stage, e.Offset, e.Written, e.Total, e.Total-e.Written, e.Err)
+}
+
+func (e *WriteError) Unwrap() error { return e.Err }
+
+// checkDumpLen 严格校验写入长度: 必须与 SPD 大小完全一致。
+// 旧实现用 dump[:size] 截断, 长度不足时会切片越界 panic, 过长时静默丢弃尾部。
+func (d *Device) checkDumpLen(dump []byte) error {
+	switch {
+	case len(dump) == 0:
 		return fmt.Errorf("空数据")
-	}
-	if len(dump) > d.size {
-		return fmt.Errorf("数据 %d 字节超过 SPD 大小 %d", len(dump), d.size)
-	}
-	cur, err := d.Read(0, len(dump))
-	if err != nil {
-		return fmt.Errorf("读取当前内容失败: %w", err)
-	}
-	written := 0
-	for i := 0; i < len(dump); i++ {
-		if force || cur[i] != dump[i] {
-			off := uint16(i)
-			if err := d.WriteByteAt(off, dump[i]); err != nil {
-				return fmt.Errorf("写入 0x%02X: %w", off, err)
-			}
-			back, err := d.Read(off, 1)
-			if err != nil {
-				return fmt.Errorf("回读 0x%02X: %w", off, err)
-			}
-			if back[0] != dump[i] {
-				return fmt.Errorf("校验失败 @ 0x%02X: 写 %#x 读 %#x", off, dump[i], back[0])
-			}
-			written++
-			if progress != nil {
-				progress(written)
-			}
-		}
-	}
-	if progress != nil {
-		progress(written)
+	case len(dump) != d.size:
+		return fmt.Errorf("数据长度 %d 字节与 %s SPD 大小 %d 字节不一致(不支持截断或补齐写入)",
+			len(dump), d.Generation(), d.size)
 	}
 	return nil
 }
 
-// Verify 比对 EEPROM 内容与 dump。
-func (d *Device) Verify(dump []byte) error {
-	if len(dump) == 0 || len(dump) > d.size {
-		return fmt.Errorf("数据长度 %d 无效", len(dump))
+// current 读取当前整片内容(干跑模式下读影子)。
+func (d *Device) current() ([]byte, error) {
+	if d.dryRun && d.shadow != nil {
+		out := make([]byte, len(d.shadow))
+		copy(out, d.shadow)
+		return out, nil
 	}
-	cur, err := d.Read(0, len(dump))
+	return d.ReadAll()
+}
+
+// CRCOffsets 返回各校验(CRC)字节的逻辑偏移: 这些字节在写入计划里排到最后。
+//
+// DDR4: 两段 CRC(每 128B 段末 2 字节); DDR5: 基础段 CRC(510/511)、XMP 3.0 header
+// CRC(0x2BE/0x2BF)、5 个 profile 槽的 CRC(槽末 2 字节)、EXPO CRC(0x3BE/0x3BF)。
+// 只返回"目标 dump 里该区域非空白"的校验字节 —— 空白(全 0/全 0xFF)的槽位不写。
+func (d *Device) CRCOffsets(dump []byte) []int {
+	if dump == nil {
+		dump = d.shadow
+	}
+	var out []int
+	nonBlank := func(start, n int) bool {
+		if start < 0 || start+n > len(dump) {
+			return false
+		}
+		allFF, all00 := true, true
+		for _, b := range dump[start : start+n] {
+			if b != 0xFF {
+				allFF = false
+			}
+			if b != 0x00 {
+				all00 = false
+			}
+		}
+		return !allFF && !all00
+	}
+	switch d.size {
+	case 256:
+		out = append(out, 126, 127)
+	case 512:
+		out = append(out, 126, 127, 254, 255)
+	default: // DDR5 1024
+		out = append(out, 510, 511)
+		if len(dump) >= 0x282 && dump[0x280] == 0x0C && dump[0x281] == 0x4A {
+			out = append(out, 0x2BE, 0x2BF) // XMP 3.0 header CRC
+		}
+		for _, slot := range []int{0x2C0, 0x300, 0x340, 0x380, 0x3C0} {
+			if nonBlank(slot, 62) {
+				out = append(out, slot+62, slot+63)
+			}
+		}
+		if nonBlank(0x340, 126) { // EXPO 与 XMP profile3/user1 区重叠, 按内容判定
+			out = append(out, 0x3BE, 0x3BF)
+		}
+	}
+	return out
+}
+
+// PlanWrite 计算写入计划(不写任何字节, 可安全调用)。
+//
+// force=false: update 模式, 只列出与当前内容不同的字节;
+// force=true: 全量写入。
+// 计划排序: 数据字节在前(按偏移升序), CRC 字节全部排在最后 —— 万一写入中断,
+// 设备上留下的是"CRC 与数据不符"的 SPD(BIOS 会拒绝), 而不是"校验通过但内容错"的 SPD。
+func (d *Device) PlanWrite(dump []byte, force bool) ([]ByteChange, error) {
+	if err := d.checkDumpLen(dump); err != nil {
+		return nil, err
+	}
+	cur, err := d.current()
+	if err != nil {
+		return nil, fmt.Errorf("读取当前内容失败: %w", err)
+	}
+	crcSet := map[int]bool{}
+	for _, off := range d.CRCOffsets(dump) {
+		crcSet[off] = true
+	}
+	changes := make([]ByteChange, 0, len(dump))
+	for i := range dump {
+		if !force && cur[i] == dump[i] {
+			continue
+		}
+		changes = append(changes, ByteChange{
+			Offset: i, Old: cur[i], New: dump[i], Block: i / d.blockSize(), IsCRC: crcSet[i],
+		})
+	}
+	sort.SliceStable(changes, func(a, b int) bool {
+		if changes[a].IsCRC != changes[b].IsCRC {
+			return !changes[a].IsCRC
+		}
+		return changes[a].Offset < changes[b].Offset
+	})
+	return changes, nil
+}
+
+// ApplyWrite 执行写入计划并逐字节回读校验。
+// 干跑模式下不产生任何总线写事务, 只把结果落到内存影子(用于零风险验证全流程)。
+func (d *Device) ApplyWrite(dump []byte, changes []ByteChange, progress ProgressFunc) error {
+	if err := d.checkDumpLen(dump); err != nil {
+		return err
+	}
+	total := len(changes)
+	if progress != nil {
+		progress(0, total)
+	}
+	for i, ch := range changes {
+		if err := d.writeOne(uint16(ch.Offset), ch.New); err != nil {
+			return &WriteError{Offset: ch.Offset, Written: i, Total: total, Err: err, Stage: "write"}
+		}
+		back, err := d.readBack(uint16(ch.Offset))
+		if err != nil {
+			return &WriteError{Offset: ch.Offset, Written: i, Total: total, Err: err, Stage: "read"}
+		}
+		if back != ch.New {
+			return &WriteError{
+				Offset: ch.Offset, Written: i, Total: total, Stage: "verify",
+				Err: fmt.Errorf("回读 %#x 与目标 %#x 不一致(该块可能受写保护, 写被忽略)", back, ch.New),
+			}
+		}
+		if progress != nil {
+			progress(i+1, total)
+		}
+	}
+	return nil
+}
+
+// writeOne 写一个字节(干跑模式改为写影子)。
+func (d *Device) writeOne(off uint16, val byte) error {
+	if d.dryRun {
+		if d.shadow == nil {
+			return fmt.Errorf("干跑模式影子未初始化")
+		}
+		if int(off) >= len(d.shadow) {
+			return fmt.Errorf("干跑偏移 %#x 越界", off)
+		}
+		d.shadow[off] = val
+		return nil
+	}
+	return d.WriteByteAt(off, val)
+}
+
+// readBack 回读一个字节(干跑模式读影子)。
+func (d *Device) readBack(off uint16) (byte, error) {
+	if d.dryRun {
+		if d.shadow == nil || int(off) >= len(d.shadow) {
+			return 0, fmt.Errorf("干跑影子不可用")
+		}
+		return d.shadow[off], nil
+	}
+	b, err := d.Read(off, 1)
+	if err != nil {
+		return 0, err
+	}
+	return b[0], nil
+}
+
+// Write 将 dump 写入 EEPROM: PlanWrite + ApplyWrite(update 模式跳过相同字节)。
+func (d *Device) Write(dump []byte, force bool, progress ProgressFunc) error {
+	changes, err := d.PlanWrite(dump, force)
+	if err != nil {
+		return err
+	}
+	return d.ApplyWrite(dump, changes, progress)
+}
+
+// Verify 比对 EEPROM 内容与 dump(长度必须完全一致)。
+func (d *Device) Verify(dump []byte) error {
+	if err := d.checkDumpLen(dump); err != nil {
+		return err
+	}
+	cur, err := d.ReadAll()
 	if err != nil {
 		return err
 	}
 	for i := range cur {
 		if cur[i] != dump[i] {
-			return fmt.Errorf("内容不一致 @ 0x%02X: 设备 %#x 文件 %#x", i, cur[i], dump[i])
+			return fmt.Errorf("内容不一致 @ 0x%03X: 设备 %#x 文件 %#x", i, cur[i], dump[i])
 		}
 	}
 	return nil
+}
+
+// ---------------- 干跑(dry-run) ----------------
+
+// SetDryRun 开启/关闭干跑模式。开启时先读取整片建立内存影子, 之后所有"写"
+// 只落在影子并从未初始化的总线上消失 —— 用于在真机上零风险跑通写入全流程
+// (计划/diff/CRC 顺序/回读校验), 一个字节都不会发到 SPD。
+func (d *Device) SetDryRun(v bool) error {
+	if v {
+		img, err := d.ReadAll()
+		if err != nil {
+			return fmt.Errorf("干跑模式需先读取整片建立影子: %w", err)
+		}
+		d.shadow = img
+		d.dryRun = true
+		return nil
+	}
+	d.dryRun = false
+	d.shadow = nil
+	return nil
+}
+
+// DryRun 报告当前是否处于干跑模式。
+func (d *Device) DryRun() bool { return d.dryRun }
+
+// ShadowImage 返回干跑模式下的整片镜像(未开启返回 nil)。
+func (d *Device) ShadowImage() []byte {
+	if d.shadow == nil {
+		return nil
+	}
+	out := make([]byte, len(d.shadow))
+	copy(out, d.shadow)
+	return out
 }
 
 // WriteTest 对指定偏移做写保护测试: 写入取反值 → 回读确认 → 还原 → 回读确认还原。

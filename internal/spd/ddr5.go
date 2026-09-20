@@ -17,14 +17,23 @@ var DDR5ModuleTypeNames = map[byte]string{
 // DDR5 密度表(die 容量 Gb)。
 var ddr5DensityList = [...]byte{0, 4, 8, 12, 16, 24, 32, 48, 64}
 
-// XMP 3.0 / EXPO 布局。
+// XMP 3.0 / EXPO 布局(依据 JEDEC SPD5118 与 DDR5XMPEditor/SPD-Reader-Writer 的实测布局)。
+//
+//	0x280-0x2BF: XMP 3.0 header(64B): magic 0x0C 0x4A, version, 启用位, 3 个 profile 名,
+//	             末 2 字节(0x2BE/0x2BF)为 header CRC
+//	0x2C0/0x300/0x340/0x380/0x3C0: 5 个 XMP profile 槽(每个 64B, 末 2 字节为该槽 CRC)
+//	0x340-0x3BF: EXPO 区(128B, magic "EXPO", 含 2 个 profile, 末 2 字节 CRC)
+//	             —— 与 XMP 槽 3(0x340) 和 User1(0x380) **互斥**
 const (
-	xmp30Offset = 0x280 // 640
-	xmp30Len    = 64
-	xmp30Slots  = 5
-	expoOffset  = 0x340 // 832
-	expoLen     = 128
+	xmp30Offset    = 0x280 // XMP 3.0 header 偏移
+	xmp30HeaderLen = 64    // header 长度
+	expoOffset     = 0x340 // EXPO 偏移
+	expoLen        = 128   // EXPO 长度
 )
+
+// XMP30ProfileOffsets 是 5 个 XMP 3.0 profile 槽的偏移(旧实现误用 0x280+i*64,
+// 把 header 当成第 1 个槽, 于是漏检最后一个槽 0x3C0 且 CRC 覆盖错位)。
+var XMP30ProfileOffsets = [5]int{0x2C0, 0x300, 0x340, 0x380, 0x3C0}
 
 // DDR5 是解析后的 DDR5 SPD(1024 字节)。
 type DDR5SPD struct{ raw []byte }
@@ -155,29 +164,47 @@ func (d *DDR5SPD) EXPOPresence() bool {
 	return string(d.raw[expoOffset:expoOffset+4]) == "EXPO"
 }
 
-// XMP30Slots 返回各 XMP 槽位是否有效(magic 0x30 开头)。
-func (d *DDR5SPD) XMP30Slots() [xmp30Slots]bool {
-	var out [xmp30Slots]bool
-	for i := range out {
-		out[i] = d.raw[xmp30Offset+i*xmp30Len] == 0x30
+// XMP30Slots 返回各 XMP 3.0 槽位是否存在(非空白: 既非全 0x00 也非全 0xFF)。
+// EXPO 存在时 0x340/0x380 两槽被 EXPO 占用, 一律报 false。
+func (d *DDR5SPD) XMP30Slots() [5]bool {
+	var out [5]bool
+	expo := d.EXPOPresence()
+	for i, off := range XMP30ProfileOffsets {
+		if expo && (i == 2 || i == 3) {
+			continue
+		}
+		out[i] = !isBlank(d.raw[off : off+62])
 	}
 	return out
 }
 
-// CRCOK 校验基础段 CRC(bytes 0-509,CRC 在 510-511,LSB 在前)与各 profile 段 CRC。
+// XMP30HeaderCRCOK 校验 XMP 3.0 header 段 CRC(覆盖 0x280-0x2BD, CRC 在 0x2BE/0x2BF)。
+func (d *DDR5SPD) XMP30HeaderCRCOK() bool {
+	if !d.XMPPresence() {
+		return false
+	}
+	sec := d.raw[xmp30Offset : xmp30Offset+xmp30HeaderLen]
+	return Crc16(sec[:62]) == uint16(sec[62])|uint16(sec[63])<<8
+}
+
+// CRCOK 校验基础段 CRC(bytes 0-509, CRC 在 510-511)、XMP 3.0 header 与各存在的
+// profile 槽 CRC、EXPO 段 CRC。空白槽位跳过(未使用的槽常为 0x00/0xFF)。
 func (d *DDR5SPD) CRCOK() bool {
 	sec := d.raw[0:512]
 	if Crc16(sec[:510]) != uint16(sec[510])|uint16(sec[511])<<8 {
 		return false
 	}
 	if d.XMPPresence() {
-		for i := 0; i < xmp30Slots; i++ {
-			off := xmp30Offset + i*xmp30Len
-			if d.raw[off] != 0x30 {
+		if !d.XMP30HeaderCRCOK() {
+			return false
+		}
+		slots := d.XMP30Slots()
+		for i, off := range XMP30ProfileOffsets {
+			if !slots[i] {
 				continue
 			}
-			sec := d.raw[off : off+xmp30Len]
-			if Crc16(sec[:62]) != uint16(sec[62])|uint16(sec[63])<<8 {
+			s := d.raw[off : off+64]
+			if Crc16(s[:62]) != uint16(s[62])|uint16(s[63])<<8 {
 				return false
 			}
 		}
@@ -189,4 +216,21 @@ func (d *DDR5SPD) CRCOK() bool {
 		}
 	}
 	return true
+}
+
+// isBlank 判断字节段是否全 0x00 或全 0xFF(未使用的区域)。
+func isBlank(b []byte) bool {
+	if len(b) == 0 {
+		return true
+	}
+	all00, allFF := true, true
+	for _, v := range b {
+		if v != 0x00 {
+			all00 = false
+		}
+		if v != 0xFF {
+			allFF = false
+		}
+	}
+	return all00 || allFF
 }

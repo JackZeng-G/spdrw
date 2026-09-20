@@ -324,14 +324,104 @@ $("btn-verify").onclick = async () => {
   }
 };
 
+// ---------- 写入(预检 → diff → 确认串 → 执行) ----------
+let writeState = { path: null, preflight: null };
+
 $("btn-write").onclick = async () => {
-  if (!confirm("确定把所选文件写入 SPD?\n写错内容可能导致主板无法启动!")) return;
   try {
-    const path = await call("WriteFileDialog", false);
-    addLog("", "写入完成: " + path);
-    await doDump();
+    // 旧实现弹框后直接写; 现在先只取路径, 走预检/确认面板
+    const path = await call("PickWriteFile");
+    await openWritePanel(path);
   } catch (e) {
     if (String(e).includes("已取消")) { addLog("", "已取消"); return; }
+    addLog("", "写入准备失败: " + e);
+  }
+};
+
+async function openWritePanel(path) {
+  const force = $("chk-force").checked;
+  const pf = await call("PreflightWrite", path, force);
+  if (!pf) throw new Error("预检无结果");
+  writeState = { path, preflight: pf };
+  renderPreflight(pf);
+  $("write-modal").classList.remove("hidden");
+}
+
+$("chk-force").onchange = async () => {
+  if (!writeState.path) return;
+  try { await openWritePanel(writeState.path); } catch (e) { addLog("", "预检失败: " + e); }
+};
+$("chk-dryrun").onchange = () => {
+  $("inp-ack").placeholder = $("chk-dryrun").checked ? "DRYRUN" : "WRITE";
+};
+
+function closeWritePanel() {
+  $("write-modal").classList.add("hidden");
+  writeState = { path: null, preflight: null };
+  $("inp-ack").value = "";
+}
+$("btn-write-cancel").onclick = closeWritePanel;
+
+function renderPreflight(pf) {
+  const esc = escapeHtml;
+  const rows = [];
+  const addr = pf.addr != null ? "0x" + Number(pf.addr).toString(16).padStart(2, "0") : "?";
+  $("write-target").textContent = `${addr} · ${pf.generation} ← ${pf.path}`;
+  rows.push(pf.sizeOk
+    ? `大小校验通过(${pf.fileSize} 字节)`
+    : `<span class="danger">大小不符: 文件 ${pf.fileSize} 字节 / SPD ${pf.deviceSize} 字节</span>`);
+  rows.push(`变更 <b>${pf.changeCount}</b> 字节(其中 CRC <b>${pf.crcBytes}</b> 字节, 按计划最后写入)`);
+  rows.push(pf.targetCrcValid
+    ? `目标文件 CRC 校验通过`
+    : `<span class="danger">目标文件 CRC 校验不通过</span>`);
+  if (!pf.currentCrcValid) rows.push(`<span class="warn">设备当前内容 CRC 已不通过</span>`);
+  if (pf.highRiskCount) rows.push(`<span class="danger">含高危字节 ${pf.highRiskCount} 个(容量/组织/电压/PMIC 等)</span>`);
+  if (pf.protectedBlocks && pf.protectedBlocks.length) rows.push(`<span class="danger">受写保护块: ${pf.protectedBlocks.join(", ")}</span>`);
+  if (pf.unknownBlocks && pf.unknownBlocks.length) rows.push(`<span class="warn">保护状态未知块: ${pf.unknownBlocks.join(", ")}</span>`);
+  if (pf.pswp) rows.push(`<span class="danger">该条处于 PSWP 永久写保护</span>`);
+  for (const w of (pf.warnings || [])) rows.push(`<span class="warn">提示: ${esc(w)}</span>`);
+  if (pf.blocked) rows.push(`<span class="danger">已阻断: ${esc(pf.blockReason)}</span>`);
+  $("write-summary").innerHTML = rows.join("<br>");
+
+  let html = `<table><tr><th>区域</th><th>风险</th><th>字节</th><th>偏移</th></tr>`;
+  for (const f of (pf.fields || [])) {
+    const cls = f.risk === "high" ? "danger" : f.risk === "medium" ? "warn" : "";
+    html += `<tr><td>${esc(f.region)}</td><td class="${cls}">${esc(f.risk)}</td><td>${f.count}</td><td>${esc(f.ranges)}</td></tr>`;
+  }
+  html += `</table>`;
+  $("write-fields").innerHTML = html;
+
+  const hexb = (n, w) => Number(n).toString(16).toUpperCase().padStart(w, "0");
+  let d = "";
+  for (const c of (pf.changes || [])) {
+    d += `<div>0x${hexb(c.offset, 3)}  ${hexb(c.old, 2)} → ${hexb(c.new, 2)}${c.isCRC ? "  (CRC)" : ""}</div>`;
+  }
+  if (pf.changesTruncated) d += `<div class="muted">…(变更过多, 仅显示前 300 条)</div>`;
+  if (!d) d = `<div class="muted">无差异</div>`;
+  $("write-changes").innerHTML = d;
+
+  $("btn-write-go").disabled = !!pf.blocked || pf.changeCount === 0;
+  $("inp-ack").placeholder = $("chk-dryrun").checked ? "DRYRUN" : "WRITE";
+}
+
+$("btn-write-go").onclick = async () => {
+  const pf = writeState.preflight;
+  if (!pf) return;
+  const dryRun = $("chk-dryrun").checked;
+  const force = $("chk-force").checked;
+  if (pf.blocked) { addLog("", "预检未通过, 已阻断: " + pf.blockReason); return; }
+  if (!dryRun && !$("chk-backup").checked) {
+    alert("请先勾选“我已另有备份”——写错 SPD 可能导致主板无法启动。");
+    return;
+  }
+  try {
+    const res = await call("WriteConfirmed", writeState.path, force, dryRun, $("inp-ack").value);
+    addLog("", (res && res.message) || (dryRun ? "干跑完成" : "写入完成"));
+    if (res && res.backupPath) addLog("", "备份: " + res.backupPath);
+    closeWritePanel();
+    if (dryRun) addLog("", "干跑模式: SPD 未被改动");
+    else await doDump();
+  } catch (e) {
     addLog("", "写入失败: " + e);
   }
 };

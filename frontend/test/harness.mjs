@@ -31,6 +31,7 @@ class El {
     this.style = {};
     this.attrs = {};
     this.disabled = false;
+    this.checked = false; // 真实 checkbox 默认 false(不能是 undefined)
     this.value = "";
     this.title = "";
     this.onclick = null;
@@ -59,23 +60,31 @@ class El {
   html() { return (this._html || "") + this.children.map((c) => c.html?.() ?? "").join(""); }
 }
 
-// makeAppStub 生成常用绑定桩, 记录每次调用到 calls。
+// makeAppStub 生成常用绑定桩, 记录每次调用到 calls(含 overrides)。
 export function makeAppStub(overrides = {}) {
   const calls = [];
-  const rec = (name, ret) => (...args) => { calls.push({ name, args }); return Promise.resolve(typeof ret === "function" ? ret(...args) : ret); };
-  const stub = {
-    ListControllers: rec("ListControllers", []),
-    AutoConnectAll: rec("AutoConnectAll", { ctlIndex: -1, dimms: [] }),
-    Connect: rec("Connect", null),
-    Scan: rec("Scan", []),
-    Select: rec("Select", null),
-    Dump: rec("Dump", null),
-    Decode: rec("Decode", null),
-    WPStatus: rec("WPStatus", null),
-    WPSet: rec("WPSet", null),
-    WPClear: rec("WPClear", null),
+  const wrap = (name, ret) => (...args) => {
+    calls.push({ name, args });
+    return Promise.resolve(typeof ret === "function" ? ret(...args) : ret);
+  };
+  // 默认 Dump 返回 512 字节的 base64(Wails 的 []byte 形态), 避免测试里踩渲染分支
+  const dumpB64 = Buffer.from(new Uint8Array(512)).toString("base64");
+  const all = {
+    ListControllers: [],
+    AutoConnectAll: { ctlIndex: -1, dimms: [] },
+    Connect: null,
+    Scan: [],
+    Select: null,
+    Dump: dumpB64,
+    Decode: null,
+    ReadFileBytes: dumpB64,
+    WPStatus: null,
+    WPSet: null,
+    WPClear: null,
     ...overrides,
   };
+  const stub = {};
+  for (const [name, ret] of Object.entries(all)) stub[name] = wrap(name, ret);
   return { stub, calls };
 }
 
