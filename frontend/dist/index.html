@@ -46,12 +46,14 @@
       <div class="panel-title ops-title">写保护</div>
       <div class="ops wp">
         <div id="wp-blocks" class="wp-blocks muted">—</div>
+        <div id="wp-summary" class="wp-summary"></div>
         <button id="btn-wp-status" disabled>查询保护状态</button>
         <button id="btn-wp-set" disabled class="danger">RSWP 加保护…</button>
         <button id="btn-wp-clear" disabled>RSWP 清除</button>
         <div class="muted small">
-          PSWP(永久写保护)需要高压硬件编程器,本工具不支持;<br>
-          状态查询仅显示芯片是否已永久保护。
+          DDR5 每块 64B(MR12/MR13 位图, 置位后正常运行时不可清零, 需离线模式或断电);<br>
+          DDR4 及更早每块 128B, 无状态寄存器 → 查询会对块首做"写测试"(写入取反值再还原);<br>
+          PSWP(永久保护)只有 DDR2/DDR3 可用 SMBus 探测; DDR4/DDR5 不支持设置也不适用, 需高压编程器。
         </div>
       </div>
     </aside>

@@ -337,32 +337,71 @@ $("btn-write").onclick = async () => {
 };
 
 // ---------- 写保护 ----------
+// WPStatus 返回单个结构体(Wails v2 绑定方法只支持 ≤2 个返回值, 旧版 4 返回值
+// 会被序列化成 null, 前端解构直接抛错 —— 这是"查询保护状态"坏掉的根因)。
 $("btn-wp-status").onclick = async () => {
   try {
-    const [blocks, pswp, offline] = await call("WPStatus");
-    const el = $("wp-blocks");
-    el.innerHTML = "";
-    el.classList.remove("muted");
-    blocks.forEach((on, i) => {
-      const d = document.createElement("span");
-      d.className = "blk " + (on ? "on" : "off");
-      d.textContent = `B${i} ${on ? "🔒" : "🔓"}`;
-      el.appendChild(d);
-    });
-    let extra = [];
-    if (pswp) extra.push("⚠ PSWP 永久保护已生效");
-    if (offline) extra.push("DDR5 离线模式(可清 RSWP)");
-    addLog("", "保护状态: " + (extra.join("; ") || blocks.map((b, i) => `B${i}=${b ? "保护" : "开放"}`).join(", ")));
+    await refreshWP();
   } catch (e) { addLog("", "查询保护状态失败: " + e); }
 };
+
+async function refreshWP() {
+  const st = await call("WPStatus");
+  if (!st) throw new Error("后端返回空结果");
+  renderWP(st);
+  return st;
+}
+
+function hex(n, w) { return "0x" + Number(n).toString(16).toUpperCase().padStart(w, "0"); }
+
+function renderWP(st) {
+  const el = $("wp-blocks");
+  el.innerHTML = "";
+  el.classList.remove("muted");
+  const bs = st.blockSize || 128;
+  for (let i = 0; i < st.blocks; i++) {
+    const known = st.known ? st.known[i] : true;
+    const prot = st.protected ? st.protected[i] : false;
+    const d = document.createElement("span");
+    d.className = "blk " + (!known ? "unknown" : prot ? "on" : "off");
+    const range = `${hex(i * bs, 3)}-${hex((i + 1) * bs - 1, 3)}`;
+    d.textContent = `B${i} ${range} ${!known ? "❔" : prot ? "🔒" : "🔓"}`;
+    d.title = known ? (prot ? "受写保护" : "可写") : "状态未知(写测试失败)";
+    el.appendChild(d);
+  }
+
+  let html = [];
+  html.push(`世代 ${st.generation || (st.ddr5 ? "DDR5" : "?")} · ${st.blocks} 块 × ${bs}B(每块 ${st.ddr5 ? "MR12/MR13 位图" : "块首写测试"})`);
+  if (st.ddr5) {
+    html.push(`寄存器 <code>MR11=${hex(st.mr11, 2)} MR12=${hex(st.mr12, 2)} MR13=${hex(st.mr13, 2)} MR29=${hex(st.mr29, 2)} MR48=${hex(st.mr48, 2)} MR52=${hex(st.mr52, 2)}</code>`);
+  }
+  if (st.offline) html.push(`<span class="warn">DDR5 离线模式已开启(可在离线态清 RSWP)</span>`);
+  if (st.protectionHit) html.push(`<span class="danger">MR52[6]=1: 检测到对受保护块的写被忽略</span>`);
+  if (st.pswpApplicable) {
+    html.push(st.pswp
+      ? `<span class="danger">⚠ PSWP 永久保护已生效(不可通过 SMBus 解除, 需高压编程器)</span>`
+      : `PSWP 未设置`);
+  } else {
+    html.push(`PSWP 不适用(${st.ddr5 ? "DDR5" : "DDR4/EE1004"} 未定义 0110b/0x30 设备类型)`);
+  }
+  for (const w of (st.warnings || [])) html.push(`<span class="warn">提示: ${escapeHtml(w)}</span>`);
+  $("wp-summary").innerHTML = html.join("<br>");
+
+  const prot = (st.protected || []).map((p, i) => p ? `B${i}` : null).filter(Boolean);
+  addLog("", `保护状态: ${prot.length ? "受保护 " + prot.join(",") : "全部开放"}` +
+    (st.pswpApplicable ? (st.pswp ? " · PSWP 永久保护" : " · PSWP 未设置") : " · PSWP 不适用"));
+}
 
 $("btn-wp-set").onclick = async () => {
   const inp = prompt("输入要保护的块号(0-15, 逗号分隔):", "0");
   if (!inp) return;
   const blocks = inp.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n));
+  if (!blocks.length) { addLog("", "未输入有效块号"); return; }
+  if (!confirm("确定对这些块启用 RSWP 写保护?\n" + blocks.join(",") + "\n\n注意: 部分颗粒的 RSWP 不可逆!")) return;
   try {
     await call("WPSet", blocks);
     addLog("", "RSWP 已设置: " + blocks.join(","));
+    await refreshWP().catch(() => {});
   } catch (e) { addLog("", "RSWP 设置失败: " + e); }
 };
 
@@ -371,6 +410,7 @@ $("btn-wp-clear").onclick = async () => {
   try {
     await call("WPClear");
     addLog("", "RSWP 已清除");
+    await refreshWP().catch(() => {});
   } catch (e) { addLog("", "RSWP 清除失败: " + e); }
 };
 

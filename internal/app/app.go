@@ -503,35 +503,112 @@ func (a *App) VerifyFile(path string) error {
 	return nil
 }
 
-// WPStatus 返回各块 RSWP 状态与 PSWP 永久保护状态。
-func (a *App) WPStatus() (blocks []bool, pswp bool, offline bool, err error) {
+// WPStatusResult 是写保护状态的完整结果。
+//
+// 注意: Wails v2 绑定方法**最多 2 个返回值**, 3 个以上会被静默序列化成 null
+// (见 internal/binding/boundMethod.go 的 Call 只处理 OutputCount 1/2) ——
+// 旧实现 `WPStatus() (blocks, pswp, offline, err)` 因此在 UI 侧永远拿到 null。
+// 这里必须打包成单结构体。
+type WPStatusResult struct {
+	DDR5           bool     `json:"ddr5"`
+	Generation     string   `json:"generation"`
+	Blocks         int      `json:"blocks"`
+	BlockSize      int      `json:"blockSize"`
+	Protected      []bool   `json:"protected"`
+	Known          []bool   `json:"known"`
+	MR11           byte     `json:"mr11"`
+	MR12           byte     `json:"mr12"`
+	MR13           byte     `json:"mr13"`
+	MR29           byte     `json:"mr29"`
+	MR48           byte     `json:"mr48"`
+	MR52           byte     `json:"mr52"`
+	ProtectionHit  bool     `json:"protectionHit"`
+	Offline        bool     `json:"offline"`
+	PSWPApplicable bool     `json:"pswpApplicable"`
+	PSWP           bool     `json:"pswp"`
+	Warnings       []string `json:"warnings"`
+}
+
+// WPStatus 返回各块 RSWP 状态、原始寄存器与永久保护状态(单结构体返回)。
+func (a *App) WPStatus() (*WPStatusResult, error) {
 	a.mu.Lock()
 	dev := a.dev
 	a.mu.Unlock()
 	if dev == nil {
-		return nil, false, false, fmt.Errorf("请先选择设备")
+		return nil, fmt.Errorf("请先选择设备")
 	}
-	blocks, err = dev.RSWPStatus()
+	det, err := dev.WPStatusDetail()
 	if err != nil {
-		return nil, false, false, err
+		return nil, err
 	}
-	pswp, _ = dev.PSWPStatus()
-	if dev.IsDDR5() {
-		offline, _ = dev.OfflineMode()
+	res := &WPStatusResult{
+		DDR5: det.DDR5, Generation: dev.Generation(),
+		Blocks: det.Blocks, BlockSize: det.BlockSize,
+		Protected: det.Protected, Known: det.Known,
+		MR11: det.MR11, MR12: det.MR12, MR13: det.MR13,
+		MR29: det.MR29, MR48: det.MR48, MR52: det.MR52,
+		ProtectionHit: det.ProtectionHit, Offline: det.Offline,
+		PSWPApplicable: det.PSWPApplicable, PSWP: det.PSWP,
+		Warnings: det.Warnings,
 	}
-	return blocks, pswp, offline, nil
+	a.logf("保护状态: %s", summarizeWP(res))
+	for _, w := range res.Warnings {
+		a.logf("保护状态提示: %s", w)
+	}
+	return res, nil
+}
+
+// summarizeWP 生成一行人类可读的保护状态摘要(用于日志)。
+func summarizeWP(r *WPStatusResult) string {
+	var sb strings.Builder
+	for i := 0; i < r.Blocks; i++ {
+		if i > 0 {
+			sb.WriteByte(' ')
+		}
+		state := "开放"
+		switch {
+		case !r.Known[i]:
+			state = "未知"
+		case r.Protected[i]:
+			state = "保护"
+		}
+		fmt.Fprintf(&sb, "B%d=%s", i, state)
+	}
+	if r.DDR5 {
+		fmt.Fprintf(&sb, " | MR12=%#02x MR13=%#02x", r.MR12, r.MR13)
+		if r.Offline {
+			sb.WriteString(" 离线模式")
+		}
+	} else if r.PSWPApplicable {
+		if r.PSWP {
+			sb.WriteString(" | PSWP 永久保护已生效")
+		} else {
+			sb.WriteString(" | PSWP 未设置")
+		}
+	} else {
+		sb.WriteString(" | PSWP 不适用")
+	}
+	return sb.String()
 }
 
 // WPSet 设置指定块 RSWP; blocks 为块号列表。
-func (a *App) WPSet(blocks []byte) error {
+// 参数必须是 []int: Wails v2 用 json.Unmarshal 解参数, JS 数组解不进 []byte
+// ([]byte 只能从 base64 字符串解出), 旧签名 []byte 会让"加保护"必然失败。
+func (a *App) WPSet(blocks []int) error {
 	a.mu.Lock()
 	dev := a.dev
 	a.mu.Unlock()
 	if dev == nil {
 		return fmt.Errorf("请先选择设备")
 	}
+	if len(blocks) == 0 {
+		return fmt.Errorf("未指定块号")
+	}
 	for _, b := range blocks {
-		if err := dev.RSWPSet(b); err != nil {
+		if b < 0 || b > 255 {
+			return fmt.Errorf("块号 %d 无效", b)
+		}
+		if err := dev.RSWPSet(byte(b)); err != nil {
 			a.mu.Lock()
 			a.logf("RSWP 设置块 %d 失败: %v", b, err)
 			a.mu.Unlock()
