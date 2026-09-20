@@ -49,8 +49,8 @@ async function checkEnv() {
     el.className = "ok";
     fillCtlSelect(list);
     setWarn("");
-    // 单控制器时自动 连接+扫描+读取
-    if (list.length === 1) await autoConnectFirst();
+    // 自动遍历控制器, 停在第一个扫到设备的上
+    await autoConnectAll();
   } catch (e) {
     const msg = String(e || "");
     if (msg.includes("管理员") || msg.includes("0x80070005")) {
@@ -73,17 +73,21 @@ async function checkEnv() {
   }
 }
 
-async function autoConnectFirst() {
+async function autoConnectAll() {
   try {
-    $("ctl-select").value = "0";
-    await call("Connect", 0);
-    const dimms = await call("Scan");
-    fillDimmSelect(dimms);
-    if (dimms.length) {
-      selectedAddr = dimms[0].addr;
+    const [idx, dimms] = await call("AutoConnectAll") || [-1, []];
+    const list = dimms || [];
+    if (idx >= 0) {
+      $("ctl-select").value = String(idx);
+    }
+    fillDimmSelect(list);
+    if (list.length) {
+      selectedAddr = list[0].addr;
       $("dimm-select").value = String(selectedAddr);
       await call("Select", selectedAddr);
       await doDump();
+    } else {
+      setWarn("已枚举控制器但未扫到 SPD 设备。多端口主板请尝试手动切换控制器后重扫。");
     }
   } catch (e) { addLog("", "自动连接失败: " + e); }
 }
@@ -182,7 +186,7 @@ $("btn-scan").onclick = async () => {
     const idx = parseInt($("ctl-select").value, 10);
     if (isNaN(idx) || idx < 0) throw new Error("未枚举到控制器");
     await call("Connect", idx); // 重复连接无害, 保证状态就绪
-    const dimms = await call("Scan");
+    const dimms = (await call("Scan")) || [];
     fillDimmSelect(dimms);
     addLog("", `发现 ${dimms.length} 个 SPD 设备`);
     // 若之前选中的设备仍在, 自动恢复选择并读取

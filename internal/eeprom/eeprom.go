@@ -51,12 +51,12 @@ func New(t smbus.Transport, addr byte) (*Device, error) {
 	}
 	d := &Device{t: t, addr: addr}
 
-	// DDR5 检测(原版逻辑): PMIC0 存在且 SPD byte0 == 0x51。
+	// DDR5 检测: SPD byte0 == 0x51 即为 DDR5(决定性, 不依赖 PMIC 探测;
+	// 部分平台 PMIC 地址被隐藏/占用会导致原版探测误判为 DDR4, 进而在
+	// DDR5 总线上做 0x36 页切换而 NACK)。
 	ddr5 := false
-	if err := t.Quick(0x48|(addr&7), false); err == nil {
-		if b, err2 := t.ReadByteData(addr, 0); err2 == nil && b == 0x51 {
-			ddr5 = true
-		}
+	if b, err2 := t.ReadByteData(addr, 0); err2 == nil && b == 0x51 {
+		ddr5 = true
 	}
 	d.ddr5 = ddr5
 
@@ -70,9 +70,8 @@ func New(t smbus.Transport, addr byte) (*Device, error) {
 		d.size = sizeByRamType(ramType)
 	}
 
-	if err := d.setPage(0); err != nil {
-		return nil, fmt.Errorf("复位页失败: %w", err)
-	}
+	// 页复位尽力而为: 上电默认即页0, 失败不应阻止设备创建
+	_ = d.setPage(0)
 	return d, nil
 }
 
