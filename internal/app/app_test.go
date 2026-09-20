@@ -642,3 +642,42 @@ func TestEditorBlocksWriteWhenFileStale(t *testing.T) {
 		t.Fatal("重新 Select 后编辑器应失效")
 	}
 }
+
+// TestEditExportDefaultName 从文件载入编辑器时, "另存为"的默认文件名必须是干净的
+// 文件名 —— 早先用字符串拼接会把整条路径塞进去(Windows 上会被当成子路径)。
+func TestEditExportDefaultName(t *testing.T) {
+	a, _ := newWriteTestApp(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "my-dump.bin")
+	if err := os.WriteFile(src, ddr4Fixture(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var gotName string
+	a.SaveDialog = func(title, def string) (string, error) {
+		gotName = def
+		return filepath.Join(dir, "out.bin"), nil
+	}
+	a.OpenDialog = func(string) (string, error) { return src, nil }
+	if _, err := a.EditLoadPath(src); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.EditExportDialog(); err != nil {
+		t.Fatalf("EditExportDialog: %v", err)
+	}
+	if gotName != "my-dump-edited.bin" {
+		t.Fatalf("默认文件名 = %q, 期望 my-dump-edited.bin", gotName)
+	}
+	if strings.ContainsAny(gotName, `/\`) {
+		t.Fatalf("默认文件名不应含路径分隔符: %q", gotName)
+	}
+	// 从设备载入时沿用原来的命名
+	if _, err := a.EditLoadFromDevice(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.EditExportDialog(); err != nil {
+		t.Fatal(err)
+	}
+	if gotName != "spd-edited-512.bin" {
+		t.Fatalf("设备来源的默认文件名 = %q", gotName)
+	}
+}
