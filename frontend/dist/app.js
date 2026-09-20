@@ -103,7 +103,8 @@ function fillCtlSelect(list) {
   sel.innerHTML = "";
   list.forEach((c, i) => {
     const opt = document.createElement("option");
-    opt.value = i;
+    // 值必须是真实控制器下标(c.index): 列表已按"有设备"过滤, 位置 != 下标
+    opt.value = Number.isInteger(c.index) ? c.index : i;
     // 名称后附"探测到的设备数": 列表里只剩有设备的控制器, 一眼能看出哪条真的接了条
     const dev = c.devices ? ` · ${c.devices} 个设备` : "";
     opt.textContent = `${c.name}${dev}${c.wpKnown ? (c.noSpdWp ? " · SPD写可" : " · BIOS禁写SPD") : ""}`;
@@ -120,17 +121,101 @@ function fillCtlSelect(list) {
 // ---------- 日志 ----------
 // 注意: Go 侧 LogEntry 的 JSON tag 是小写 time/text
 onEvent("log", (entry) => addLog(entry.time, entry.text));
+
+const LOG_MAX = 400;   // 只留最近若干条: 长时间跑总线不该让 DOM 无限长大
 function addLog(time, text) {
   const log = $("log");
-  const div = document.createElement("div");
+  const s = String(text ?? "");
+  const line = document.createElement("div");
+  line.className = "line" +
+    (/失败|错误|不通过|无法|拒绝|error/i.test(s) ? " err"
+      : /警告|注意|已取消|回滚|warn/i.test(s) ? " warn" : "");
   const t = document.createElement("span");
   t.className = "t";
-  t.textContent = `[${time ?? ""}] `;
-  div.appendChild(t);
-  div.appendChild(document.createTextNode(text ?? ""));
-  log.appendChild(div);
+  t.textContent = time ? `[${time}]` : "";
+  const m = document.createElement("span");
+  m.className = "m";
+  m.textContent = s;
+  line.appendChild(t);
+  line.appendChild(m);
+  log.appendChild(line);
+  while (log.childElementCount > LOG_MAX) log.removeChild(log.firstElementChild);
   log.scrollTop = log.scrollHeight;
+  const n = $("log-count");
+  if (n) n.textContent = `${log.childElementCount} 条`;
 }
+
+$("btn-log-toggle").onclick = () => {
+  const collapsed = $("log-panel").classList.toggle("collapsed");
+  $("btn-log-toggle").textContent = collapsed ? "展开" : "收起";
+};
+$("btn-log-clear").onclick = () => {
+  $("log").innerHTML = "";
+  $("log-count").textContent = "";
+};
+
+// ---------- 日志面板高度: 可拖拽 ----------
+// 高度写进 CSS 变量 --log-h(样式只认变量), 并存 localStorage 供下次启动恢复。
+// 键盘也要能调(WCAG): 把手可聚焦, ↑/↓ 步进, Shift 加速, Home 复位。
+const LOG_H_KEY = "spdrw.logHeight";
+const LOG_H_MIN = 56;
+const LOG_H_DEFAULT = 150;
+
+function logMaxH() {
+  const h = (typeof window !== "undefined" && window.innerHeight) || 800;
+  return Math.max(LOG_H_MIN + 40, Math.round(h * 0.62));
+}
+function getLogHeight() {
+  const panel = $("log-panel");
+  // 以实际渲染高度为准(折叠时不参与键盘步进, 展开后从当前值继续)
+  const rect = panel.getBoundingClientRect ? panel.getBoundingClientRect() : null;
+  return rect && rect.height ? rect.height : LOG_H_DEFAULT;
+}
+function setLogHeight(px, persist = true) {
+  const h = Math.min(logMaxH(), Math.max(LOG_H_MIN, Math.round(px)));
+  const root = document.documentElement;
+  if (root && root.style && root.style.setProperty) root.style.setProperty("--log-h", h + "px");
+  if (persist) { try { localStorage.setItem(LOG_H_KEY, String(h)); } catch (e) { /* 无 localStorage(测试夹具) */ } }
+  return h;
+}
+try {
+  const saved = parseInt(localStorage.getItem(LOG_H_KEY) || "", 10);
+  if (saved > 0) setLogHeight(saved, false);
+} catch (e) { /* 没有 localStorage 就用默认高度 */ }
+
+let logDragFrom = null;
+const logResizer = $("log-resizer");
+logResizer.addEventListener("pointerdown", (ev) => {
+  const panel = $("log-panel");
+  logDragFrom = { y: ev.clientY, h: panel.getBoundingClientRect().height };
+  panel.classList.add("dragging");
+  if (panel.classList.contains("collapsed")) {
+    panel.classList.remove("collapsed");
+    $("btn-log-toggle").textContent = "收起";
+  }
+  if (logResizer.setPointerCapture) { try { logResizer.setPointerCapture(ev.pointerId); } catch (e) {} }
+  ev.preventDefault();
+});
+logResizer.addEventListener("pointermove", (ev) => {
+  if (!logDragFrom) return;
+  // 面板贴在底部: 鼠标往上拖(Δy<0) → 高度增加
+  setLogHeight(logDragFrom.h - (ev.clientY - logDragFrom.y));
+});
+const endLogDrag = (ev) => {
+  if (!logDragFrom) return;
+  logDragFrom = null;
+  $("log-panel").classList.remove("dragging");
+  if (ev && logResizer.releasePointerCapture) { try { logResizer.releasePointerCapture(ev.pointerId); } catch (e) {} }
+};
+logResizer.addEventListener("pointerup", endLogDrag);
+logResizer.addEventListener("pointercancel", endLogDrag);
+logResizer.addEventListener("dblclick", () => setLogHeight(LOG_H_DEFAULT));
+logResizer.addEventListener("keydown", (ev) => {
+  const step = ev.shiftKey ? 40 : 12;
+  if (ev.key === "ArrowUp") { setLogHeight(getLogHeight() + step); ev.preventDefault(); }
+  else if (ev.key === "ArrowDown") { setLogHeight(getLogHeight() - step); ev.preventDefault(); }
+  else if (ev.key === "Home") { setLogHeight(LOG_H_DEFAULT); ev.preventDefault(); }
+});
 function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
@@ -190,7 +275,14 @@ function resetEditorState() {
   editorLoaded = false;
   editFieldsCache = [];
   resetEditMarks();
-  $("edit-fields").innerHTML = `<div class="placeholder">先载入数据</div>`;
+  $("edit-fields").innerHTML =
+    `<div class="empty-state">
+       <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4">
+         <path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>
+       </svg>
+       <div class="es-title">编辑器还没有载入数据</div>
+       <div class="es-body">读取一次设备会自动载入; 也可以"打开 dump 文件…"离线编辑。</div>
+     </div>`;
   $("edit-groups").innerHTML = "";
   $("edit-diff").innerHTML = "—";
   $("edit-state").textContent = "";
@@ -238,6 +330,8 @@ async function adoptDeviceEditor() {
     setEditLoadedUI(true);
     await refreshEditBytes();
     await refreshEditDiff();
+    // 字段到手后信息面板才能画 XMP 3.0 槽位卡片(它比 Decode 晚一步)
+    await rerenderInfo();
   } catch (e) {
     resetEditorState();
   }
@@ -326,13 +420,112 @@ $("hexgrid").onclick = (ev) => {
   };
   inp.onblur = () => finish(true);
 };
+// ---------- 区域模型: 每个字节"属于哪一段" ----------
+// 数据来源是后端 CRCStatus 的校验区段/自由区 + 编辑器字段的 offset, 不硬编码 JEDEC 规范:
+// 于是 DDR4/DDR5/DDR3/DDR2 自动适配, 规范修订或字段增删也不会让色带失真。
+//
+// 底色语义(与 hex 标题旁的"?"图例同一份色值):
+//   1 z-crc  参与校验的数据区(改这里必须重算 CRC)
+//   2 z-free 不参与校验的自由区(序列号/日期等)
+//   3 z-id   身份信息(厂商/部件号/序列号/修订)
+//   4 z-xmp  XMP / EXPO 配置区
+//   5 z-tmg  JEDEC 时序字段
+const ZONE_CLASS = ["", "z-crc", "z-free", "z-id", "z-xmp", "z-tmg"];
+const ZONE_NAME = ["", "参与校验", "不参与校验", "身份信息", "XMP / EXPO", "JEDEC 时序"];
+let hexZoneKinds = new Uint8Array(0);
+let hexFieldMap = new Map();   // 字节偏移 → 字段(悬停时显示字段名)
+
+// parseFieldSpans 解析字段 offset 文本。后端给的形态有四种:
+//   "0x050"          单字节
+//   "0x140-0x141"    起-止
+//   "0x149-20B"      起 + 长度(字节)
+//   "0x18/0x7B"      多处(斜杠分隔, 如 DDR4 的 medium/fine 两处时序)
+// 认不出的片段直接跳过: 色带只是提示, 不能因为一个怪 offset 让整片渲染失败。
+function parseFieldSpans(s) {
+  const out = [];
+  for (const part of String(s || "").split("/")) {
+    const m = /^0x([0-9A-Fa-f]+)(?:\s*-\s*(?:0x([0-9A-Fa-f]+)|(\d+)\s*B))?$/.exec(part.trim());
+    if (!m) continue;
+    const start = parseInt(m[1], 16);
+    let end = start + 1;
+    if (m[2] != null) end = parseInt(m[2], 16) + 1;
+    else if (m[3] != null) end = start + parseInt(m[3], 10);
+    if (end > start) out.push({ start, end });
+  }
+  return out;
+}
+
+function zoneKindOfField(f) {
+  const g = String(f.group || "");
+  if (/XMP|EXPO/i.test(g)) return 4;
+  if (g.includes("常用信息")) return 3;
+  if (/时序/.test(g)) return 5;
+  return 0;
+}
+
+function buildZoneModel(size) {
+  const kinds = new Uint8Array(size);
+  const fields = new Map();
+  const paint = (start, end, k) => {
+    for (let i = Math.max(0, start); i < Math.min(size, end); i++) kinds[i] = k;
+  };
+  for (const r of crcState.ranges) paint(r.start, r.end, 1);
+  for (const a of crcState.freeAreas) paint(a.start, a.end, 2);
+  for (const f of (editFieldsCache || [])) {
+    const k = zoneKindOfField(f);
+    for (const sp of parseFieldSpans(f.offset)) {
+      if (k) paint(sp.start, sp.end, k);
+      for (let i = Math.max(0, sp.start); i < Math.min(size, sp.end); i++) fields.set(i, f);
+    }
+  }
+  hexZoneKinds = kinds;
+  hexFieldMap = fields;
+}
+
+// ---------- 字节提示气泡 ----------
+const tipEl = $("tip");
+function hideTip() { tipEl.classList.remove("show"); }
+function moveTip(ev) {
+  const pad = 16;
+  const w = tipEl.offsetWidth || 200, h = tipEl.offsetHeight || 44;
+  let x = ev.clientX + pad, y = ev.clientY + pad;
+  if (x + w > window.innerWidth - 8) x = ev.clientX - w - pad;
+  if (y + h > window.innerHeight - 8) y = ev.clientY - h - pad;
+  tipEl.style.left = Math.max(8, x) + "px";
+  tipEl.style.top = Math.max(8, y) + "px";
+}
+function showByteTip(ev, span) {
+  const off = parseInt(span.getAttribute("data-off"), 10);
+  const kind = hexZoneKinds[off] || 0;
+  const f = hexFieldMap.get(off);
+  const bits = [`0x${off.toString(16).toUpperCase().padStart(3, "0")} = ${span.textContent}`];
+  if (kind) bits.push(`<span class="tip-zone">${ZONE_NAME[kind]}</span>`);
+  if (crcState.crcBytes.has(off)) bits.push(`<span class="tip-zone">CRC 值本身</span>`);
+  const rows = [];
+  if (f) rows.push(`<div class="tip-name">${escapeHtml(f.name)}${f.unit ? ` <span class="tip-meta">(${escapeHtml(f.unit)})</span>` : ""}</div>`);
+  rows.push(`<div class="tip-meta">${bits.join(" · ")}</div>`);
+  if (f && f.note) rows.push(`<div class="tip-meta">${escapeHtml(f.note)}</div>`);
+  if (!f && !kind && !crcState.crcBytes.has(off)) rows.push(`<div class="tip-meta">未映射到字段</div>`);
+  tipEl.innerHTML = rows.join("");
+  tipEl.classList.add("show");
+  moveTip(ev);
+}
+$("hexgrid").addEventListener("mousemove", (ev) => {
+  const t = ev.target;
+  if (!t || !t.classList || !t.classList.contains("hexbyte")) { hideTip(); return; }
+  showByteTip(ev, t);
+});
+$("hexgrid").addEventListener("mouseleave", hideTip);
+$("hexgrid").addEventListener("scroll", hideTip);
+
 function renderHex(dump) {
   const grid = $("hexgrid");
   $("hex-meta").textContent = `${dump.length} 字节`;
   grid.classList.toggle("editable", editorLoaded);
+  buildZoneModel(dump.length);
   // 列头(00..0F): 没有它就看不出某一列对应哪个偏移
   let html = `<div class="row head"><span class="offset">off</span>`;
-  for (let i = 0; i < 16; i++) html += `<span class="colhead">${i.toString(16).padStart(2, "0")}</span> `;
+  for (let i = 0; i < 16; i++) html += `<span class="colhead">${i.toString(16).padStart(2, "0")}</span>`;
   html += `</div>`;
   for (let off = 0; off < dump.length; off += 16) {
     let line = `<span class="offset">${off.toString(16).padStart(4, "0")}</span>`;
@@ -341,7 +534,8 @@ function renderHex(dump) {
       if (off + i >= dump.length) break;
       const b = dump[off + i];
       const hi = (b >> 4).toString(16);
-      line += `<span class="hexbyte c${hi}" data-off="${off + i}">${b.toString(16).padStart(2, "0")}</span> `;
+      const zone = hexZoneKinds[off + i] ? " " + ZONE_CLASS[hexZoneKinds[off + i]] : "";
+      line += `<span class="hexbyte c${hi}${zone}" data-off="${off + i}">${b.toString(16).padStart(2, "0")}</span>`;
       ascii += b >= 0x20 && b < 0x7f ? escapeHtml(String.fromCharCode(b)) : "·";
     }
     html += `<div class="row">${line}<span class="ascii">${ascii}</span></div>`;
@@ -369,10 +563,26 @@ function resetEditMarks() {
   editDiffCache = null;
 }
 
-// applyHexMarks 给已渲染的格子补上"改动/CRC 字节"样式, 并刷新标题旁的校验状态。
+// refreshZoneClasses 把最新的区域模型刷到已渲染的格子上。
+// 不能只在 renderHex 里做: 渲染发生在 CRC 状态/字段列表到手之前(先有字节, 后知道区段)。
+function refreshZoneClasses(grid) {
+  const bytes = grid.querySelectorAll("span[data-off]");
+  if (!bytes.length) return;
+  let size = 0;
+  for (const b of bytes) size = Math.max(size, parseInt(b.getAttribute("data-off"), 10) + 1);
+  buildZoneModel(size);
+  for (const b of bytes) {
+    const k = hexZoneKinds[parseInt(b.getAttribute("data-off"), 10)] || 0;
+    b.classList.remove("z-crc", "z-free", "z-id", "z-xmp", "z-tmg");
+    if (k) b.classList.add(ZONE_CLASS[k]);
+  }
+}
+
+// applyHexMarks 给已渲染的格子补上"改动/CRC 字节/区段"样式, 并刷新标题旁的校验状态。
 // 只切 class, 不重绘 —— 否则会把正在输入的格子里的 input 一起抹掉。
 function applyHexMarks() {
   const grid = $("hexgrid");
+  refreshZoneClasses(grid);
   for (const n of grid.querySelectorAll("span[data-off]")) {
     const off = parseInt(n.getAttribute("data-off"), 10);
     const chg = hexChangeMap.get(off);
@@ -449,79 +659,265 @@ async function refreshCRCStatus() {
 }
 
 // ---------- 信息面板 ----------
+// lastDecode 缓存最近一次解析结果: XMP 3.0 槽位卡片的详细数据来自编辑器字段
+// (EditFields), 它比 Decode 晚到 —— 字段到手后要用同一份解析结果再渲染一次。
+let lastDecode = null;
+
 async function decodeCurrent() {
   if (!currentDump) return;
   try {
     const r = await call("Decode", currentDump); // base64 string → Go []byte
+    lastDecode = r;
     renderInfo(r);
   } catch (e) {
+    lastDecode = null;
     $("info-body").innerHTML = `<div class="placeholder">解析失败: ${escapeHtml(String(e))}</div>`;
   }
 }
 
+// rerenderInfo 用缓存的解析结果重画信息面板(编辑器字段到手后调用)。
+async function rerenderInfo() {
+  if (!lastDecode) return;
+  renderInfo(lastDecode);
+  await refreshReadMode().catch(() => {});
+}
+
+// ---------- XMP 3.0 槽位 ----------
+// 布局: header(0x280) + 5 个 64B 槽(0x2C0/0x300/0x340/0x380/0x3C0) = 3 份 Profile + 2 份 User;
+// AMD EXPO(0x340 起 128B) 与槽 3 / User 1 重叠。
+//
+// 数据来源是编辑器字段列表(group "XMP 3.0"): 后端已经把每槽的电压/时序解成字段,
+// 前端只做"按槽聚合 + 展示", 不重复解析 dump —— 解析规则的唯一真相留在后端。
+const XMP3_SLOT_NAMES = ["Profile 1", "Profile 2", "Profile 3", "User 1", "User 2"];
+const XMP3_VOLT_FIELDS = [["vdd", "VDD"], ["vddq", "VDDQ"], ["vpp", "VPP"], ["vmemctrl", "VMEMCTRL"]];
+// 槽内时序的展示顺序: 主时序在前, 其余按 JEDEC 常见顺序(tCK 单独放在关键行, 它要带频率换算)
+const XMP3_TIMINGS = ["tAA", "tRCD", "tRP", "tRAS", "tRC", "tWR",
+  "tRFC1", "tRFC2", "tRFC", "tRRD_L", "tCCD_L", "tCCD_L_WR",
+  "tCCD_L_WR2", "tCCD_L_WTR", "tCCD_S_WTR", "tRTP", "tFAW"];
+
+function collectXmp3(fields) {
+  const res = { header: null, version: "", enabled: {}, names: {}, slots: {} };
+  for (const f of (fields || [])) {
+    if (!f || f.group !== "XMP 3.0") continue;
+    const key = String(f.key || "");
+    if (key === "xmp3.present") { res.header = String(f.value) === "true"; continue; }
+    if (key === "xmp3.version") { res.version = String(f.value == null ? "" : f.value); continue; }
+    let m = /^xmp3\.enabled(\d)$/.exec(key);
+    if (m) { res.enabled[+m[1]] = String(f.value) === "true"; continue; }
+    m = /^xmp3\.name(\d)$/.exec(key);
+    if (m) { res.names[+m[1]] = String(f.value == null ? "" : f.value); continue; }
+    m = /^xmp3\.p(\d)\.(.+)$/.exec(key);
+    if (m) {
+      const idx = +m[1];
+      if (!res.slots[idx]) res.slots[idx] = {};
+      res.slots[idx][m[2]] = f;
+    }
+  }
+  return res;
+}
+
+function xmp3HasData(slot) {
+  for (const [k, f] of Object.entries(slot || {})) {
+    const v = String(f && f.value != null ? f.value : "").trim();
+    if (v !== "" && v !== "0") return true;
+    if (k === "cl" && v !== "") return true;
+  }
+  return false;
+}
+
+function xmp3Val(slot, key) {
+  const f = slot && slot[key];
+  return f ? String(f.value == null ? "" : f.value).trim() : "";
+}
+
+// xmp3TimingText 输出一条时序值的文本: tCK 额外换算成频率与速率(0.333 ns → 3000 MHz → 6000 MT/s)
+function xmp3TimingText(key, slot) {
+  const v = xmp3Val(slot, key);
+  if (!v) return "";
+  if (key === "tCK") {
+    const ns = parseFloat(v);
+    if (ns > 0) {
+      const mhz = 1000 / ns;
+      return `${ns.toFixed(3)} ns <span class="muted">· ${Math.round(mhz)} MHz · ${Math.round(mhz * 2)} MT/s</span>`;
+    }
+  }
+  const unit = slot[key] && slot[key].unit ? " " + escapeHtml(slot[key].unit) : "";
+  return escapeHtml(v) + unit;
+}
+function xmp3TimingCell(key, slot) {
+  const t = xmp3TimingText(key, slot);
+  return t ? `<td>${t}</td>` : `<td class="muted">—</td>`;
+}
+
+function renderXmp3SlotGrid(r, x3) {
+  const hasExpo = !!r.hasExpo;
+  let out = "";
+  for (let idx = 1; idx <= 5; idx++) {
+    const slot = x3.slots[idx] || null;
+    const name = x3.names[idx] || "";
+    const enabled = !!x3.enabled[idx];
+    const expoBusy = hasExpo && (idx === 3 || idx === 4);
+    const hasData = !!slot && xmp3HasData(slot);
+
+    let cls = "slot", badge = "", body = "";
+    if (expoBusy) {
+      cls += " expo";
+      badge = `<span class="badge muted">EXPO 占用</span>`;
+      body = `<div class="slot-empty">该槽与 AMD EXPO 区块重叠(0x340 / 0x380), 内容由 EXPO 使用</div>`;
+    } else if (!hasData) {
+      cls += " empty";
+      badge = `<span class="badge muted">空槽</span>`;
+      body = `<div class="slot-empty">该槽未写入 profile</div>`;
+    } else {
+      if (enabled) cls += " on";
+      badge = enabled ? `<span class="badge ok">已启用</span>` : `<span class="badge muted">未启用</span>`;
+      // 关键行: tCK(带频率/速率) + CL 支持
+      const tck = xmp3Val(slot, "tCK");
+      const cl = xmp3Val(slot, "cl");
+      const cr = xmp3Val(slot, "commandRate");
+      let key = `<div class="slot-kv">`;
+      if (tck) key += `<span><b>tCK</b> ${xmp3TimingText("tCK", slot)}</span>`;
+      key += `<span><b>CL</b> ${cl ? escapeHtml(cl) : "—"}</span>`;
+      if (cr && cr !== "0") key += `<span><b>CR</b> ${escapeHtml(cr)}N</span>`;
+      key += `</div>`;
+
+      // 主时序 + 其余时序两列排布
+      const rest = XMP3_TIMINGS.filter((k) => xmp3Val(slot, k) !== "");
+      let tbl = "";
+      if (rest.length) {
+        tbl = `<table class="timing two-col">`;
+        for (let i = 0; i < rest.length; i += 2) {
+          const cell = (k) => `<th>${k}</th>${xmp3TimingCell(k, slot)}`;
+          tbl += `<tr>${cell(rest[i])}` + (rest[i + 1] ? cell(rest[i + 1]) : `<th></th><td></td>`) + `</tr>`;
+        }
+        tbl += `</table>`;
+      }
+
+      const volts = XMP3_VOLT_FIELDS
+        .map(([k, label]) => {
+          const v = xmp3Val(slot, k);
+          return v ? `<span><b>${label}</b> ${escapeHtml(v)} V</span>` : "";
+        })
+        .filter(Boolean).join("");
+
+      body = key + tbl + (volts ? `<div class="slot-volt">${volts}</div>` : "");
+    }
+
+    out += `<article class="${cls}">
+      <header class="slot-head">
+        <span class="slot-title">${XMP3_SLOT_NAMES[idx - 1]}</span>
+        ${name ? `<span class="slot-name">${escapeHtml(name)}</span>` : ""}
+        ${badge}
+      </header>
+      <div class="slot-body">${body}</div>
+    </article>`;
+  }
+  return `<div class="slot-grid">${out}</div>`;
+}
+
 function renderInfo(r) {
   const kv = (k, v, cls) => `<div class="k">${k}</div><div class="v ${cls || ""}">${v ?? "—"}</div>`;
-  let html = `<div class="kv">`;
-  html += kv("类型", escapeHtml(r.ramType) + (r.moduleType ? ` · ${escapeHtml(r.moduleType)}` : ""));
-  html += kv("容量", escapeHtml(r.totalHuman || `${r.totalMib} MiB`));
-  if (r.ranks) html += kv("组织", `${r.ranks} Rank × ${r.deviceWidth}bit · 总线 ${r.busWidth}bit`);
-  html += kv("厂商", escapeHtml(r.manufacturer || "—") +
-    (r.manufacturerNote ? `<br><span class="muted small">${escapeHtml(r.manufacturerNote)}</span>` : ""));
-  html += kv("部件号", escapeHtml(r.partNumber || "—"));
-  if (r.dateYear) html += kv("生产日期", `${r.dateYear} 年第 ${r.dateWeek} 周`);
-  if (r.serialHex) html += kv("序列号", `0x${r.serialHex}`);
-  // 读取方式并入 CRC 行(用户反馈: 底部单独一行"读取方式"是重复信息)
-  html += kv("CRC", (r.crcOk ? "校验通过" : "校验失败") +
-    ` <span id="read-mode" class="muted small"></span>`, r.crcOk ? "good" : "bad");
-  html += `</div>`;
+  const card = (title, body, tag) =>
+    `<section class="card"><div class="card-head"><span>${title}</span>` +
+    (tag ? `<span class="tag">${tag}</span>` : "") + `</div><div class="card-body">${body}</div></section>`;
+
+  // 概要卡片: 一眼要看到的身份与容量信息
+  let head = `<div class="kv">`;
+  head += kv("类型", escapeHtml(r.ramType) + (r.moduleType ? ` · ${escapeHtml(r.moduleType)}` : ""));
+  head += kv("容量", `<b>${escapeHtml(r.totalHuman || `${r.totalMib} MiB`)}</b>`);
+  if (r.ranks) head += kv("组织", `${r.ranks} Rank × ${r.deviceWidth}bit · 总线 ${r.busWidth}bit`);
+  head += kv("厂商", escapeHtml(r.manufacturer || "—") +
+    (r.manufacturerNote ? ` <span class="muted small">${escapeHtml(r.manufacturerNote)}</span>` : ""));
+  head += kv("部件号", `<span class="mono">${escapeHtml(r.partNumber || "—")}</span>`);
+  if (r.dateYear) head += kv("生产日期", `${r.dateYear} 年第 ${r.dateWeek} 周`);
+  if (r.serialHex) head += kv("序列号", `<span class="mono">0x${escapeHtml(r.serialHex)}</span>`);
+  head += kv("校验", `<span class="badge ${r.crcOk ? "ok" : "bad"}">${r.crcOk ? "CRC 通过" : "CRC 不通过"}</span>`);
+  head += `</div>`;
+  // 读取方式整行放(时钟/事务数/耗时/回退原因): 挤在"校验"那一行会折成两行, 很难看
+  head += `<div class="read-line"><span id="read-mode" class="muted small"></span></div>`;
+
+  let html = card("概要", head);
 
   if (r.hasTimings && r.tck) {
-    html += `<div class="section">时序</div><table class="timing two-col"><tr><th>tCK</th><td>${fmtT(r.tck)} (${r.tck.ns.toFixed(3)} ns${r.tck.ns ? " · " + (1000 / r.tck.ns).toFixed(0) + " MHz" : ""})</td></tr>`;
-    if (r.casLatencies) html += `<tr><th>CL</th><td>${escapeHtml(r.casLatencies)}</td></tr>`;
+    // tCK 的"周期数"只有 DDR5 给得出。DDR4 只报 ns/频率, 以前会渲染成 "— (0.750 ns)",
+    // 看着像缺数据 —— 这里改成只显示真实有的那部分。
+    const ns = r.tck.ns || 0;
+    const tckTxt = ns
+      ? `${ns.toFixed(3)} ns · ${(1000 / ns).toFixed(0)} MHz` + (r.tck.cycles ? ` · ${r.tck.cycles} clk` : "")
+      : "—";
+    let t = `<table class="timing two-col"><tr><th>tCK</th><td>${tckTxt}</td></tr>`;
+    if (r.casLatencies) t += `<tr><th>CL</th><td>${escapeHtml(r.casLatencies)}</td></tr>`;
     const rows = [["tAA", r.taa], ["tRCD", r.trcd], ["tRP", r.trp], ["tRAS", r.tras], ["tRC", r.trc], ["tRFC1", r.trfc1], ["tRFC2", r.trfc2], ["tRFC4", r.trfc4], ["tFAW", r.tfaw], ["tRRD_S", r.trrdS], ["tRRD_L", r.trrdL], ["tCCD_L", r.tccdL], ["tWR", r.twr]]
-      .filter(([, t]) => t && t.ns);
+      .filter(([, t2]) => t2 && t2.ns);
     for (let i = 0; i < rows.length; i += 2) {
-      const cell = ([name, t]) => `<th>${name}</th><td>${fmtT(t)} (${t.ns.toFixed(3)} ns)</td>`;
-      html += `<tr>${cell(rows[i])}` + (rows[i + 1] ? cell(rows[i + 1]) : "<th></th><td></td>") + `</tr>`;
+      const cell = ([name, t2]) =>
+        `<th>${name}</th><td>${t2.cycles ? t2.cycles + " clk · " : ""}${t2.ns.toFixed(3)} ns</td>`;
+      t += `<tr>${cell(rows[i])}` + (rows[i + 1] ? cell(rows[i + 1]) : "<th></th><td></td>") + `</tr>`;
     }
-    html += `</table>`;
+    t += `</table>`;
+    html += card("时序", t);
   }
 
   if (r.ddr5Timings && r.ddr5Timings.length) {
     // 两列显示: 一行放两组"名称/值", 省一半纵向空间
-    html += `<div class="section">JEDEC 时序(DDR5)</div><table class="timing two-col">`;
-    const cellsOf = (t) => {
-      const ns = (t.ns != null) ? `${t.ns.toFixed(3)} ns` : "—";
-      const cyc = t.cycles ? ` · ${t.cycles} clk` : "";
-      const low = t.lower ? ` <span class="muted">(下限 ${t.lower})</span>` : "";
-      return `<th>${escapeHtml(t.name)}</th><td>${ns}${cyc}${low}</td>`;
+    let t = `<table class="timing two-col">`;
+    const cellsOf = (x) => {
+      const ns = (x.ns != null) ? `${x.ns.toFixed(3)} ns` : "—";
+      const cyc = x.cycles ? ` · ${x.cycles} clk` : "";
+      const low = x.lower ? ` <span class="muted">(下限 ${x.lower})</span>` : "";
+      return `<th>${escapeHtml(x.name)}</th><td>${ns}${cyc}${low}</td>`;
     };
     for (let i = 0; i < r.ddr5Timings.length; i += 2) {
-      html += `<tr>${cellsOf(r.ddr5Timings[i])}` +
+      t += `<tr>${cellsOf(r.ddr5Timings[i])}` +
         (r.ddr5Timings[i + 1] ? cellsOf(r.ddr5Timings[i + 1]) : `<th></th><td></td>`) + `</tr>`;
     }
-    html += `</table>`;
-    if (r.casLatencies) html += `<div class="kv"><div class="k">CL 支持</div><div class="v">${escapeHtml(r.casLatencies)}</div></div>`;
+    t += `</table>`;
+    if (r.casLatencies) t += `<div class="kv" style="margin-top:6px"><div class="k">CL 支持</div><div class="v mono">${escapeHtml(r.casLatencies)}</div></div>`;
+    html += card("JEDEC 时序(DDR5)", t, `共 ${r.ddr5Timings.length} 项`);
   }
 
-  if (r.hasXmp && r.xmp && r.xmp.length) {
-    html += `<div class="section">Intel XMP</div><table class="timing">`;
+  // XMP: DDR5 走"XMP 3.0 槽位卡片"(数据来自编辑器字段, 见 collectXmp3);
+  // 字段还没到手(例如只解码了文件、编辑器未载入)时, 退回原来的一行式简表。
+  const x3 = collectXmp3(editFieldsCache);
+  if (r.hasXmp && Object.keys(x3.slots).length) {
+    const tag = `版本 0x${escapeHtml(x3.version || "??")}` +
+      (x3.header === false ? " · 头缺失" : "") +
+      (r.hasExpo ? " · EXPO 占用槽 3 / User 1" : "");
+    html += card("Intel XMP 3.0", renderXmp3SlotGrid(r, x3), tag);
+  } else if (r.hasXmp && r.xmp && r.xmp.length) {
+    let t = `<table class="timing">`;
     r.xmp.forEach((p) => {
-      html += `<tr><th>Profile ${p.number}${p.enabled ? " (启用)" : ""}</th><td>v${(p.version >> 4) & 0xF}.${p.version & 0xF} · ${escapeHtml(p.summary || "未设置")} ${p.casLatencies ? "· CL " + escapeHtml(p.casLatencies) : ""}</td></tr>`;
+      t += `<tr><th>Profile ${p.number}${p.enabled ? " · 启用" : ""}</th>` +
+        `<td>v${(p.version >> 4) & 0xF}.${p.version & 0xF} · ${escapeHtml(p.summary || "未设置")}` +
+        `${p.casLatencies ? " · CL " + escapeHtml(p.casLatencies) : ""}</td></tr>`;
     });
-    html += `</table>`;
+    t += `</table>`;
+    html += card("Intel XMP", t);
   }
-  if (r.hasExpo) html += `<div class="section">AMD EXPO</div><div>存在 EXPO 配置区</div>`;
+  if (r.hasExpo) html += card("AMD EXPO", `<div class="muted small">存在 EXPO 配置区</div>`);
   if (r.basic) {
-    html += `<div class="section">基本信息</div><div class="kv">`;
-    html += kv("tCK", `${r.basic.tckminNs?.toFixed(2)} ns`);
-    html += `</div>`;
+    html += card("基本信息", `<div class="kv">${kv("tCK", `${r.basic.tckminNs?.toFixed(2)} ns`)}</div>`);
   }
   $("info-body").innerHTML = html;
 }
 
-function fmtT(t) {
-  return t.cycles ? `${t.cycles} clk` : "—";
+// flashField 在左侧 hex 里高亮某个字段覆盖的字节(焦点落到编辑器输入框时触发):
+// 字段与字节的对应关系本来只存在于后端, 这里用同一套 offset 解析映射回屏幕。
+function flashField(key) {
+  const f = (editFieldsCache || []).find((x) => x.key === key);
+  if (!f) return;
+  const grid = $("hexgrid");
+  let first = null;
+  for (const sp of parseFieldSpans(f.offset)) {
+    for (let i = sp.start; i < sp.end; i++) {
+      const el = grid.querySelector(`.hexbyte[data-off="${i}"]`);
+      if (!el) continue;
+      el.classList.add("flash");
+      if (!first) first = el;
+      setTimeout(() => el.classList.remove("flash"), 2400);
+    }
+  }
+  if (first && first.scrollIntoView) first.scrollIntoView({ block: "center" });
 }
 
 // ---------- 文件操作 ----------
@@ -784,6 +1180,7 @@ async function syncInfoFromEditor() {
     if (typeof b64 !== "string") return;
     currentDump = b64;
     const r = await call("Decode", b64);
+    lastDecode = r;
     renderInfo(r);
   } catch (e) {
     addLog("", "同步 SPD 信息失败: " + e);
@@ -856,6 +1253,8 @@ function renderEditFields() {
   });
   box.querySelectorAll("input[data-key]").forEach((inp) => {
     inp.onkeydown = (ev) => { if (ev.key === "Enter") applyEditField(inp.getAttribute("data-key"), box); };
+    // 焦点落到字段上 → 左侧 hex 里闪一下这个字段占的字节(省得用户自己对偏移)
+    inp.onfocus = () => flashField(inp.getAttribute("data-key"));
     if (inp.getAttribute("data-key") === "manufacturer" || inp.getAttribute("data-key") === "dramManufacturer") {
       inp.oninput = debounce(async () => {
         try {

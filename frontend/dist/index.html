@@ -9,17 +9,18 @@
 <body>
   <header id="topbar">
     <div class="brand">SPD 读写 <span class="sub">Go + PawnIO</span></div>
-    <div class="bar-controls">
-      <label>控制器
+    <div class="bar-group bar-controls">
+      <label class="field">控制器
         <select id="ctl-select"><option value="-1">— 未枚举 —</option></select>
       </label>
       <button id="btn-scan" title="重新枚举控制器并在其上扫描 SPD 设备">重扫</button>
-      <label>设备
+      <span class="divider"></span>
+      <label class="field">设备
         <select id="dimm-select"><option value="-1">— 未扫描 —</option></select>
       </label>
     </div>
-    <div class="bar-files">
-      <span class="muted small">文件</span>
+    <div class="bar-group bar-files">
+      <span class="lab muted small">文件</span>
       <button id="btn-edit-load-file">打开 dump 文件…</button>
       <button id="btn-edit-export" disabled>另存为…</button>
       <button id="btn-verify" disabled>校验文件…</button>
@@ -31,20 +32,38 @@
 
   <main id="layout">
     <section id="hex-panel">
-      <div class="panel-title">SPD 内容 <span id="hex-meta" class="muted"></span>
-        <span id="crc-status" class="crc-badge">—</span>
+      <div class="panel-title">
+        <span class="title-txt">SPD 内容</span>
+        <span id="hex-meta" class="muted"></span>
+        <span id="crc-status" class="badge crc-badge muted">—</span>
         <button id="btn-edit-fixcrc" class="mini" disabled title="按当前内容重算校验字节(CRC/校验和)">重算 CRC</button>
         <button class="q" data-hint="hint-hex" title="说明">?</button>
         <span class="spacer"></span>
       </div>
       <div id="hint-hex" class="hint hidden">
-        点击任意字节可就地修改(十六进制, 可带 0x, 回车提交 / Esc 取消)。<br>
-        改动配色: <span class="legend"><i class="sw sw-crc"></i>红底 = 影响校验(须重算 CRC)</span>
-        <span class="legend"><i class="sw sw-free"></i>蓝底 = 不影响校验(序列号/日期等)</span>
+        <b>就地编辑</b>: 点击任意字节输入十六进制(可带 0x), 回车提交 / Esc 取消。
+        改动落在校验范围内时, 标题栏会提示"需重算 CRC"。<br>
+        <b>底色 = 区段</b>:
+        <span class="legend"><i class="sw sw-zcrc"></i>参与校验</span>
+        <span class="legend"><i class="sw sw-zfree"></i>不参与校验(序列号/日期等)</span>
+        <span class="legend"><i class="sw sw-zid"></i>身份信息</span>
+        <span class="legend"><i class="sw sw-ztmg"></i>JEDEC 时序</span>
+        <span class="legend"><i class="sw sw-zxmp"></i>XMP / EXPO</span><br>
+        <b>改动标记</b>:
+        <span class="legend"><i class="sw sw-crc"></i>红底 = 影响校验</span>
+        <span class="legend"><i class="sw sw-free"></i>蓝底 = 不影响校验</span>
         <span class="legend"><i class="sw sw-crcbyte"></i>黄框 = CRC 值本身</span><br>
-        改动落在校验范围内时, 右上角状态会提示"需重算 CRC"。
+        鼠标悬停任意字节可看到它属于哪个字段(载入编辑器后还可直接点改)。
       </div>
-      <div id="hexgrid" class="hexgrid"><div class="placeholder">先连接控制器并扫描设备</div></div>
+      <div id="hexgrid" class="hexgrid">
+        <div class="empty-state">
+          <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4">
+            <rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v16"/>
+          </svg>
+          <div class="es-title">还没有读到数据</div>
+          <div class="es-body">用顶栏的设备下拉选一条内存条即可读取 SPD; 也可以直接"打开 dump 文件…"离线查看。</div>
+        </div>
+      </div>
     </section>
 
     <aside id="info-panel">
@@ -54,13 +73,22 @@
       </div>
 
       <div id="view-info" class="tabview">
-      <div class="panel-title">SPD 信息</div>
-      <div id="info-body" class="info-body"><div class="placeholder">读取后显示</div></div>
-
+        <div id="info-body" class="info-body">
+          <div class="empty-state">
+            <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4">
+              <circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/>
+            </svg>
+            <div class="es-title">读取后显示解析结果</div>
+            <div class="es-body">类型 / 容量 / 厂商 / 时序 / XMP 会在这里按卡片分区显示。</div>
+          </div>
+        </div>
       </div>
 
       <div id="view-edit" class="tabview hidden">
-        <div class="panel-title">编辑器 <span id="edit-state" class="muted small"></span>
+        <div class="panel-title">
+          <span class="title-txt">编辑器</span>
+          <span id="edit-state" class="muted small"></span>
+          <span class="spacer"></span>
           <button class="q" data-hint="hint-edit" title="说明">?</button>
         </div>
         <div id="hint-edit" class="hint hidden">
@@ -77,17 +105,27 @@
           <label class="chk"><input type="checkbox" id="chk-edit-all"> 显示全部字段</label>
           <span id="edit-field-count" class="muted small"></span>
         </div>
-        <div id="edit-fields" class="edit-fields"><div class="placeholder">先载入数据</div></div>
+        <div id="edit-fields" class="edit-fields">
+          <div class="empty-state">
+            <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4">
+              <path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>
+            </svg>
+            <div class="es-title">编辑器还没有载入数据</div>
+            <div class="es-body">读取一次设备会自动载入; 也可以"打开 dump 文件…"离线编辑。</div>
+          </div>
+        </div>
         <datalist id="mfg-list"></datalist>
 
-        <div class="panel-title ops-title">变更与写入</div>
+        <div class="panel-title ops-title">
+          <span class="title-txt">变更与写入</span>
+          <button class="q" data-hint="hint-write" title="说明">?</button>
+        </div>
         <div class="ops edit-apply">
           <div id="edit-diff" class="edit-diff muted">—</div>
           <div class="write-row">
             <label class="chk">确认串 <input id="inp-edit-ack" type="text" placeholder="WRITE" size="10" autocomplete="off"></label>
             <button id="btn-edit-write" class="danger" disabled>写入设备…</button>
           </div>
-          <button class="q" data-hint="hint-write" title="说明">?</button>
         </div>
         <div id="hint-write" class="hint hidden">
           写入前程序会自动: ① 备份设备当前整片内容到 <code>~/.spdrw/backups</code>(失败即中止);
@@ -97,7 +135,8 @@
           确认串: 真实写入输入 <b>WRITE</b>(界面上不再需要勾"我已另有备份", 因为每次都会自动备份)。
         </div>
 
-        <div class="panel-title ops-title">写保护
+        <div class="panel-title ops-title">
+          <span class="title-txt">写保护</span>
           <button class="q" data-hint="hint-wp" title="说明">?</button>
         </div>
         <div class="ops wp">
@@ -113,7 +152,7 @@
           <!-- 结果放按钮下面: 先操作、后看结果 -->
           <div class="wp-result">
             <div id="wp-summary" class="wp-summary"></div>
-            <div id="wp-blocks" class="wp-blocks muted">—</div>
+            <div id="wp-blocks" class="wp-blocks muted"></div>
             <div id="probe-result" class="bus-stats muted"></div>
           </div>
         </div>
@@ -133,9 +172,20 @@
   </main>
 
   <footer id="log-panel">
-    <div class="panel-title">日志</div>
+    <!-- 拖拽把手: 上下拖动改日志高度; 双击复位; 聚焦后方向键微调 -->
+    <div id="log-resizer" class="log-resizer" role="separator" tabindex="0"
+         aria-orientation="horizontal" aria-label="拖动调整日志高度(双击复位, 方向键微调)"></div>
+    <div class="panel-title">
+      <span class="title-txt">日志</span>
+      <span id="log-count"></span>
+      <span class="spacer"></span>
+      <button id="btn-log-clear" class="ghost mini">清空</button>
+      <button id="btn-log-toggle" class="ghost mini">收起</button>
+    </div>
     <div id="log" class="log"></div>
   </footer>
+
+  <div id="tip" role="tooltip"></div>
 
   <script src="app.js"></script>
 </body>

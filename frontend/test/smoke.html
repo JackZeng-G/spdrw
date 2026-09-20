@@ -32,7 +32,8 @@
   <div id="warn-bar" class="hidden"></div>
   <main id="layout">
     <section id="hex-panel">
-      <div class="panel-title">SPD 内容 <span id="hex-meta" class="muted"></span></div>
+      <div class="panel-title">SPD 内容 <span id="hex-meta" class="muted"></span>
+        <span id="crc-status" class="badge crc-badge muted">—</span></div>
       <div id="hexgrid" class="hexgrid"><div class="placeholder">先连接控制器并扫描设备</div></div>
     </section>
     <aside id="info-panel">
@@ -62,20 +63,30 @@
           <div id="wp-blocks" class="wp-blocks muted">—</div>
           <div id="wp-summary" class="wp-summary"></div>
           <button id="btn-wp-status" disabled>查询保护状态</button>
+          <button id="btn-write-probe" disabled>检测写入能力</button>
+          <label class="chk">确认串 <input id="inp-wp-ack" type="text" placeholder="CLEAR" size="10" autocomplete="off"></label>
           <button id="btn-wp-set" disabled class="danger">RSWP 加保护…</button>
           <button id="btn-wp-clear" disabled>RSWP 清除</button>
+          <div id="probe-result" class="bus-stats muted"></div>
         </div>
       </div>
       <div id="view-edit" class="tabview hidden">
         <div class="panel-title">编辑器 <span id="edit-state" class="muted small"></span></div>
         <div class="ops edit-load">
           <button id="btn-edit-load-dev" disabled>从设备载入</button>
+          <button id="btn-edit-reload" disabled>重新读取设备</button>
           <button id="btn-edit-load-file" disabled>打开 dump 文件…</button>
           <button id="btn-edit-reset" disabled>放弃修改</button>
           <button id="btn-edit-fixcrc" disabled>重算 CRC</button>
           <button id="btn-edit-export" disabled>另存为…</button>
         </div>
+        <div id="edit-groups" class="edit-groups"></div>
+        <div class="edit-fields-head">
+          <label class="chk"><input type="checkbox" id="chk-edit-all"> 显示全部字段</label>
+          <span id="edit-field-count" class="muted small"></span>
+        </div>
         <div id="edit-fields" class="edit-fields"><div class="placeholder">先载入数据</div></div>
+        <datalist id="mfg-list"></datalist>
         <div class="panel-title ops-title">原始 hex 编辑</div>
         <div class="ops hexedit">
           <label>偏移 <input id="hex-off" type="text" placeholder="0x1F0" size="6"></label>
@@ -90,13 +101,24 @@
           <label class="chk">确认串 <input id="inp-edit-ack" type="text" placeholder="WRITE" size="10" autocomplete="off"></label>
           <button id="btn-edit-write" class="danger" disabled>预览并写入设备…</button>
         </div>
+        <div id="hint-write" class="hint hidden">写入说明(骨架页)</div>
       </div>
     </aside>
   </main>
   <footer id="log-panel">
-    <div class="panel-title">日志</div>
+    <div id="log-resizer" class="log-resizer" role="separator" tabindex="0"
+         aria-orientation="horizontal" aria-label="拖动调整日志高度(双击复位, 方向键微调)"></div>
+    <div class="panel-title">
+      <span>日志</span>
+      <span id="log-count"></span>
+      <button id="btn-log-clear" class="ghost mini">清空</button>
+      <button id="btn-log-toggle" class="ghost mini">收起</button>
+    </div>
     <div id="log" class="log"></div>
   </footer>
+
+  <!-- app.js 会在这些新元素上直接绑事件: 骨架页不能缺, 否则整个脚本在顶层就抛错 -->
+  <div id="tip" role="tooltip"></div>
   <div id="write-modal" class="modal hidden">
     <div class="modal-card">
       <div class="modal-title">写入前确认 <span id="write-target" class="muted"></span></div>

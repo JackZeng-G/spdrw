@@ -347,7 +347,7 @@ test("读到的内容无法编辑时编辑器清空并禁用操作(不会留下�
   el("tab-edit").onclick();
   await readDevice(el);
   assert.equal(el("edit-fields").html().includes("部件号"), false, "字段表单应清空");
-  assert.match(el("edit-fields").html(), /先载入数据/);
+  assert.match(el("edit-fields").html(), /编辑器还没有载入数据/);
   assert.equal(el("btn-edit-fixcrc").disabled, true, "未载入时重算 CRC 应禁用");
   assert.equal(el("btn-edit-write").disabled, true, "未载入时禁止写入");
 });

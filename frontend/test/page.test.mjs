@@ -41,6 +41,36 @@ test("app.js 调用的绑定方法都有桩(冒烟页才不会报找不到方法
   assert.ok(methods.size > 20, "只解析到 " + methods.size + " 个方法, 解析可能失效");
 });
 
+// app.js 的顶层会直接 $("x").onclick = ...; 少一个元素就是整个脚本在顶层抛错,
+// 页面停在"检测环境…"——这类"骨架漂移"曾经真的发生过(新增 btn-write-probe 后忘了同步 smoke.html)。
+test("骨架页 smoke.html 必须有 app.js 引用的每个元素", () => {
+  const smoke = fs.readFileSync(path.join(here, "smoke.html"), "utf8");
+  const DYNAMIC_IDS = new Set(["read-mode"]);
+  const smokeIDs = collect(smoke, /id="([^"]+)"/g);
+  const used = collect(appJS, /\$\("([^"]+)"\)/g);
+  const missing = [...used].filter((id) => !smokeIDs.has(id) && !DYNAMIC_IDS.has(id));
+  assert.deepEqual(missing, [], "smoke.html 缺少这些元素: " + missing.join(", "));
+});
+
+// driver.js 是"按真实用户顺序点一遍", 两个页面都要点得动(缺元素会在驱动里静默中断, __SMOKE 永远为空)。
+// 注意 driver 里还有一批 `!document.getElementById("x")` 的反向断言(检查旧元素确已删除),
+// 那些 id 是"必须不存在", 不能算进"必须有"。
+test("driver.js 引用的元素在真实页面与骨架页都存在", () => {
+  const driver = fs.readFileSync(path.join(here, "driver.js"), "utf8");
+  const smoke = fs.readFileSync(path.join(here, "smoke.html"), "utf8");
+  const mustBeAbsent = collect(driver, /!\s*document\.getElementById\("([^"]+)"\)/g);
+  const need = new Set([
+    ...collect(driver, /\$\("([^"]+)"\)/g),
+    ...collect(driver, /getElementById\("([^"]+)"\)/g),
+  ].filter((id) => !mustBeAbsent.has(id)));
+  const DYNAMIC_IDS = new Set(["read-mode"]);
+  for (const [name, src] of [["dist/index.html", html], ["smoke.html", smoke]]) {
+    const ids = collect(src, /id="([^"]+)"/g);
+    const missing = [...need].filter((id) => !ids.has(id) && !DYNAMIC_IDS.has(id));
+    assert.deepEqual(missing, [], `${name} 缺少驱动要用的元素: ${missing.join(", ")}`);
+  }
+});
+
 test("index.html 仍可被 make-real-page.mjs 改写(只有一个 app.js 标签)", () => {
   const hits = html.match(/<script src="app\.js"><\/script>/g) || [];
   assert.equal(hits.length, 1, "app.js 脚本标签数量 = " + hits.length);
