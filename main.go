@@ -21,7 +21,7 @@ func main() {
 	a := app.New()
 
 	err := wails.Run(&options.App{
-		Title:     "SPD Reader Writer (Go)",
+		Title:     "SPD 读写 Go + PawnIO by jackzeng 2026",
 		Width:     1200,
 		Height:    866, // 顶栏两行化后给右侧"SPD 信息"框多留约三行文字的高度
 		MinWidth:  960,

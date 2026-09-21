@@ -178,45 +178,15 @@ button.q:hover { color: var(--accent); border-color: var(--accent); background: 
 /* ---------- 顶栏 ---------- */
 #topbar {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 4px var(--sp-3) 6px var(--sp-4);
+  align-items: center;
+  gap: var(--sp-3);
+  height: var(--bar-h);
+  padding: 0 var(--sp-3) 0 var(--sp-4);
   background: var(--surface);
   border-bottom: 1px solid var(--line);
   flex: none;
 }
-/* 顶栏两行: 第一行 品牌+文件按钮(右)+环境状态; 第二行 控制器/设备(左对齐) */
-.topbar-row {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  min-height: calc(var(--bar-h) - 8px);
-}
-.brand {
-  font-size: var(--fs-lg);
-  font-weight: 650;
-  letter-spacing: .2px;
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-}
-/* 版权署名: 顶栏品牌右侧, 弱化到"看得见但不抢戏"; 窄窗(<1120)由媒体查询隐藏 */
-.brand .byline {
-  font-size: var(--fs-xs);
-  font-weight: 400;
-  color: var(--fg-3);
-  letter-spacing: .3px;
-  white-space: nowrap;
-}
-.brand .sub { font-size: var(--fs-xs); font-weight: 400; color: var(--fg-3); }
-.brand::before {
-  content: "";
-  width: 3px; height: 15px;
-  border-radius: 2px;
-  background: var(--accent);
-  margin-right: 2px;
-  align-self: center;
-}
+/* 品牌与版权署名在窗口标题栏(程序窗), 顶栏不再放品牌行 */
 .bar-group { display: flex; align-items: center; gap: var(--sp-2); }
 .bar-controls { min-width: 0; }
 .bar-files { margin-left: auto; }
@@ -844,7 +814,6 @@ table.timing.two-col td { white-space: nowrap; padding-right: 6px; }
   .kv { grid-template-columns: max-content minmax(0, 1fr); }
 }
 @media (max-width: 1120px) {
-  .brand .sub, .brand .byline { display: none; }
   #topbar { gap: var(--sp-2); padding-left: var(--sp-3); }
   .bar-files button { padding: 0 var(--sp-2); }
   .bar-controls select { max-width: 190px; }

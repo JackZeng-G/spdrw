@@ -96,11 +96,12 @@ test("图例必须用真实色块, 不能拿绿字写个「蓝」(颜色要与�
 });
 
 test("署名与写入区标题(用户要求: 红色标题 + by jackzeng 2026)", () => {
-  assert.match(html, /by jackzeng 2026/, "顶栏要有版权署名");
+  // v1.0.1: 品牌与署名移到窗口标题栏(<title> 与 main.go Title), 顶栏不再放品牌行
+  assert.match(html, /<title>SPD 读写 Go \+ PawnIO by jackzeng 2026<\/title>/, "版权署名在窗口标题");
+  assert.doesNotMatch(html, /class="brand"/, "顶栏不应再有品牌行");
   assert.match(html, /<span class="title-txt">写入SPD芯片<\/span>/, "写入区标题文案应为「写入SPD芯片」");
   assert.match(css, /\.ops-title \.title-txt\s*\{[^}]*color:\s*var\(--danger\)/,
     "写入区标题必须是红色(危险动作的语义色)");
-  assert.match(css, /\.brand \.byline\s*\{/, "署名要有自己的弱化样式, 不能挤在品牌字号里");
 });
 
 test("SPD 内容: 列头与行偏移必须固定(sticky), 否则滚动后看不出位置", () => {

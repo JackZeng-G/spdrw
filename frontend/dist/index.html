@@ -3,33 +3,28 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>SPD Reader Writer (Go)</title>
+<title>SPD 读写 Go + PawnIO by jackzeng 2026</title>
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header id="topbar">
-    <div class="topbar-row topbar-main">
-      <div class="brand">SPD 读写 <span class="sub">Go + PawnIO</span> <span class="byline">by jackzeng 2026</span></div>
-      <div class="bar-group bar-files">
-        <span class="lab muted small">文件</span>
-        <button id="btn-edit-load-file">打开 dump 文件…</button>
-        <button id="btn-edit-export" disabled>另存为…</button>
-        <button id="btn-verify" disabled>校验文件…</button>
-      </div>
-      <div id="env-status">检测环境…</div>
+    <div class="bar-group bar-controls">
+      <label class="field">控制器
+        <select id="ctl-select"><option value="-1">— 未枚举 —</option></select>
+      </label>
+      <button id="btn-scan" title="重新枚举控制器并在其上扫描 SPD 设备">重扫</button>
+      <span class="divider"></span>
+      <label class="field">设备
+        <select id="dimm-select"><option value="-1">— 未扫描 —</option></select>
+      </label>
     </div>
-    <div class="topbar-row topbar-devices">
-      <div class="bar-group bar-controls">
-        <label class="field">控制器
-          <select id="ctl-select"><option value="-1">— 未枚举 —</option></select>
-        </label>
-        <button id="btn-scan" title="重新枚举控制器并在其上扫描 SPD 设备">重扫</button>
-        <span class="divider"></span>
-        <label class="field">设备
-          <select id="dimm-select"><option value="-1">— 未扫描 —</option></select>
-        </label>
-      </div>
+    <div class="bar-group bar-files">
+      <span class="lab muted small">文件</span>
+      <button id="btn-edit-load-file">打开 dump 文件…</button>
+      <button id="btn-edit-export" disabled>另存为…</button>
+      <button id="btn-verify" disabled>校验文件…</button>
     </div>
+    <div id="env-status">检测环境…</div>
   </header>
 
   <div id="warn-bar" class="hidden"></div>
