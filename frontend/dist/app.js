@@ -444,8 +444,7 @@ $("hexgrid").onclick = (ev) => {
     try {
       const st = await call("EditSetByte", off, nv);
       renderEditState(st);
-      await refreshEditBytes();   // 先让左侧视图拿到新字节
-      await refreshEditDiff();    // 再按新字节 + 改动分类刷新校验状态
+      await refreshAfterEdit();   // hex/字段/变更面板/CRC/SPD 信息全部同步
       addLog("", `修改 ${hex(off, 3)} = ${hex(nv, 2)}${st && st.crcStale ? "(该改动影响校验, 记得\"重算 CRC\")" : "(不影响校验, 无需重算)"}`);
     } catch (e) {
       const msg = String(e);
@@ -895,6 +894,7 @@ if (window.addEventListener) {
 }
 
 function renderInfo(r) {
+  if (!r) return; // Decode 无结果(未解码/桩): 面板保持原样, 不抛错
   const kv = (k, v, cls) => `<div class="k">${k}</div><div class="v ${cls || ""}">${v ?? "—"}</div>`;
   const card = (title, body, tag) =>
     `<section class="card"><div class="card-head"><span>${title}</span>` +
@@ -1349,10 +1349,7 @@ async function applyEditField(key, box) {
   try {
     const st = await call("EditSetField", key, val);
     renderEditState(st);
-    editFieldsCache = (await call("EditFields")) || [];
-    renderEditFields();
-    await refreshEditBytes();
-    await refreshEditDiff();
+    await refreshAfterEdit(); // 字段值/hex/变更面板/SPD 信息全部同步
     addLog("", `编辑 ${key} = ${val}`);
   } catch (e) {
     addLog("", `编辑失败(${key}): ${e}`);
@@ -1364,10 +1361,7 @@ $("btn-edit-reset").onclick = async () => {
   try {
     const st = await call("EditReset");
     renderEditState(st);
-    editFieldsCache = (await call("EditFields")) || [];
-    renderEditFields();
-    await refreshEditBytes();
-    await refreshEditDiff();
+    await refreshAfterEdit();
   } catch (e) { addLog("", "重置失败: " + e); }
 };
 
@@ -1375,10 +1369,7 @@ $("btn-edit-fixcrc").onclick = async () => {
   try {
     const st = await call("EditFixCRC");
     renderEditState(st);
-    editFieldsCache = (await call("EditFields")) || [];
-    renderEditFields();
-    await refreshEditBytes();
-    await refreshEditDiff();
+    await refreshAfterEdit();
     addLog("", "已重算 CRC(校验值字节已更新)");
   } catch (e) { addLog("", "重算 CRC 失败: " + e); }
 };
@@ -1408,6 +1399,17 @@ async function refreshEditBytes() {
     if (typeof b64 === "string") { currentDump = b64; renderHexB64(b64); }
     await refreshCRCStatus();
   } catch (e) { /* 编辑器未载入 */ }
+}
+
+// refreshAfterEdit 是**所有编辑提交后的统一刷新**(改字节/改字段/重算 CRC/重置):
+// 编辑器字段值、hex、变更面板、CRC 状态、左侧"SPD 信息"全部按当前工作副本重画 ——
+// 内容只有一份(后端工作副本), 各视图都是它的投影, 提交一次就全部同步一次。
+async function refreshAfterEdit() {
+  editFieldsCache = (await call("EditFields")) || [];
+  renderEditFields();
+  await refreshEditBytes();
+  await refreshEditDiff();
+  await syncInfoFromEditor(); // 重新 Decode → "SPD 信息"面板同步(含 XMP 槽位卡片)
 }
 
 async function refreshEditDiff() {

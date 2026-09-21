@@ -66,6 +66,29 @@ test("编辑器: 标签页切换与从设备载入", async () => {
   assert.equal(el("btn-edit-write").disabled, false, "CRC 通过且有变更时应可写入");
 });
 
+test("编辑器: 改原始字节后 SPD 信息与编辑器字段同步刷新", async () => {
+  const { el, calls } = setup();
+  await flush();
+  el("tab-edit").onclick();
+  await readDevice(el);
+  await flush();
+
+  calls.length = 0;
+  const findTarget = () =>
+    el("hexgrid").querySelectorAll("span[data-off]").find((b) => b.getAttribute("data-off") === "260");
+  const target = findTarget();
+  el("hexgrid").onclick({ target });
+  const inp = target.querySelector("input");
+  inp.value = "5A";
+  await inp.onkeydown({ key: "Enter", preventDefault() {} });
+  await flush();
+
+  assert.ok(calls.some((c) => c.name === "EditSetByte"), "应先提交字节");
+  assert.ok(calls.some((c) => c.name === "EditFields"), "编辑器字段值应重新拉取(字段值可能随字节变化)");
+  assert.ok(calls.some((c) => c.name === "Decode"), "SPD 信息面板应重新解码");
+  assert.doesNotMatch(el("log").text(), /同步 SPD 信息失败/, "同步失败不应出现在日志里");
+});
+
 test("编辑器: 周期提示点击填入 clk 写法, 按周期与按时间都可写", async () => {
   const { el, calls } = setup();
   await flush();
