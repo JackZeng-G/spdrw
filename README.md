@@ -7,6 +7,10 @@
 本项目的范围取舍: 只走芯片组 SMBus; 内核访问用开源签名驱动
 **PawnIO**(namazso, OpenRGB/LibreHardwareMonitor 同款), 不用 CPU-Z 驱动。
 
+**当前版本 v1.0.0**(第一个正式版): 全链路(读取/解析/编辑器/干跑/写入+CRC/回滚)已在
+AMD 7840HS 笔记本(DDR5 SO-DIMM)真机实测通过; DDR4 平台与更多小主机实测进行中,
+平台矩阵见 [docs/真机实测记录.md](docs/真机实测记录.md)。支持 DDR3/DDR4/DDR5, **不支持 DDR2**。
+
 ## 功能
 
 - **等待模式(读速的真正瓶颈)**: PawnIO 模块把每次事务的等待交给 Windows 线程休眠时,
