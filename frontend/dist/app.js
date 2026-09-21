@@ -396,8 +396,7 @@ $("btn-scan").onclick = async () => {
     const dimms = (await call("Scan")) || [];
     selectedAddr = null; // 重扫后回到空白, 等待用户手动选择
     fillDimmSelect(dimms);
-    addLog("", `重扫完成: ${list.length} 个控制器 / ${dimms.length} 个 SPD 设备, 请选择要读取的 DIMM`);
-  } catch (e) { addLog("", "扫描失败: " + e); }
+    } catch (e) { addLog("", "扫描失败: " + e); }
 };
 
 // ---------- 十六进制视图 ----------
@@ -1004,10 +1003,10 @@ function enableOps(on) {
 $("btn-verify").onclick = async () => {
   try {
     const path = await call("VerifyFileDialog");
-    addLog("", "校验通过(文件与设备内容一致): " + path);
+    if (path) addLog("", "已提交校验: " + path + "(结果由后端记录)");
   } catch (e) {
     if (String(e).includes("已取消")) { addLog("", "已取消"); return; }
-    addLog("", "校验失败: " + e);
+    addLog("", "校验请求失败: " + e);
   }
 };
 
@@ -1115,7 +1114,7 @@ $("btn-wp-set").onclick = async () => {
     "\n\n注意: 部分颗粒的 RSWP 不可逆!")) return;
   try {
     await call("WPSet", blocks, wpAck($("inp-wp-ack").value));
-    addLog("", "RSWP 已设置并回读确认: " + blocks.join(","));
+    // 后端已记"RSWP: 块 […] 已确认受保护(回读复核通过)"
     $("inp-wp-ack").value = "";
     await refreshWP().catch(() => {});
   } catch (e) {
@@ -1138,8 +1137,7 @@ $("btn-write-probe").onclick = async () => {
       (r.mode ? ` · 档位 ${escapeHtml(r.mode)}` : "") +
       ` · 已还原 ${r.restored ? "是" : "否"} · 整片复核 ${r.verified ? "通过" : "不通过"}<br>` +
       `<span class="muted">${escapeHtml(r.note)}</span>`;
-    addLog("", "写入能力探测: " + r.note);
-    if (r.backupPath) addLog("", "备份: " + r.backupPath);
+    // 结果与备份路径由后端 logf("写入能力探测结果: …"/"…先备份当前内容(…)")覆盖
     await refreshWP().catch(() => {});
   } catch (e) { addLog("", "写入能力探测失败: " + e); }
 };
@@ -1152,7 +1150,7 @@ $("btn-wp-clear").onclick = async () => {
   if (!confirm("确定清除全部可逆写保护 (RSWP)?")) return;
   try {
     await call("WPClear", wpAck($("inp-wp-ack").value));
-    addLog("", "RSWP 已清除并回读确认");
+    // 后端已记"RSWP: 已确认全部块可写(回读复核通过)"
     $("inp-wp-ack").value = "";
     await refreshWP().catch(() => {});
   } catch (e) {
@@ -1162,7 +1160,7 @@ $("btn-wp-clear").onclick = async () => {
 };
 
 // ---------- 事件 ----------
-onEvent("dump:done", (n) => addLog("", `读取完成 ${n} 字节`));
+// "dump:done" 事件不再记日志: 后端详读行(档位/事务/耗时)已完整覆盖
 
 // ---------- 启动 ----------
 // Wails v2 的绑定在 DOM ready 后由后端异步注入, 页面脚本先于其执行,
@@ -1211,7 +1209,7 @@ function switchTab(which) {
 
 // 重新读取设备: 读取后会自动把内容接进编辑器(见 doDump/adoptDeviceEditor)
 $("btn-edit-reload").onclick = async () => {
-  try { await doDump(); addLog("", "已重新读取设备并刷新编辑器"); }
+  try { await doDump(); /* 读取与编辑器载入由后端 logf */ }
   catch (e) { addLog("", "重新读取失败: " + e); }
 };
 $("btn-edit-load-file").onclick = async () => {
@@ -1232,7 +1230,7 @@ async function loadEditor(method) {
   setEditLoadedUI(true);
   await refreshEditBytes();   // 让左侧 hex 进入"可直接点击修改"状态
   await syncInfoFromEditor(); // 用户要求: 用编辑器打开 dump 文件时, SPD 信息也要同步显示
-  addLog("", `编辑器已载入: ${st.source}(${st.generation} ${st.size}B)`);
+  // 不再记"编辑器已载入": 后端 EditLoadFromDevice/EditLoadFileDialog 已 logf 等价信息
 }
 
 // syncInfoFromEditor 用编辑器当前内容刷新"SPD 信息"面板(打开文件后信息面板不再空白)。
@@ -1411,14 +1409,14 @@ $("btn-edit-fixcrc").onclick = async () => {
     const st = await call("EditFixCRC");
     renderEditState(st);
     await refreshAfterEdit();
-    addLog("", "已重算 CRC(校验值字节已更新)");
+    // 后端已 logf"编辑器: 已重算 CRC(改动 N 字节)"或"当前内容已通过校验, 未改动"
   } catch (e) { addLog("", "重算 CRC 失败: " + e); }
 };
 
 $("btn-edit-export").onclick = async () => {
   try {
     const path = await call("EditExportDialog");
-    addLog("", "已导出: " + path);
+    if (path) addLog("", "已提交导出: " + path + "(后端日志含字节数)");
   } catch (e) {
     if (String(e).includes("已取消")) return;
     addLog("", "导出失败: " + e);

@@ -922,15 +922,13 @@ func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun 
 		a.resetPageQuietly(dev)
 		a.attachBusStats(res, dev, counter)
 		res.Message = fmt.Sprintf("写入未完成: %v; %s", fail, res.RollbackNote)
-		a.logf("%s", res.Message)
+		// 消息不再在此处 logf: 前端失败分支会记"写入失败: <err>"(同一段文本),
+		// 预检门禁被拒的错误不经过这里, 也由前端记录 —— 一条失败只出现一次
 		// 用包装错误返回: 消息里带"回滚结果", 但 errors.As 仍能取到 *eeprom.WriteError
 		return res, &writeFailure{cause: fail, note: res.RollbackNote}
 	}
 
 	res.Written, res.Verified = len(changes), true
-	if note := dev.WriteModeNote(); note != "" {
-		a.logf("写入档位: %s", note)
-	}
 	res.Message = fmt.Sprintf(
 		"写入并校验通过: %d 字节(备份 %s; 写入档位 %s); 校验: 每个字节写完即回读 %d/%d + 整片 %d 字节比对 + 整片逐字节复核(关掉块读/字读, 独立读法)",
 		len(changes), backup, dev.WriteMode(), len(changes), len(changes), dev.Size())

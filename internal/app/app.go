@@ -431,7 +431,7 @@ func (a *App) dumpLocked() ([]byte, error) {
 		a.logf("编辑器未载入(该内容暂不支持编辑): %v", eerr)
 	}
 	a.emit("dump:done", len(data))
-	a.logf("读取 %d 字节", len(data))
+	// 不再 logf"读取 N 字节": 上面详读行(档位/事务/耗时)已完整覆盖
 	// DDR5 诊断: 关键 MR 寄存器 + NVM 前 4 字节直读, 用于定位页/NVM 访问问题
 	if a.dev.IsDDR5() {
 		a.mu.Unlock()
@@ -584,44 +584,11 @@ func (a *App) WPStatus() (*WPStatusResult, error) {
 		PSWPApplicable: det.PSWPApplicable, PSWP: det.PSWP,
 		Warnings: det.Warnings,
 	}
-	a.logf("保护状态: %s", summarizeWP(res))
+	// "保护状态: ..."一行由前端 renderWP 记录(含块列表与 PSWP 状态), 此处不再重复
 	for _, w := range res.Warnings {
 		a.logf("保护状态提示: %s", w)
 	}
 	return res, nil
-}
-
-// summarizeWP 生成一行人类可读的保护状态摘要(用于日志)。
-func summarizeWP(r *WPStatusResult) string {
-	var sb strings.Builder
-	for i := 0; i < r.Blocks; i++ {
-		if i > 0 {
-			sb.WriteByte(' ')
-		}
-		state := "开放"
-		switch {
-		case !r.Known[i]:
-			state = "未知"
-		case r.Protected[i]:
-			state = "保护"
-		}
-		fmt.Fprintf(&sb, "B%d=%s", i, state)
-	}
-	if r.DDR5 {
-		fmt.Fprintf(&sb, " | MR12=%#02x MR13=%#02x", r.MR12, r.MR13)
-		if r.Offline {
-			sb.WriteString(" 离线模式")
-		}
-	} else if r.PSWPApplicable {
-		if r.PSWP {
-			sb.WriteString(" | PSWP 永久保护已生效")
-		} else {
-			sb.WriteString(" | PSWP 未设置")
-		}
-	} else {
-		sb.WriteString(" | PSWP 不适用")
-	}
-	return sb.String()
 }
 
 // WPSet 设置指定块 RSWP; blocks 为块号列表。确认串统一为 "CLEAR"
