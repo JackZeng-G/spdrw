@@ -49,6 +49,20 @@ test("写入: 编辑器是唯一入口, 传 (force=false, dryRun=false, ack)", a
     "旧的“写入文件…”路径已移除, 不应再调用 WriteConfirmed");
 });
 
+test("写入: 结果消息不再由前端重复记日志(后端已 logf 一次)", async () => {
+  const { el } = setup({ EditLoadFromDevice: () => state });
+  await flush();
+  el("tab-edit").onclick();
+  await readDevice(el);
+  el("inp-edit-ack").value = "WRITE";
+  await el("btn-edit-write").onclick();
+  await flush();
+  const log = el("log").text();
+  assert.equal(log.includes("写入并校验通过"), false, "结果消息只应来自后端 logf, 前端不再重复记");
+  assert.equal(log.includes("备份: "), false, "备份路径同理(后端已记 \"已备份当前 SPD\")");
+  assert.match(log, /自动复核/, "自动复核的前端日志保留");
+});
+
 test("写入: 界面不再有备份/干跑勾选(备份每次自动做)", async () => {
   const { el } = setup();
   await flush();

@@ -1527,8 +1527,8 @@ $("btn-edit-write").onclick = async () => {
   try {
     // 界面不再提供干跑: 确认串 WRITE 是唯一且必要的闸门(后端同样校验)。
     const res = await call("EditApplyToDevice", false, false, $("inp-edit-ack").value);
-    addLog("", (res && res.message) || "写入完成");
-    if (res && res.backupPath) addLog("", "备份: " + res.backupPath);
+    // 结果消息与备份路径不再由前端重复记日志 —— 后端 writeWithPreflight 已经 logf
+    // "已备份当前 SPD" 与结果消息, 此前日志面板里同一条长消息会连出现两次
     // 写完后: 左侧显示设备实际内容, 编辑器基线也更新为设备当前内容(复用刚读的缓存),
     // 然后自动做一次独立复核 —— 三步走完界面上的"变更"归零、复核显示逐字节一致。
     await doDump();
