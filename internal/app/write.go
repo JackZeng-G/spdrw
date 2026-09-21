@@ -728,12 +728,15 @@ func (a *App) rollbackAfterFailure(dev *eeprom.Device, img []byte, backup string
 	}
 }
 
+// backupDir 返回备份目录: **可执行文件同级**的 backup\(不存在则由调用方 MkdirAll 自动创建)。
+// 之前放在 ~/.spdrw/backups, 现按用户要求改为随程序走 —— 找得到、挪程序时备份一起带走。
+// 目录创建失败(只读盘/无权限)时备份失败 → 写入在动设备**之前**就中止: 宁可不写, 不能没备份。
 func backupDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return "", fmt.Errorf("无法确定用户目录: %v", err)
+	exe, err := os.Executable()
+	if err != nil || exe == "" {
+		return "", fmt.Errorf("无法确定程序路径: %v", err)
 	}
-	return filepath.Join(home, ".spdrw", "backups"), nil
+	return filepath.Join(filepath.Dir(exe), "backup"), nil
 }
 
 // WriteConfirmed 执行写入。必须带确认串: 真实写入要求 "WRITE", 干跑要求 "DRYRUN"。
