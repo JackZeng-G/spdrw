@@ -7,9 +7,15 @@
 本项目的范围取舍: 只走芯片组 SMBus; 内核访问用开源签名驱动
 **PawnIO**(namazso, OpenRGB/LibreHardwareMonitor 同款), 不用 CPU-Z 驱动。
 
-**当前版本 v1.0.0**(第一个正式版): 全链路(读取/解析/编辑器/干跑/写入+CRC/回滚)已在
-AMD 7840HS 笔记本与 7735HS 小主机(均 DDR5 SO-DIMM)真机实测通过; DDR4 平台实测进行中,
-平台矩阵见 [docs/真机实测记录.md](docs/真机实测记录.md)。支持 DDR3/DDR4/DDR5, **不支持 DDR2**。
+**当前版本 v1.0.1**: 全链路(读取/解析/编辑器/干跑/写入+CRC/回滚)已在 AMD 7840HS 笔记本与
+7735HS 小主机(均 DDR5 SO-DIMM)真机实测通过, 含 21 字节真写 + 三层校验 + 自动复核;
+DDR4 平台实测进行中, 平台矩阵见 [docs/真机实测记录.md](docs/真机实测记录.md)。
+支持 DDR3/DDR4/DDR5, **不支持 DDR2**。
+
+v1.0.0 → v1.0.1 主要变化: ① 时序支持按周期(clk)查看与输入, tCK 基准与 MT/s 直接显示;
+② 编辑提交(字节/字段/CRC/重置)后 SPD 信息面板与编辑器字段即时同步; ③ 备份目录改到
+**程序同级** `backup\`(自动创建); ④ 日志去重(同一事件只记一行); ⑤ 页寄存器写后归零、
+写探测 unknown 档、分支整理(默认分支 `master`)等修复。
 
 ## 功能
 
@@ -33,7 +39,9 @@ AMD 7840HS 笔记本与 7735HS 小主机(均 DDR5 SO-DIMM)真机实测通过; DD
   - **不支持 DDR2**(太老, 也找不到任何真实 dump 用于验证; 2026-09-21 起移除, byte2=0x08-0x0A 按"未知类型"拒绝解析与写入)
 - **SPD 编辑器**(内存中编辑, 不落盘不写设备):
   - 常用信息: 厂商(JEP106 反查/搜索)、厂商码、生产地点、日期、序列号、部件号、修订码、DRAM 厂商/stepping
-  - JEDEC 时序: DDR4 medium+fine、DDR5 16bit(ps/ns, 含 lower limit)、DDR3 MTB/FTB
+  - JEDEC 时序: DDR4 medium+fine、DDR5 16bit(ps/ns, 含 lower limit)、DDR3 MTB/FTB;
+    **按时间或周期两种写法**: 输入 `10`(ns)或 `16clk`(自动 ×tCK 换算), 字段旁实时显示
+    折算周期与 `1clk = X ns · Y MT/s`; XMP/EXPO 的 profile 时序按该 profile 自己的 tCK 换算
   - 扩展信息: **XMP 2.0**(DDR4, 2×63B)、**XMP 3.0**(DDR5, header + 5 槽)、**EXPO**(DDR5, 与 XMP 槽 3/User1 互斥) —— 可创建/修改/清除, CRC 自动重算
   - hex 视图内点格子就地编辑任意字节(带列头 00-0F); **实时校验状态**与**重算 CRC**都在标题行;
     界面说明收进"?"问号里, 点一下才展开
@@ -94,9 +102,9 @@ exe 的**图标**和**属性里的版本/版权**(`by jackzeng 2026`)来自仓�
 
 ```bash
 export GOPATH=$PWD/.gopath GOMODCACHE=$PWD/.gopath/pkg/mod GOCACHE=$PWD/.gocache   # 容器内需自定
-go test ./internal/...                          # 149 个顶层用例
+go test ./internal/...                          # 158 个顶层用例
 CGO_ENABLED=1 go test -race ./internal/...      # 并发/死锁问题只有 race 抓得到
-node --test "frontend/test/*.test.mjs"          # 前端契约与漂移守卫(39 条)
+node --test "frontend/test/*.test.mjs"          # 前端契约与漂移守卫(45 条)
 go test ./internal/app/ -run TestBuiltExe -v    # 产物自检(需先构建: 前端/PawnIO/图标/版本信息)
 ```
 
