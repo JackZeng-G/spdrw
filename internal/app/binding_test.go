@@ -64,9 +64,7 @@ func TestNoByteSliceParamsForArrayArgs(t *testing.T) {
 			}
 			// []byte 参数只允许出现在"二进制走 base64"的语义里
 			allowed := map[string]bool{
-				"Decode":        true, // 前端传 base64 字符串
-				"SaveDumpData":  true, // 前端传 base64 字符串
-				"SetFieldValue": false,
+				"Decode": true, // 前端传 base64 字符串(唯一)
 			}
 			if !allowed[m.Name] {
 				t.Errorf("绑定方法 %s 的参数 %d 是 []byte: 若前端传的是数字数组会解码失败,"+

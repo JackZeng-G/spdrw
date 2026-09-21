@@ -769,8 +769,8 @@ func (a *App) Decode(dump []byte) (*DecodeResult, error) {
 	return DecodeDump(dump)
 }
 
-// Close 释放全部传输。
 // Shutdown 释放设备与全部传输(main.go OnShutdown 调用)。
+//
 // Wails v2 会把绑定结构体的全部导出方法都暴露给 JS, 没有方法级黑名单,
 // 这里只能靠命名自明: 页面脚本不该调它(自身的 app.js 从不调用);
 // 之前叫 Close 语义模糊, 像是"关窗口"的常规 API, 容易误触。
