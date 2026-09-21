@@ -486,6 +486,8 @@ button.q:hover { color: var(--accent); border-color: var(--accent); background: 
 .kv .v { color: var(--fg); word-break: break-word; user-select: text; font-size: var(--fs-sm); }
 .kv .v.mono, .kv .v .mono { font-family: var(--mono); }
 .kv .v.bad { color: var(--danger); }
+/* 单键值对占整行(如 "CL 支持"): 值跨到行尾, 不被四列网格的右半行截断 */
+.kv .v.wide { grid-column: 2 / -1; }
 
 /* 读取方式: 概要卡片底部单独一行(时钟/事务数/耗时), 挤在 kv 行里会折行 */
 .read-line {

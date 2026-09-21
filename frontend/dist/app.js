@@ -926,7 +926,7 @@ function renderInfo(r) {
       ? `${ns.toFixed(3)} ns · ${(1000 / ns).toFixed(0)} MHz` + (r.tck.cycles ? ` · ${r.tck.cycles} clk` : "")
       : "—";
     let t = `<table class="timing two-col"><tr><th>tCK</th><td>${tckTxt}</td></tr>`;
-    if (r.casLatencies) t += `<tr><th>CL</th><td>${escapeHtml(r.casLatencies)}</td></tr>`;
+    if (r.casLatencies) t += `<tr><th>CL</th><td colspan="3">${escapeHtml(r.casLatencies)}</td></tr>`;
     const rows = [["tAA", r.taa], ["tRCD", r.trcd], ["tRP", r.trp], ["tRAS", r.tras], ["tRC", r.trc], ["tRFC1", r.trfc1], ["tRFC2", r.trfc2], ["tRFC4", r.trfc4], ["tFAW", r.tfaw], ["tRRD_S", r.trrdS], ["tRRD_L", r.trrdL], ["tCCD_L", r.tccdL], ["tWR", r.twr]]
       .filter(([, t2]) => t2 && t2.ns);
     t += timingRowsHTML(rows, ([name, t2]) =>
@@ -946,7 +946,7 @@ function renderInfo(r) {
     };
     t += timingRowsHTML(r.ddr5Timings, cellsOf);
     t += `</table>`;
-    if (r.casLatencies) t += `<div class="kv" style="margin-top:6px"><div class="k">CL 支持</div><div class="v mono">${escapeHtml(r.casLatencies)}</div></div>`;
+    if (r.casLatencies) t += `<div class="kv" style="margin-top:6px"><div class="k">CL 支持</div><div class="v mono wide">${escapeHtml(r.casLatencies)}</div></div>`;
     html += card("JEDEC 时序(DDR5)", t, `共 ${r.ddr5Timings.length} 项`);
   }
 
