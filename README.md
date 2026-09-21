@@ -101,7 +101,8 @@ exe 的**图标**和**属性里的版本/版权**(`by jackzeng 2026`)来自仓�
 ### 测试
 
 ```bash
-export GOPATH=$PWD/.gopath GOMODCACHE=$PWD/.gopath/pkg/mod GOCACHE=$PWD/.gocache   # 容器内需自定
+# 缓存位置: 容器环境变量已指向 /opt/toolchain(GOPATH/GOMODCACHE/GOCACHE), 无需自设;
+# 若在某处手动 export 过项目本地缓存(.gopath/.gocache), 删掉即可避免与全局重复占用
 go test ./internal/...                          # 158 个顶层用例
 CGO_ENABLED=1 go test -race ./internal/...      # 并发/死锁问题只有 race 抓得到
 node --test "frontend/test/*.test.mjs"          # 前端契约与漂移守卫(45 条)
