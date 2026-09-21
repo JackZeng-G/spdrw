@@ -66,6 +66,36 @@ test("编辑器: 标签页切换与从设备载入", async () => {
   assert.equal(el("btn-edit-write").disabled, false, "CRC 通过且有变更时应可写入");
 });
 
+test("编辑器: 输入时序 ns 时右侧 clk 提示实时折算", async () => {
+  const { el } = setup();
+  await flush();
+  el("tab-edit").onclick();
+  await readDevice(el);
+  await flush();
+  const grp = [...el("edit-groups").children].find((b) => b.textContent.includes("JEDEC 时序"));
+  if (grp) grp.onclick();
+
+  const inp = el("edit-fields").querySelector('input[data-key="ddr4.tAA"]');
+  const hint = el("edit-fields").querySelector('span[data-key="ddr4.tAA"]');
+  assert.ok(hint, "时序字段应有周期提示");
+  // 基准 = state.tckNs = 0.625ns: 输入 1.25 → 恰好 2 clk
+  inp.value = "1.25";
+  await inp.oninput();
+  assert.equal(hint.textContent, "2 clk");
+  assert.equal(hint.getAttribute("data-clk"), "2clk", "data-clk 应同步成可填写的写法");
+  // 非整除: 1.4 / 0.625 = 2.24 → 向上取整 3
+  inp.value = "1.4";
+  await inp.oninput();
+  assert.equal(hint.textContent, "3 clk");
+  // clk 写法/乱码不折算(等提交后由后端重算)
+  inp.value = "16clk";
+  await inp.oninput();
+  assert.equal(hint.textContent, "3 clk", "带 clk 后缀的输入不应按 ns 折算");
+  inp.value = "abc";
+  await inp.oninput();
+  assert.equal(hint.textContent, "3 clk", "乱码保留原提示");
+});
+
 test("编辑器: 改原始字节后 SPD 信息与编辑器字段同步刷新", async () => {
   const { el, calls } = setup();
   await flush();

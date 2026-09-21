@@ -1251,6 +1251,7 @@ async function syncInfoFromEditor() {
 
 function renderEditState(st) {
   if (!st) { $("edit-state").textContent = ""; return; }
+  editTckNS = st.tckNs > 0 ? st.tckNs : 0;
   const parts = [`${st.source} · ${st.generation} ${st.size}B`];
   if (st.tckNs > 0) parts.push(`1clk=${st.tckNs.toFixed(3)}ns · ${(2000 / st.tckNs).toFixed(0)}MT/s`);
   parts.push(st.crcOk ? "CRC 通过" : "CRC 不通过");
@@ -1259,7 +1260,31 @@ function renderEditState(st) {
   $("edit-state").className = "muted small " + (st.crcOk ? "" : "danger");
 }
 
+let editTckNS = 0;      // JEDEC 基准 tCK(ns): 时序输入框的 clk 实时折算用
 let editGroup = null;   // 当前分组(基本信息/JEDEC 时序/XMP 2.0/XMP 3.0/EXPO)
+
+// clkBaseForKey 返回该字段 clk 折算用的 tCK(ns): JEDEC 时序用整片基准;
+// XMP/EXPO 的 profile 时序用该 profile 自己的 tCK 字段值(与后端规则一致)。
+function clkBaseForKey(key) {
+  const dot = key.lastIndexOf(".");
+  if (dot > 0) {
+    const pre = key.slice(0, dot);
+    if (/^(xmp\.p\d|xmp3\.p\d|expo\.p\d)$/.test(pre)) {
+      const tckField = editFieldsCache.find((f) => f.key === pre + ".tCK");
+      const v = tckField ? parseFloat(tckField.value) : NaN;
+      return Number.isFinite(v) && v > 0 ? v : 0;
+    }
+  }
+  return editTckNS;
+}
+
+// clkCeil 与后端同一套语义: 向上取整, 浮点噪声按相等处理。
+function clkCeil(ns, tck) {
+  if (!(tck > 0) || !(ns > 0)) return 0;
+  const q = ns / tck;
+  const r = Math.round(q);
+  return Math.abs(q - r) < 1e-6 ? r : Math.ceil(q);
+}
 
 function renderEditFields() {
   const box = $("edit-fields");
@@ -1324,6 +1349,22 @@ function renderEditFields() {
   });
   box.querySelectorAll("input[data-key]").forEach((inp) => {
     inp.onkeydown = (ev) => { if (ev.key === "Enter") applyEditField(inp.getAttribute("data-key"), box); };
+    // 时序字段: 输入 ns 的过程中右侧 clk 提示实时折算(仅认"数字/数字ns"写法;
+    // 带 clk 后缀的输入不折算)。提交后由后端 Fields() 给出权威值。
+    const key0 = inp.getAttribute("data-key");
+    const hintSpan = box.querySelector(`span[data-key="${key0}"]`);
+    if (hintSpan && /^(\d*\.?\d+|(\d*\.?\d+)ns)$/i.test(inp.value)) {
+      inp.oninput = () => {
+        const v = String(inp.value).trim();
+        if (!/^(\d*\.?\d+|(\d*\.?\d+)ns)$/i.test(v)) return;
+        const ns = parseFloat(v);
+        const n = clkCeil(ns, clkBaseForKey(key0));
+        if (n > 0) {
+          hintSpan.textContent = n + " clk";
+          hintSpan.setAttribute("data-clk", n + "clk");
+        }
+      };
+    }
     // 焦点落到字段上 → 左侧 hex 里闪一下这个字段占的字节(省得用户自己对偏移)
     inp.onfocus = () => flashField(inp.getAttribute("data-key"));
     if (inp.getAttribute("data-key") === "manufacturer" || inp.getAttribute("data-key") === "dramManufacturer") {
