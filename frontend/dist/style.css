@@ -178,13 +178,19 @@ button.q:hover { color: var(--accent); border-color: var(--accent); background: 
 /* ---------- 顶栏 ---------- */
 #topbar {
   display: flex;
-  align-items: center;
-  gap: var(--sp-3);
-  height: var(--bar-h);
-  padding: 0 var(--sp-3) 0 var(--sp-4);
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px var(--sp-3) 6px var(--sp-4);
   background: var(--surface);
   border-bottom: 1px solid var(--line);
   flex: none;
+}
+/* 顶栏两行: 第一行 品牌+文件按钮(右)+环境状态; 第二行 控制器/设备(左对齐) */
+.topbar-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-height: calc(var(--bar-h) - 8px);
 }
 .brand {
   font-size: var(--fs-lg);
@@ -212,7 +218,7 @@ button.q:hover { color: var(--accent); border-color: var(--accent); background: 
   align-self: center;
 }
 .bar-group { display: flex; align-items: center; gap: var(--sp-2); }
-.bar-controls { flex: 1; min-width: 0; }
+.bar-controls { min-width: 0; }
 .bar-files { margin-left: auto; }
 .divider { width: 1px; height: 20px; background: var(--line); }
 .field { display: flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; }

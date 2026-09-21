@@ -23,9 +23,9 @@ func main() {
 	err := wails.Run(&options.App{
 		Title:     "SPD Reader Writer (Go)",
 		Width:     1200,
-		Height:    800,
+		Height:    866, // 顶栏两行化后给右侧"SPD 信息"框多留约三行文字的高度
 		MinWidth:  960,
-		MinHeight: 640,
+		MinHeight: 680,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

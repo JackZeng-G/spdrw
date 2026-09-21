@@ -8,24 +8,28 @@
 </head>
 <body>
   <header id="topbar">
-    <div class="brand">SPD 读写 <span class="sub">Go + PawnIO</span> <span class="byline">by jackzeng 2026</span></div>
-    <div class="bar-group bar-controls">
-      <label class="field">控制器
-        <select id="ctl-select"><option value="-1">— 未枚举 —</option></select>
-      </label>
-      <button id="btn-scan" title="重新枚举控制器并在其上扫描 SPD 设备">重扫</button>
-      <span class="divider"></span>
-      <label class="field">设备
-        <select id="dimm-select"><option value="-1">— 未扫描 —</option></select>
-      </label>
+    <div class="topbar-row topbar-main">
+      <div class="brand">SPD 读写 <span class="sub">Go + PawnIO</span> <span class="byline">by jackzeng 2026</span></div>
+      <div class="bar-group bar-files">
+        <span class="lab muted small">文件</span>
+        <button id="btn-edit-load-file">打开 dump 文件…</button>
+        <button id="btn-edit-export" disabled>另存为…</button>
+        <button id="btn-verify" disabled>校验文件…</button>
+      </div>
+      <div id="env-status">检测环境…</div>
     </div>
-    <div class="bar-group bar-files">
-      <span class="lab muted small">文件</span>
-      <button id="btn-edit-load-file">打开 dump 文件…</button>
-      <button id="btn-edit-export" disabled>另存为…</button>
-      <button id="btn-verify" disabled>校验文件…</button>
+    <div class="topbar-row topbar-devices">
+      <div class="bar-group bar-controls">
+        <label class="field">控制器
+          <select id="ctl-select"><option value="-1">— 未枚举 —</option></select>
+        </label>
+        <button id="btn-scan" title="重新枚举控制器并在其上扫描 SPD 设备">重扫</button>
+        <span class="divider"></span>
+        <label class="field">设备
+          <select id="dimm-select"><option value="-1">— 未扫描 —</option></select>
+        </label>
+      </div>
     </div>
-    <div id="env-status">检测环境…</div>
   </header>
 
   <div id="warn-bar" class="hidden"></div>
@@ -128,7 +132,7 @@
           </div>
         </div>
         <div id="hint-write" class="hint hidden">
-          写入前程序会自动: ① 备份设备当前整片内容到 <code>~/.spdrw/backups</code>(失败即中止);
+          写入前程序会自动: ① 备份设备当前整片内容到程序同级的 <code>backup\</code> 目录(自动创建, 失败即中止);
           ② 预检长度/世代/CRC/写保护与 BIOS 写禁止; ③ 按计划只写**改动过的字节**, CRC 排最后;
           ④ 每个字节写完立即回读 → 整片比对 → 再关掉块读/字读整片逐字节复核;
           ⑤ 任何一步失败自动回滚到写入前内容, 并重新读设备与复核。<br>
