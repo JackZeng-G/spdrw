@@ -100,11 +100,17 @@ func (e *Editor) Fields() []Field {
 	out = append(out, e.identityFields()...)
 	for _, s := range e.timingSpecs() {
 		v, ok := s.Get(e)
-		out = append(out, Field{
+		f := Field{
 			Key: s.Key, Name: s.Name, Group: "JEDEC 时序", Kind: "float", Unit: "ns",
 			Min: 0, Max: 100000, Step: 0.001,
 			Value: timingValue(v, ok), Offset: s.Offset, Risk: "medium",
-		})
+		}
+		if ok && !skipClkHint(s.Key) {
+			if base, bok := e.clkBaseNS(s.Key); bok {
+				f.Hint = clkHint(v, base)
+			}
+		}
+		out = append(out, f)
 	}
 	if f, ok := e.clMaskField(); ok {
 		out = append(out, f)
@@ -338,9 +344,17 @@ func (e *Editor) SetField(key, value string) error {
 		if s.Key != key {
 			continue
 		}
-		ns, err := strconv.ParseFloat(value, 64)
-		if err != nil {
-			return fmt.Errorf("%s 必须是数值(纳秒): %q", s.Name, value)
+		n, byClk, perr := parseTimingInput(value)
+		if perr != nil {
+			return fmt.Errorf("%s 必须是数值(纳秒; 或写 \"16clk\" 按周期): %q", s.Name, value)
+		}
+		ns := n
+		if byClk {
+			base, bok := e.clkBaseNS(key)
+			if !bok || base <= 0 {
+				return fmt.Errorf("%s: 当前 dump 没有有效的 tCK 基准, 不能按周期输入", s.Name)
+			}
+			ns = n * base
 		}
 		// 时间没变就不动字节: 同一时间可能有等价但字节不同的编码
 		// (厂商常用 medium 向下取整 + 正 fine, 与 JEDEC 建议的向上取整 + 负 fine 等价)。
@@ -352,6 +366,11 @@ func (e *Editor) SetField(key, value string) error {
 	}
 	if key == "ddr4.cl" || key == "ddr5.cl" {
 		return e.setJEDECCLMask(value)
+	}
+	// profile 时序按周期输入: 先换算成 ns 再交给原有管线(applyClkInput 只对
+	// 时序后缀生效, 电压/命令率等带 clk 输入会走原样解析并被单位校验拦下)
+	if err := e.applyClkInput(&key, &value); err != nil {
+		return err
 	}
 	if err := e.setProfileField(key, value); err == nil {
 		return nil

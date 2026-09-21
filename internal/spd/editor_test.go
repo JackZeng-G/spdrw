@@ -1,6 +1,7 @@
 package spd
 
 import (
+	"encoding/binary"
 	"strings"
 	"testing"
 )
@@ -476,3 +477,165 @@ func TestDDR3SingleByteMediumRejectsOversize(t *testing.T) {
 
 // before0 返回一份全新夹具(用于比对"未改过"的字节)。
 func before0(t *testing.T, d []byte) []byte { return d }
+
+// ---- 时序按周期(clk)显示与输入 ----
+
+func fieldHint(t *testing.T, fields []Field, key string) string {
+	t.Helper()
+	for _, f := range fields {
+		if f.Key == key {
+			return f.Hint
+		}
+	}
+	t.Fatalf("字段 %s 不存在", key)
+	return ""
+}
+
+func setFieldNS(t *testing.T, e *Editor, key, value string) {
+	t.Helper()
+	if err := e.SetField(key, value); err != nil {
+		t.Fatalf("SetField(%s, %s): %v", key, value, err)
+	}
+}
+
+func TestTimingClkInputDDR4(t *testing.T) {
+	e := editorFor(t, makeDDR4(t))
+	base, ok := e.TCKminNS()
+	if !ok || base != 0.75 {
+		t.Fatalf("TCKminNS = %v %v, want 0.75ns", base, ok)
+	}
+	// hint: tRCD=1.5ns @0.75ns → 2 clk; tCK 自身不显示 hint
+	if h := fieldHint(t, e.Fields(), "ddr4.tRCD"); h != "2 clk" {
+		t.Fatalf("tRCD hint = %q, want %q", h, "2 clk")
+	}
+	if h := fieldHint(t, e.Fields(), "ddr4.tCKAVGmin"); h != "" {
+		t.Fatalf("tCKAVGmin 不应有 hint, got %q", h)
+	}
+	// 按 ns 与按 clk 等价(字节一致), 且都确实改了字节
+	eNS := editorFor(t, makeDDR4(t))
+	setFieldNS(t, eNS, "ddr4.tRCD", "12")
+	eClk := editorFor(t, makeDDR4(t))
+	setFieldNS(t, eClk, "ddr4.tRCD", "16clk")
+	eClk2 := editorFor(t, makeDDR4(t))
+	setFieldNS(t, eClk2, "ddr4.tRCD", "16 CLK") // 大小写与空格都收
+	if string(eNS.Bytes()[25]) != string(eClk.Bytes()[25]) || string(eNS.Bytes()[122]) != string(eClk.Bytes()[122]) {
+		t.Fatalf("按 ns(12) 与按 clk(16×0.75) 编码不一致: med=%d/%d fine=%d/%d",
+			eNS.Bytes()[25], eClk.Bytes()[25], eNS.Bytes()[122], eClk.Bytes()[122])
+	}
+	if string(eClk.Bytes()[25]) != string(eClk2.Bytes()[25]) {
+		t.Fatalf("大小写/空格解析不一致")
+	}
+	// 半周期: 2.5clk = 1.875ns
+	eHalf := editorFor(t, makeDDR4(t))
+	setFieldNS(t, eHalf, "ddr4.tRCD", "2.5clk")
+	f := eHalf.Fields()
+	var got string
+	for _, x := range f {
+		if x.Key == "ddr4.tRCD" {
+			got = x.Value
+		}
+	}
+	if got != "1.875" {
+		t.Fatalf("2.5clk → %s ns, want 1.875", got)
+	}
+	// 非法输入
+	for _, bad := range []string{"abc", "-1clk", "0clk", "", "1sec"} {
+		if err := e.SetField("ddr4.tRCD", bad); err == nil {
+			t.Fatalf("SetField(%q) 应报错", bad)
+		}
+	}
+}
+
+func TestTimingClkDDR5AndProfiles(t *testing.T) {
+	d := makeDDR5(t)
+	binary.LittleEndian.PutUint16(d[20:22], 625) // tCKmin = 625ps = 0.625ns (DDR5-3200)
+	binary.LittleEndian.PutUint16(d[30:32], 8125)
+	e := editorFor(t, d)
+	if base, ok := e.TCKminNS(); !ok || base != 0.625 {
+		t.Fatalf("TCKminNS = %v %v", base, ok)
+	}
+	if h := fieldHint(t, e.Fields(), "ddr5.tAA"); h != "13 clk" {
+		t.Fatalf("tAA hint = %q, want 13 clk", h)
+	}
+	// JEDEC 字段按周期写入(tRCD 原为 0)
+	setFieldNS(t, e, "ddr5.tRCD", "16clk")
+	var trcd string
+	for _, x := range e.Fields() {
+		if x.Key == "ddr5.tRCD" {
+			trcd = x.Value
+		}
+	}
+	if trcd != "10" {
+		t.Fatalf("ddr5.tRCD(16clk) = %s ns, want 10", trcd)
+	}
+	// XMP3 profile: tCK 与 JEDEC 可以不同; 周期向上取整要保守(实际 ≥ 请求值)
+	e5 := editorFor(t, makeDDR5(t))
+	setFieldNS(t, e5, "xmp3.present", "是")
+	setFieldNS(t, e5, "xmp3.p1.tCK", "0.625")
+	setFieldNS(t, e5, "xmp3.p1.tAA", "13.5clk") // 8.4375ns → ps 编码 8438(≥8437.5)
+	var v, h string
+	for _, x := range e5.Fields() {
+		if x.Key == "xmp3.p1.tAA" {
+			v, h = x.Value, x.Hint
+		}
+	}
+	if v != "8.438" {
+		t.Fatalf("xmp3.p1.tAA(13.5clk) = %s ns, want 8.438", v)
+	}
+	if h != "14 clk" { // 8.438/0.625 = 13.5008 → 14(向上取整, 保守)
+		t.Fatalf("xmp3.p1.tAA hint = %q, want 14 clk", h)
+	}
+	// XMP2(DDR4): profile tCK 与 JEDEC 不同步的情况
+	e4 := editorFor(t, makeDDR4(t))
+	setFieldNS(t, e4, "xmp.present", "是")
+	setFieldNS(t, e4, "xmp.p1.tCK", "0.625") // 3200 的 profile tCK ≠ JEDEC 0.75
+	setFieldNS(t, e4, "xmp.p1.tRCD", "18clk")
+	var pv, ph string
+	for _, x := range e4.Fields() {
+		if x.Key == "xmp.p1.tRCD" {
+			pv, ph = x.Value, x.Hint
+		}
+	}
+	if pv != "11.25" { // 18 × 0.625
+		t.Fatalf("xmp.p1.tRCD(18clk) = %s ns, want 11.25(按 profile tCK)", pv)
+	}
+	if ph != "18 clk" {
+		t.Fatalf("xmp.p1.tRCD hint = %q, want 18 clk", ph)
+	}
+	// 白名单: 电压字段不接受 clk(否则换算结果会被当伏特写下去)
+	if err := e4.SetField("xmp.p1.voltage", "2clk"); err == nil {
+		t.Fatal("电压字段带 clk 输入应报错")
+	}
+}
+
+func TestParseTimingInput(t *testing.T) {
+	cases := []struct {
+		in    string
+		ns    float64
+		byClk bool
+		ok    bool
+	}{
+		{"10", 10, false, true},
+		{" 10.5 ", 10.5, false, true},
+		{"10ns", 10, false, true},
+		{"10NS", 10, false, true},
+		{"16clk", 16, true, true},
+		{"16 clk", 16, true, true},
+		{"16CLK", 16, true, true},
+		{"2.5clk", 2.5, true, true},
+		{"abc", 0, false, false},
+		{"-1clk", 0, false, false},
+		{"0clk", 0, false, false},
+		{"", 0, false, false},
+		{"1sec", 0, false, false},
+	}
+	for _, c := range cases {
+		ns, byClk, err := parseTimingInput(c.in)
+		if c.ok && (err != nil || ns != c.ns || byClk != c.byClk) {
+			t.Fatalf("parseTimingInput(%q) = %v %v %v, want ns=%v clk=%v", c.in, ns, byClk, err, c.ns, c.byClk)
+		}
+		if !c.ok && err == nil {
+			t.Fatalf("parseTimingInput(%q) 应报错", c.in)
+		}
+	}
+}

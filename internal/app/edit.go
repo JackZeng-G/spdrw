@@ -27,6 +27,9 @@ type EditState struct {
 	// CRCStale 表示"有改动落在校验覆盖范围内" —— 这类改动必须重算 CRC 才能写入;
 	// 改序列号/生产日期/部件号(不在覆盖范围)不置此位, 这才是对的提示。
 	CRCStale bool `json:"crcStale"`
+	// TckNS 是 JEDEC 基准 tCK(纳秒), 0 = 无有效值。界面用它显示
+	// "1clk = X ns · Y MT/s"(Y = 2000/X); XMP/EXPO 的 profile 基准在各自字段的 hint 里。
+	TckNS float64 `json:"tckNs,omitempty"`
 }
 
 // EditDiff 是编辑结果的差异视图。
@@ -141,6 +144,7 @@ func (a *App) editStateLocked() (*EditState, error) {
 			break
 		}
 	}
+	tckNS, _ := a.editor.TCKminNS()
 	return &EditState{
 		Source:      a.editSource,
 		Generation:  a.editor.RAMType().String(),
@@ -150,6 +154,7 @@ func (a *App) editStateLocked() (*EditState, error) {
 		CRCOK:       a.editor.CRCOK(),
 		CanWrite:    true,
 		CRCStale:    stale,
+		TckNS:       tckNS,
 	}, nil
 }
 

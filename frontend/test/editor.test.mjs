@@ -9,12 +9,12 @@ const html = fs.readFileSync(new URL("../dist/index.html", import.meta.url), "ut
 
 const state = {
   source: "设备 0x50", generation: "DDR4", size: 512,
-  dirty: false, changeCount: 0, crcOk: true, canWrite: true,
+  dirty: false, changeCount: 0, crcOk: true, canWrite: true, tckNs: 0.625,
 };
 const fields = [
   { key: "partNumber", name: "部件号", group: "常用信息", kind: "string", value: "TEST16GB-DDR4-3200", offset: "0x149-20B", risk: "low", primary: true },
   { key: "serial", name: "序列号(hex)", group: "常用信息", kind: "hex", value: "DEADBEEF", offset: "0x145-4B", risk: "low", primary: true },
-  { key: "ddr4.tAA", name: "tAA", group: "JEDEC 时序", kind: "float", unit: "ns", value: "1.5", offset: "0x18/0x7B", risk: "medium", primary: true },
+  { key: "ddr4.tAA", name: "tAA", group: "JEDEC 时序", kind: "float", unit: "ns", value: "1.5", offset: "0x18/0x7B", risk: "medium", primary: true, hint: "2 clk" },
   // 非常用字段: 默认收起, 勾"显示全部字段"后才出现
   { key: "ddr4.tCCD_L_WR2", name: "tCCD_L_WR2", group: "JEDEC 时序", kind: "float", unit: "ns", value: "8", offset: "0x50", risk: "medium" },
 ];
@@ -56,9 +56,37 @@ test("编辑器: 标签页切换与从设备载入", async () => {
   assert.ok(calls.some((c) => c.name === "EditState"), "读取后应自动接进编辑器");
   assert.ok(calls.some((c) => c.name === "EditFields"), "应拉字段");
   assert.match(el("edit-state").textContent, /设备 0x50/);
+  assert.match(el("edit-state").textContent, /1clk=0\.625ns · 3200MT\/s/, "状态行应显示 tCK 基准与等效频率");
   assert.match(el("edit-fields").html(), /部件号/);
+  // 周期提示在"JEDEC 时序"分组里, 先切过去
+  const grp = [...el("edit-groups").children].find((b) => b.textContent.includes("JEDEC 时序"));
+  if (grp) grp.onclick();
+  assert.match(el("edit-fields").html(), /2 clk/, "时序字段应显示周期提示");
   assert.match(el("edit-field-count").textContent, /常用 \d+ \/ \d+ 个字段/, "应显示常用/全部字段数");
   assert.equal(el("btn-edit-write").disabled, false, "CRC 通过且有变更时应可写入");
+});
+
+test("编辑器: 周期提示点击填入 clk 写法, 按周期与按时间都可写", async () => {
+  const { el, calls } = setup();
+  await flush();
+  el("tab-edit").onclick();
+  await readDevice(el);
+  await flush();
+
+  // 切到 JEDEC 时序分组再找提示
+  const grp2 = [...el("edit-groups").children].find((b) => b.textContent.includes("JEDEC 时序"));
+  if (grp2) grp2.onclick();
+  // 点击 tAA 的周期提示 → 输入框被填成 "2clk"
+  const hint = el("edit-fields").querySelector('span[data-clk]');
+  assert.ok(hint, "时序字段应有周期提示");
+  hint.onclick();
+  const inp = el("edit-fields").querySelector('input[data-key="ddr4.tAA"]');
+  assert.equal(inp.value, "2clk", "点击提示应把按周期的写法填进输入框");
+  await inp.onkeydown({ key: "Enter" });
+  await flush();
+  const setCall = calls.filter((c) => c.name === "EditSetField").pop();
+  assert.deepEqual(setCall.args, ["ddr4.tAA", "2clk"], "应把 clk 输入原样交给后端(换算在后端做)");
+  assert.match(el("log").text(), /编辑 ddr4\.tAA = 2clk/);
 });
 
 test("编辑器: 分组切换(JEDEC 时序/常用信息分开渲染)", async () => {

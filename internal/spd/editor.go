@@ -41,6 +41,9 @@ type Field struct {
 	Primary bool     `json:"primary,omitempty"`
 	Note    string   `json:"note,omitempty"`
 	Params  []string `json:"params,omitempty"` // 附加参数(如 XMP profile 名/槽位)
+	// Hint 是输入框旁的只读提示(如 "16 clk"): 当前值按 tCK 折算的周期数。
+	// 界面点击它可把 "<n>clk" 填进输入框 —— 时序按 ns 或按周期两种写法都收(SetField)。
+	Hint string `json:"hint,omitempty"`
 }
 
 // Editor 是对一份 dump 的可编辑视图。

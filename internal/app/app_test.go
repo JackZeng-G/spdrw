@@ -770,3 +770,19 @@ func TestEditExportDefaultName(t *testing.T) {
 		t.Fatalf("设备来源的默认文件名 = %q", gotName)
 	}
 }
+
+// EditState 带 JEDEC 基准 tCK(界面显示 "1clk = X ns · Y MT/s")
+func TestEditStateReportsTckNS(t *testing.T) {
+	a, _ := newWriteTestApp(t)
+	path := writeTempFile(t, ddr4Fixture())
+	if _, err := a.editLoadPath(path); err != nil {
+		t.Fatal(err)
+	}
+	st, err := a.EditState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.TckNS <= 0 {
+		t.Fatalf("EditState.TckNS = %v, want > 0(DDR4 夹具 tCKavgmin=0.75ns)", st.TckNS)
+	}
+}

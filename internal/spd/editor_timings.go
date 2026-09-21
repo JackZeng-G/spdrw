@@ -528,3 +528,147 @@ func (e *Editor) setJEDECCLMask(value string) error {
 	}
 	return fmt.Errorf("%v 无 JEDEC CL 掩码", e.rt)
 }
+
+// ---------------- 时序的"周期"视图与输入 ----------------
+//
+// JEDEC 时序在 SPD 里是时间(ps/ns), 但内存控制器实际配置的是周期数(nCK)。
+// 界面两侧都要能看/能改: Hint 显示当前值折合多少 clk; SetField 收 "16clk"
+// 这类带后缀的输入, 乘上 tCK 基准换算回 ns 再编码。基准的取法: JEDEC 时序
+// 用整片 dump 的 tCKmin; XMP/EXPO 的 profile 时序用该 profile 自己的 tCK
+// (profile 频率可以 != JEDEC 频率)。
+
+// clkCeil 把时间折算成周期数(向上取整): 控制器必须等待"不少于"该时间。
+// 浮点噪声(如 15.999999999 / 16.000000001)按相等处理, 不多算一个周期。
+func clkCeil(ns, tck float64) float64 {
+	if tck <= 0 || ns <= 0 {
+		return 0
+	}
+	q := ns / tck
+	if r := math.Round(q); math.Abs(q-r) < 1e-6 {
+		return r
+	}
+	return math.Ceil(q)
+}
+
+// clkHint 格式化周期提示("16 clk"); 半周期(DDR5 的 2.5nCK 一类)也原样显示。
+func clkHint(ns, tck float64) string {
+	if tck <= 0 || ns <= 0 {
+		return ""
+	}
+	n := clkCeil(ns, tck)
+	if n <= 0 {
+		return ""
+	}
+	return strconv.FormatFloat(n, 'f', -1, 64) + " clk"
+}
+
+// parseTimingInput 解析时序输入: 纯数字或 "Nns" = 纳秒; "Nclk"/"N clk" = 周期数。
+// 返回 byClk=true 时调用方需把 ns = n × tCK基准 换算后再编码。
+func parseTimingInput(value string) (ns float64, byClk bool, err error) {
+	v := strings.ToLower(strings.TrimSpace(value))
+	if v == "" {
+		return 0, false, fmt.Errorf("空输入")
+	}
+	if s, ok := strings.CutSuffix(v, "clk"); ok {
+		n, perr := strconv.ParseFloat(strings.TrimSpace(s), 64)
+		if perr != nil || n <= 0 {
+			return 0, false, fmt.Errorf("周期数无效: %q", value)
+		}
+		return n, true, nil
+	}
+	if s, ok := strings.CutSuffix(v, "ns"); ok {
+		v = strings.TrimSpace(s)
+	}
+	n, perr := strconv.ParseFloat(v, 64)
+	if perr != nil || n < 0 {
+		return 0, false, fmt.Errorf("纳秒值无效: %q", value)
+	}
+	return n, false, nil
+}
+
+// jedecTCKns 返回当前 dump 的 JEDEC 基准 tCK(tCKmin/tCKAVGmin, ns)。
+func (e *Editor) jedecTCKns() (float64, bool) {
+	base := map[string]bool{"ddr3.tCKmin": true, "ddr4.tCKAVGmin": true, "ddr5.tCKAVGmin": true}
+	for _, s := range e.timingSpecs() {
+		if base[s.Key] {
+			return s.Get(e)
+		}
+	}
+	return 0, false
+}
+
+// TCKminNS 给界面状态行用: "1clk = X ns · Y MT/s"(Y = 2000/X, 前端算)。
+func (e *Editor) TCKminNS() (float64, bool) { return e.jedecTCKns() }
+
+// profileTCKns 返回扩展 profile(XMP/EXPO)自己的 tCK(ns)。
+func (e *Editor) profileTCKns(specs []pfSpec, base int) (float64, bool) {
+	for _, sp := range specs {
+		if sp.Suffix == "tCK" {
+			return e.specValue(base, sp)
+		}
+	}
+	return 0, false
+}
+
+// clkBaseNS 解析 key 对应的 tCK 基准(ns)。JEDEC 时序键落在 default 分支;
+// xmp3/expo 的键前缀互不重叠("xmp3.p..." 不匹配 "xmp.p")。
+func (e *Editor) clkBaseNS(key string) (float64, bool) {
+	switch {
+	case strings.HasPrefix(key, "xmp3.p"):
+		n, err := profileIndex(key, "xmp3.p", 5)
+		if err != nil {
+			return 0, false
+		}
+		return e.profileTCKns(xmp3ProfileSpecs, XMP30ProfileOffsets[n])
+	case strings.HasPrefix(key, "expo.p"):
+		n, err := profileIndex(key, "expo.p", 2)
+		if err != nil {
+			return 0, false
+		}
+		return e.profileTCKns(expoProfileSpecs, expoProf1Off+n*expoProfLen)
+	case strings.HasPrefix(key, "xmp.p"):
+		n, err := profileIndex(key, "xmp.p", 2)
+		if err != nil {
+			return 0, false
+		}
+		return e.profileTCKns(xmp2ProfileSpecs, xmp2Base+n*xmp2ProfLen)
+	default:
+		return e.jedecTCKns()
+	}
+}
+
+// skipClkHint 的字段不显示周期提示: tCK 自身折算恒为 1 clk, 没有信息量。
+func skipClkHint(key string) bool {
+	return strings.HasSuffix(key, ".tCKmin") || strings.HasSuffix(key, ".tCKAVGmin") ||
+		strings.HasSuffix(key, ".tCKAVGmax")
+}
+
+// profileTimingSuffix 是允许按周期输入的 profile 字段后缀白名单 ——
+// 防止把 "2clk" 这类输入误换算进电压/命令率等非时序字段(换算结果会被
+// 当成伏特写下去, 静默改错数据)。
+var profileTimingSuffix = map[string]bool{
+	"tCK": true, "tAA": true, "tRCD": true, "tRP": true, "tRAS": true, "tRC": true,
+	"tWR": true, "tRFC1": true, "tRFC2": true, "tRFC4": true, "tRFC": true,
+	"tFAW": true, "tRRD_S": true, "tRRD_L": true, "tCCD_L": true,
+	"tCCD_L_WR": true, "tCCD_L_WR2": true, "tCCD_L_WTR": true, "tCCD_S_WTR": true,
+	"tRTP": true, "tCCD_M": true,
+}
+
+// applyClkInput 若 value 是 "Nclk" 形式, 按 key 的 tCK 基准换算成 ns 并改写 value。
+// 返回 false 表示基准缺失(调用方报错); value 非 clk 形式时原样返回 nil。
+func (e *Editor) applyClkInput(key, value *string) error {
+	i := strings.LastIndex(*key, ".")
+	if i <= 0 || !profileTimingSuffix[(*key)[i+1:]] {
+		return nil // 非时序字段或 JEDEC 键(由调用方按自己的基准处理)
+	}
+	n, byClk, err := parseTimingInput(*value)
+	if err != nil || !byClk {
+		return nil
+	}
+	base, ok := e.clkBaseNS(*key)
+	if !ok || base <= 0 {
+		return fmt.Errorf("%s: 该 profile 没有有效的 tCK, 不能按周期输入", *key)
+	}
+	*value = strconv.FormatFloat(n*base, 'f', -1, 64)
+	return nil
+}

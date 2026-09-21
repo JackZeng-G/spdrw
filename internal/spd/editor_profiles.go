@@ -294,6 +294,15 @@ func (e *Editor) fieldFromSpec(key string, sp pfSpec, base int, prefix, group st
 		f.Kind = "string"
 		f.Value = strings.TrimRight(string(e.dump[base+sp.Off:base+sp.Off+16]), "\x00 ")
 	}
+	// 时序类字段(ns 单位)附上周期提示, 与 JEDEC 时序字段一致。
+	// hint 的 tCK 基准取该 profile 自己的 tCK(profile 频率可以 != JEDEC)。
+	if f.Unit == "ns" {
+		if v, err := strconv.ParseFloat(f.Value, 64); err == nil && v > 0 && !skipClkHint(key) {
+			if tb, ok := e.clkBaseNS(key); ok {
+				f.Hint = clkHint(v, tb)
+			}
+		}
+	}
 	return f
 }
 

@@ -940,7 +940,7 @@ function renderInfo(r) {
     const cellsOf = (x) => {
       const ns = (x.ns != null) ? `${x.ns.toFixed(3)} ns` : "—";
       const cyc = x.cycles ? ` · ${x.cycles} clk` : "";
-      const low = x.lower ? ` <span class="muted">↓${x.lower}</span>` : "";
+      const low = x.lower ? ` <span class="muted" title="lower limit(JEDEC 周期数下限): 这类时序在规格里以周期数定义, 生效值 = max(时间, ${x.lower}×tCK) —— 换内存时钟时按周期重算">↓${x.lower}</span>` : "";
       return `<th>${escapeHtml(x.name)}</th><td>${ns}${cyc}${low}</td>`;
     };
     t += timingRowsHTML(r.ddr5Timings, cellsOf);
@@ -1252,6 +1252,7 @@ async function syncInfoFromEditor() {
 function renderEditState(st) {
   if (!st) { $("edit-state").textContent = ""; return; }
   const parts = [`${st.source} · ${st.generation} ${st.size}B`];
+  if (st.tckNs > 0) parts.push(`1clk=${st.tckNs.toFixed(3)}ns · ${(2000 / st.tckNs).toFixed(0)}MT/s`);
   parts.push(st.crcOk ? "CRC 通过" : "CRC 不通过");
   if (st.dirty) parts.push(`${st.changeCount} 处改动`);
   $("edit-state").textContent = parts.join(" | ");
@@ -1302,6 +1303,7 @@ function renderEditFields() {
       `<label class="${risk}" for="fld-${escapeHtml(f.key)}">${escapeHtml(f.name)}</label>` +
       `<div class="frow">` +
       `<input id="fld-${escapeHtml(f.key)}" type="text" data-key="${escapeHtml(f.key)}" value="${escapeHtml(f.value)}"${list}>` +
+      (f.hint ? `<span data-clk="${escapeHtml(f.hint.replace(/\s+/g, ""))}" data-key="${escapeHtml(f.key)}" class="fclk muted" title="当前值折合的周期数(向上取整)。点击把 ${escapeHtml(f.hint)} 换成按周期的写法填进输入框; 输入框里直接写 16clk 也按周期解析">${escapeHtml(f.hint)}</span>` : "") +
       `<button data-apply="${escapeHtml(f.key)}">应用</button>` +
       `</div></div>`;
   }
@@ -1312,6 +1314,13 @@ function renderEditFields() {
   box.innerHTML = html;
   box.querySelectorAll("button[data-apply]").forEach((b) => {
     b.onclick = () => applyEditField(b.getAttribute("data-apply"), box);
+  });
+  // 周期提示: 点击把 "16 clk" 变成 "16clk" 填进输入框(再点"应用"按周期写入)
+  box.querySelectorAll("span[data-clk]").forEach((sp) => {
+    sp.onclick = () => {
+      const inp = box.querySelector(`input[data-key="${sp.getAttribute("data-key")}"]`);
+      if (inp) { inp.value = sp.getAttribute("data-clk"); inp.focus(); }
+    };
   });
   box.querySelectorAll("input[data-key]").forEach((inp) => {
     inp.onkeydown = (ev) => { if (ev.key === "Enter") applyEditField(inp.getAttribute("data-key"), box); };

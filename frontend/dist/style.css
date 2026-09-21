@@ -654,6 +654,14 @@ table.timing.two-col td { white-space: nowrap; padding-right: 6px; }
   text-overflow: ellipsis;
 }
 .field-grid .frow { display: flex; gap: var(--sp-1); }
+/* 时序字段的周期提示("16 clk"): 点击填入 "16clk" 按周期写 */
+.field-grid .fclk {
+  align-self: center;
+  white-space: nowrap;
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  user-select: none;
+}
 .field-grid input {
   flex: 1;
   min-width: 0;
