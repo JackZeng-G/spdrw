@@ -130,12 +130,15 @@ func (a *App) AutoConnectAll() (*AutoConnectResult, error) {
 	// 注意: ctls 是**过滤后**的列表(只保留探测到设备的控制器), 它的下标 != transports 下标。
 	// 必须用 ControllerInfo.Index 去 Connect, 否则"SPD 不在 transports[0]"的机器上会连错控制器,
 	// 界面里一台设备都看不到(审计发现的阻断项)。
+	var lastErr error
 	for i := range ctls {
 		if err := a.Connect(ctls[i].Index); err != nil {
+			lastErr = fmt.Errorf("控制器 %s: %w", ctls[i].Name, err)
 			continue
 		}
 		dimms, err := a.Scan()
 		if err != nil {
+			lastErr = fmt.Errorf("控制器 %s 扫描: %w", ctls[i].Name, err)
 			continue
 		}
 		if len(dimms) > 0 {
@@ -145,6 +148,11 @@ func (a *App) AutoConnectAll() (*AutoConnectResult, error) {
 		if res.CtlIndex < 0 {
 			res.CtlIndex, res.Dimms = ctls[i].Index, dimms
 		}
+	}
+	// 一台设备都没扫到、且每个控制器都出错时, 把原因带到前端
+	// (旧实现把错误全吞掉, 用户只看到"未扫到 SPD 设备", 排障无从下手)。
+	if res.CtlIndex < 0 && lastErr != nil {
+		return nil, fmt.Errorf("全部 %d 个控制器都无法扫描, 最后一次错误: %w", len(ctls), lastErr)
 	}
 	return res, nil
 }
@@ -402,6 +410,11 @@ func (a *App) dumpLocked() ([]byte, error) {
 		line += "; 回退原因: " + st.Note
 	}
 	a.logf("%s", line)
+	// 整片读取会把 DDR4(2 页)/DDR5(8 页)的页选择留在最后一页; 归零, 给同一
+	// 总线上的外部工具留干净现场(本工具内部不受影响, 访问时按需重切)。
+	if err := a.dev.ResetPage(); err != nil {
+		a.logf("页选择复位到 0 失败(下次访问会自动重切): %v", err)
+	}
 	a.lastDumpAddr = a.dev.Addr()
 	a.lastDump = data
 	// 读一次就自动把内容放进编辑器(用户反馈: 编辑器再点一次"从设备载入"是多余的)。

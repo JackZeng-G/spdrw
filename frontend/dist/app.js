@@ -1131,9 +1131,9 @@ $("btn-write-probe").onclick = async () => {
   try {
     addLog("", "正在探测写入能力(备份 → 单字节写 → 回读 → 还原 → 整片复核)…");
     const r = await call("WriteProbe");
-    const cls = r.verdict === "ok" ? "ok" : "bad";
+    const cls = r.verdict === "ok" ? "ok" : r.verdict === "unknown" ? "warn" : "bad";
     $("probe-result").innerHTML = `<b class="${cls}">写入能力: ` +
-      `${r.verdict === "ok" ? "可写" : r.verdict === "ignored" ? "被忽略(写不进去)" : "被拒绝"}</b>` +
+      `${r.verdict === "ok" ? "可写" : r.verdict === "ignored" ? "被忽略(写不进去)" : r.verdict === "unknown" ? "无法确认(回读失败, 以还原后的整片复核为准)" : "被拒绝"}</b>` +
       ` · ${escapeHtml(r.offsetText)} ${hex(r.old, 2)}→${hex(r.new, 2)} 回读 ${hex(r.readBack, 2)}` +
       (r.mode ? ` · 档位 ${escapeHtml(r.mode)}` : "") +
       ` · 已还原 ${r.restored ? "是" : "否"} · 整片复核 ${r.verified ? "通过" : "不通过"}<br>` +
@@ -1461,24 +1461,37 @@ async function autoVerifyAfterWrite() {
   }
 }
 
+// 写入进行中标志: 双击/连点会让第二条写入流水线在第一条结束后立刻排队执行
+// (后端 opMu 串行, 但同样的字节会再写一遍设备, 徒增 NVM 磨损与困惑)。
+let editWriteBusy = false;
+
 $("btn-edit-write").onclick = async () => {
-  const dryRun = false;
+  if (editWriteBusy) {
+    addLog("", "已有一次写入在进行, 请等它完成");
+    return;
+  }
+  editWriteBusy = true;
+  $("btn-edit-write").disabled = true;
   try {
-    const res = await call("EditApplyToDevice", false, dryRun, $("inp-edit-ack").value);
+    // 界面不再提供干跑: 确认串 WRITE 是唯一且必要的闸门(后端同样校验)。
+    const res = await call("EditApplyToDevice", false, false, $("inp-edit-ack").value);
     addLog("", (res && res.message) || "写入完成");
     if (res && res.backupPath) addLog("", "备份: " + res.backupPath);
-    if (!dryRun) {
-      // 写完后: 左侧显示设备实际内容, 编辑器基线也更新为设备当前内容(复用刚读的缓存),
-      // 然后自动做一次独立复核 —— 三步走完界面上的"变更"归零、复核显示逐字节一致。
-      await doDump();
-      await loadEditor("EditLoadFromDevice");
-      if (res && res.verified) await autoVerifyAfterWrite();
-    } else {
-      await autoVerifyAfterWrite();
-    }
+    // 写完后: 左侧显示设备实际内容, 编辑器基线也更新为设备当前内容(复用刚读的缓存),
+    // 然后自动做一次独立复核 —— 三步走完界面上的"变更"归零、复核显示逐字节一致。
+    await doDump();
+    await loadEditor("EditLoadFromDevice");
+    if (res && res.verified) await autoVerifyAfterWrite();
   } catch (e) {
     addLog("", "写入失败: " + e);
     await resyncAfterFailure();
     addLog("", "编辑器里仍是你的目标内容(可修正后重试); 左侧显示的是设备当前实际内容");
+  } finally {
+    editWriteBusy = false;
+    // 按钮可用性恢复交给既有规则(crcOk 且有变更); 这里只在编辑器状态刷新失败时兜底
+    try {
+      const st = await call("EditState");
+      $("btn-edit-write").disabled = !(st && st.crcOk && st.changeCount > 0);
+    } catch (_) { /* 保留当前禁用态, loadEditor/resync 已按规则刷新 */ }
   }
 };

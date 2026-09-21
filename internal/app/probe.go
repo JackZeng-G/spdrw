@@ -28,7 +28,7 @@ type WriteProbeResult struct {
 	Old      byte   `json:"old"`
 	New      byte   `json:"new"`
 	ReadBack byte   `json:"readBack"`
-	Verdict  string `json:"verdict"` // ok / ignored / rejected
+	Verdict  string `json:"verdict"` // ok / ignored / rejected / unknown(块写已发出但回读失败, 无法确认)
 	Mode     string `json:"mode"`    // 生效的写入档位: 单字节(协议 2) / 块写(协议 5)
 	Note     string `json:"note"`
 	Restored bool   `json:"restored"`
@@ -80,19 +80,27 @@ func (a *App) WriteProbe() (*WriteProbeResult, error) {
 	} else {
 		// 2) 逐字节写没生效 → 再试块写(协议 5): 有些 SPD5 hub 对 NVM 的写只认块写
 		a.logf("写入能力探测: 逐字节写在 %s 未生效(回读 %#02x), 改试块写(协议 5)…", res.OffsetIn, back)
-		if berr := dev.WriteBlockAt(uint16(off), []byte{res.New}); berr == nil {
-			if b2, rerr := readBack(); rerr == nil && b2 == res.New {
-				res.ReadBack, res.Verdict, res.Mode, useBlock = b2, "ok", "块写(协议 5)", true
-				res.Note = fmt.Sprintf("逐字节写被忽略, 但**块写(协议 5)生效**: %s 从 %#02x 变成 %#02x"+
-					" —— 写入必须用块写档位(本工具写入时会自动切换)", res.OffsetIn, old, b2)
-			}
-		}
-		if res.Verdict == "" {
-			res.ReadBack = back
-			res.Verdict = "ignored"
+		if berr := dev.WriteBlockAt(uint16(off), []byte{res.New}); berr != nil {
+			res.ReadBack, res.Verdict = back, "ignored"
+			res.Note = fmt.Sprintf("逐字节写未生效(回读 %#02x), 块写也被拒绝(%v) —— "+
+				"常见原因: 平台级 SPD 写保护(BIOS 里的 SPD Write Protect)、"+
+				"该块已被 RSWP/PSWP 保护、或 WP# 引脚被拉低", back, berr)
+		} else if b2, rerr := readBack(); rerr != nil {
+			// 块写已发出但回读失败: 写入是否生效**未知**, 不能下"被忽略"的结论
+			// (审计 L8: 旧实现会拿块写之前的旧回读值冒充结果)。restore/整片复核
+			// 照常执行, 谁真改了内容都会在那里现形。
+			res.ReadBack, res.Verdict = back, "unknown"
+			res.Note = fmt.Sprintf("块写(协议 5)已发出, 但回读失败(%v) —— 写入是否生效无法确认; "+
+				"将按原值还原并整片复核, 结果以复核为准", rerr)
+		} else if b2 == res.New {
+			res.ReadBack, res.Verdict, res.Mode, useBlock = b2, "ok", "块写(协议 5)", true
+			res.Note = fmt.Sprintf("逐字节写被忽略, 但**块写(协议 5)生效**: %s 从 %#02x 变成 %#02x"+
+				" —— 写入必须用块写档位(本工具写入时会自动切换)", res.OffsetIn, old, b2)
+		} else {
+			res.ReadBack, res.Verdict = b2, "ignored"
 			res.Note = fmt.Sprintf("逐字节写与块写都被忽略: 目标值 %#02x 发出后, 回读仍是 %#02x —— "+
 				"器件接受了事务但没有改内容。常见原因: 平台级 SPD 写保护(BIOS 里的 SPD Write Protect)、"+
-				"该块已被 RSWP/PSWP 保护、或 WP# 引脚被拉低", res.New, back)
+				"该块已被 RSWP/PSWP 保护、或 WP# 引脚被拉低", res.New, b2)
 		}
 	}
 

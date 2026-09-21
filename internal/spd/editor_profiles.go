@@ -364,10 +364,13 @@ func (e *Editor) setProfileField(key, value string) error {
 		if err := e.set(xmp2Base+1, xmp2Magic2, "XMP 头", "medium"); err != nil {
 			return err
 		}
-		// 版本/启用位: 只在整块还是空白时初始化; 已有值(如 0x20 版本、0x05 启用位)
-		// 必须保留 —— 以前无条件写 0x12 会把真实 dump 的版本字节改掉(幽灵变更)。
+		// 版本/启用位: 只在整块还是空白时初始化; 已有值必须保留 —— 无条件写会把
+		// 真实 dump 的版本字节改掉(幽灵变更)。空白时初始化成 **0x20**(XMP 2.0,
+		// 版本号"主.次"= 2.0; 语料里 G.Skill/Micron/Patriot 的真实头全是 0x20)。
+		// 旧实现写 0x12 是 DDR3 时代 XMP 1.2 的版本号, 与 DDR5 的 xmp3Version=0x30
+		// 同一套编码对照即可看出不对。
 		if e.dumpAt(xmp2Base+3) == 0 {
-			if err := e.set(xmp2Base+3, 0x12, "XMP 版本", "medium"); err != nil {
+			if err := e.set(xmp2Base+3, 0x20, "XMP 版本", "medium"); err != nil {
 				return err
 			}
 		}
@@ -710,16 +713,16 @@ func clMaskString(dump []byte, off, n int, ddr5Mask bool) string {
 }
 
 // setCLMask 解析 "20,22,24" 并写入 CL 掩码。
+//
+// 必须**先整表校验、后写**(审计 L1): 旧实现先把掩码清零再逐项解析, 输入
+// "20,abc"/"20,99" 这类中途非法的值会报错返回, 但原掩码已被清掉/写了一半 ——
+// 失败的编辑同样不能改动 dump。
 func (e *Editor) setCLMask(off, n int, value string, ddr5Mask bool, group string) error {
 	value = strings.TrimSpace(value)
-	for i := 0; i < n; i++ {
-		if err := e.set(off+i, 0, group+" CL 掩码", "medium"); err != nil {
-			return err
-		}
+	type bitPos struct {
+		bi, b int
 	}
-	if value == "" {
-		return nil
-	}
+	var bits []bitPos
 	for _, part := range strings.Split(value, ",") {
 		part = strings.TrimSpace(part)
 		if part == "" {
@@ -734,10 +737,7 @@ func (e *Editor) setCLMask(off, n int, value string, ddr5Mask bool, group string
 				return fmt.Errorf("CL %d 非法(DDR5/XMP3 只支持 20-98 的偶数)", cl)
 			}
 			bit := (cl - 20) / 2
-			bi, b := bit/8, bit%8
-			if err := e.set(off+bi, e.dump[off+bi]|(1<<b), group+" CL 掩码", "medium"); err != nil {
-				return err
-			}
+			bits = append(bits, bitPos{bit / 8, bit % 8})
 			continue
 		}
 		// XMP 2.0 是 **3 字节**掩码(24 位): bit i → CL i+7, 因此最大只能到 CL30。
@@ -750,7 +750,16 @@ func (e *Editor) setCLMask(off, n int, value string, ddr5Mask bool, group string
 		if off+bi >= len(e.dump) || bi >= n {
 			return fmt.Errorf("CL %d 编码越界(掩码只有 %d 字节)", cl, n)
 		}
-		if err := e.set(off+bi, e.dump[off+bi]|(1<<b), group+" CL 掩码", "medium"); err != nil {
+		bits = append(bits, bitPos{bi, b})
+	}
+	// 校验全部通过才动手: 先清零, 再置位
+	for i := 0; i < n; i++ {
+		if err := e.set(off+i, 0, group+" CL 掩码", "medium"); err != nil {
+			return err
+		}
+	}
+	for _, bp := range bits {
+		if err := e.set(off+bp.bi, e.dump[off+bp.bi]|(1<<bp.b), group+" CL 掩码", "medium"); err != nil {
 			return err
 		}
 	}

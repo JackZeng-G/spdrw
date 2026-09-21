@@ -526,7 +526,7 @@ func (a *App) backupCurrent(dev *eeprom.Device) ([]byte, string, error) {
 	}
 	dir, err := backupDir()
 	if err != nil {
-		return nil, "", err
+		return nil, "", fmt.Errorf("备份失败: %w", err)
 	}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, "", fmt.Errorf("创建备份目录 %s: %w", dir, err)
@@ -916,6 +916,7 @@ func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun 
 			fail = fmt.Errorf("%w [%s]", fail, scene)
 		}
 		res.RolledBack, res.RollbackNote = a.rollbackAfterFailure(dev, img, backup, fail)
+		a.resetPageQuietly(dev)
 		a.attachBusStats(res, dev, counter)
 		res.Message = fmt.Sprintf("写入未完成: %v; %s", fail, res.RollbackNote)
 		a.logf("%s", res.Message)
@@ -934,8 +935,17 @@ func (a *App) writeWithPreflight(pf *WritePreflight, dump []byte, force, dryRun 
 		res.Message += "; " + note
 	}
 	a.attachBusStats(res, dev, counter)
+	a.resetPageQuietly(dev) // 页选择归零: 别让外部工具读到错误页(审计 L4)
 	a.logf("%s", res.Message)
 	return res, nil
+}
+
+// resetPageQuietly 尽力把页寄存器复位到页 0; 失败只记日志 —— 页状态内部
+// 本来就按需重切, 这只是给外部工具留个干净现场。
+func (a *App) resetPageQuietly(dev *eeprom.Device) {
+	if err := dev.ResetPage(); err != nil {
+		a.logf("页选择复位到 0 失败(下次访问会自动重切): %v", err)
+	}
 }
 
 // writeFailure 把"原始写入错误"与"回滚结果"一起报给用户, 同时保留错误链

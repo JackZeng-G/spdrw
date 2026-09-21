@@ -260,6 +260,30 @@ func TestEditorXMP2(t *testing.T) {
 	if err := e.SetField("xmp.p1.cl", "60"); err == nil {
 		t.Fatal("XMP2 CL 超出 7-35 应被拒")
 	}
+	// 版本字节: 空白头创建 XMP 时应初始化为 0x20(XMP 2.0; 语料 3 份真实头全是
+	// 0x20), 不是 DDR3 时代 XMP 1.2 的 0x12(审计 L3)
+	e2 := editorFor(t, makeDDR4(t))
+	if err := e2.SetField("xmp.present", "是"); err != nil {
+		t.Fatalf("xmp.present 开: %v", err)
+	}
+	if got := e2.Bytes()[xmp2Base+3]; got != 0x20 {
+		t.Fatalf("新建 XMP 头的版本字节 = %#02x, want 0x20", got)
+	}
+	// 中途非法的 CL 列表: 必须报错且**一字节不动**(审计 L1: 旧实现先清零再逐项
+	// 解析, "16,abc" 会把掩码清掉/写一半才报错)
+	before := append([]byte{}, e.Bytes()...)
+	if err := e.SetField("xmp.p1.cl", "16,abc"); err == nil {
+		t.Fatal("中途非法的 CL 列表应被拒")
+	}
+	if err := e.SetField("xmp.p1.cl", "16,99"); err == nil {
+		t.Fatal("中途超界的 CL 列表应被拒")
+	}
+	for i := range before {
+		if e.Bytes()[i] != before[i] {
+			t.Fatalf("失败的 CL 编辑却改动了 @%#x(%02X→%02X)", i, before[i], e.Bytes()[i])
+			break
+		}
+	}
 	if err := e.SetField("xmp.p1.voltage", "3.5"); err == nil {
 		t.Fatal("XMP2 电压必须在 1.00-2.27V")
 	}

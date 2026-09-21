@@ -1296,6 +1296,20 @@ func (d *Device) PSWPStatus() (bool, error) {
 	return false, err
 }
 
+// ResetPage 把页选择复位到页 0(EE1004 quick 0x36 / DDR5 MR11 bits2:0)。
+//
+// 页选择是**全局持久状态**(断电前一直保持): 逐页读写整片后停在最后一页,
+// 外部工具若接着裸读 0x00-0xFF 会拿到错误页的数据(审计 L4)。本工具内部
+// 每次访问都经 physOffset 按需切页、不受影响; 这个方法供写流水线/整片读取
+// 收尾时"归零", 方便同一总线上紧随其后的其他软件。
+func (d *Device) ResetPage() error {
+	if d.pageCount() <= 1 || d.dryRun {
+		return nil
+	}
+	d.page, d.pageKnown = 0, false // 失败也标记"未知", 下次访问按需重切
+	return d.setPage(0)
+}
+
 // OfflineMode 报告 DDR5 hub 是否处于离线模式(MR48 bit2)。仅 DDR5。
 func (d *Device) OfflineMode() (bool, error) {
 	if !d.ddr5 {

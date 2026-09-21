@@ -259,6 +259,30 @@ test("写入设备: 不再需要勾备份/干跑, 只需确认串(自动备份)"
   assert.match(html, /id="inp-edit-ack"[^>]*placeholder="WRITE"/, "确认串占位符应写在 index.html 里");
 });
 
+test("编辑器: 写入进行中双击必须被拒(不排队第二次写流水线)", async () => {
+  let resolveWrite;
+  let writeCalls = 0;
+  const { el, calls } = setup({
+    EditApplyToDevice: () => new Promise((res) => { writeCalls++; resolveWrite = res; }),
+  });
+  await flush();
+  el("tab-edit").onclick();
+  await readDevice(el);
+
+  el("inp-edit-ack").value = "WRITE";
+  const first = el("btn-edit-write").onclick();
+  await flush();
+  const second = el("btn-edit-write").onclick(); // 写入还没返回, 双击
+  await second;
+  assert.equal(writeCalls, 1, "进行中双击不得发起第二次 EditApplyToDevice");
+  assert.match(el("log").text(), /已有一次写入在进行/);
+
+  resolveWrite({ written: 5, total: 5, verified: true, backupPath: "/tmp/b", message: "ok" });
+  await first;
+  await flush();
+  assert.equal(writeCalls, 1, "完成后才允许下一次写入");
+});
+
 test("编辑器: 写入失败后自动重读设备(回滚结果只有重读才知道)", async () => {
   const { el, calls } = setup({
     EditApplyToDevice: () => { throw new Error("写入中止(write)@ 0x2C5: 已写 3/4 字节…; 已自动回滚到写入前内容(3 字节, 读回校验通过)"); },
