@@ -59,7 +59,7 @@ func TestNoSelfDeadlockInBoundMethods(t *testing.T) {
 		{"MfgSearch", func(a *App) error { _, err := a.MfgSearch("Micron", 5); return err }},
 		{"logEntries(内部)", func(a *App) error { _ = a.logEntries(); return nil }},
 		{"closeDevice(内部)", func(a *App) error { a.closeDevice(); return nil }},
-		{"AutoConnectAll", func(a *App) error { _, err := a.AutoConnectAll(); return err }},
+		{"AutoConnectAll", func(a *App) error { _, err := a.AutoConnectAll(nil); return err }},
 		{"Shutdown", func(a *App) error { a.Shutdown(); return nil }},
 		// 对话框类入口: 注入"用户取消"的桩, 保证走完加锁路径
 		{"VerifyFileDialog", func(a *App) error { stubDialogs(a); _, err := a.VerifyFileDialog(); return err }},

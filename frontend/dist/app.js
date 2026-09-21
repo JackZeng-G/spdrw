@@ -49,8 +49,10 @@ async function checkEnv() {
     el.className = "ok";
     fillCtlSelect(list);
     setWarn("");
-    // 自动遍历控制器, 停在第一个扫到设备的上
-    await autoConnectAll();
+    // 自动遍历控制器, 停在第一个扫到设备的上。
+    // 把已枚举的列表传下去, 后端不再重复枚举一遍(此前启动日志会把
+    // "已隐藏/发现控制器" 打两次, 且两次探测结果可能不一致)。
+    await autoConnectAll(list);
   } catch (e) {
     const msg = String(e || "");
     if (msg.includes("管理员") || msg.includes("0x80070005")) {
@@ -73,9 +75,9 @@ async function checkEnv() {
   }
 }
 
-async function autoConnectAll() {
+async function autoConnectAll(ctls) {
   try {
-    const r = await call("AutoConnectAll");
+    const r = await call("AutoConnectAll", ctls || []);
     const idx = (r && r.ctlIndex) || -1;
     const list = (r && r.dimms) || [];
     if (idx >= 0) {

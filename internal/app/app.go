@@ -121,11 +121,17 @@ type AutoConnectResult struct {
 
 // AutoConnectAll 依次尝试各控制器, 停在第一个扫到设备的上(前端启动自动连接)。
 // 都没有设备时返回最后尝试的控制器与空表。
-func (a *App) AutoConnectAll() (*AutoConnectResult, error) {
+// ctls 允许调用方传入刚枚举好的列表(checkEnv 已调过 ListControllers),
+// 避免启动时对同一组总线**重复枚举两遍** —— 既重复刷日志, 又多一轮跨总线的
+// 只读探测(AMD 多端口共用同一 IO 基址, 重复探测徒增抖动)。传空则内部自行枚举。
+func (a *App) AutoConnectAll(ctls []ControllerInfo) (*AutoConnectResult, error) {
 	res := &AutoConnectResult{CtlIndex: -1, Dimms: []DimmInfo{}}
-	ctls, err := a.ListControllers()
-	if err != nil {
-		return nil, err
+	var err error
+	if len(ctls) == 0 {
+		ctls, err = a.ListControllers()
+		if err != nil {
+			return nil, err
+		}
 	}
 	// 注意: ctls 是**过滤后**的列表(只保留探测到设备的控制器), 它的下标 != transports 下标。
 	// 必须用 ControllerInfo.Index 去 Connect, 否则"SPD 不在 transports[0]"的机器上会连错控制器,
@@ -217,6 +223,12 @@ func (a *App) ListControllers() ([]ControllerInfo, error) {
 func probeSPDCount(t smbus.Transport) int {
 	n := 0
 	for addr := byte(0x50); addr <= 0x57; addr++ {
+		if _, err := t.ReadByteData(addr, 0); err == nil {
+			n++
+			continue
+		}
+		// 共用同一 IO 基址的多个端口接连探测时偶发超时, 重试一次再判"无设备",
+		// 否则同一台机器两次枚举会给出不同的控制器数(真机日志出现过)。
 		if _, err := t.ReadByteData(addr, 0); err == nil {
 			n++
 		}
