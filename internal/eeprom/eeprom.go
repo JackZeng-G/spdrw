@@ -66,6 +66,9 @@ type Device struct {
 	dryRun bool
 	shadow []byte
 
+	// 探测时发现器件停在非 0 页(上个软件留下的残留)并已复位 —— 诊断用。
+	pageFixed bool
+
 	// 平台级 SPD 写禁止位(i801 的 BIOS "SPD write disable"): 已知开启时写保护
 	// 探测跳过写测试(见 SetPlatformWriteDisable)。
 	wpKnown    bool
@@ -124,6 +127,21 @@ func New(t smbus.Transport, addr byte) (*Device, error) {
 		ramType, err := t.ReadByteData(addr, 2)
 		if err != nil {
 			return nil, fmt.Errorf("读取 DRAM 类型失败(地址 %#x): %w", addr, err)
+		}
+		// EE1004(DDR4, 0x50-0x57)的偏移 0x00-0xFF 是**当前页**, 器件类型字节
+		// 也随页走: 若上个软件(实测: 台风软件读完整片后)把器件留在第 2 页,
+		// 这里读到的其实是第 258 字节 —— 任意值, 往往 0x00, 于是被判成"未知类型"
+		// 并回退到 256 字节, 之后整片读取与解析全错(真机反馈: DDR4 变成读 256 字节)。
+		// 读出来不认识时, 显式选一次页 0(EE1004 标准 SPA 命令 Quick(0x36))再读一次。
+		//
+		// 地址 0x56(SA=6)跳过: 0x36 在 SWP/PSWP 设备类型地址空间, 那一根可能应答,
+		// 写下去有误置永久保护的风险(审计结论), 宁可报未知也不冒这个险。
+		if spd.RAMTypeFromByte(ramType) == spd.Unknown && addr&7 != 6 {
+			if qerr := t.Quick(spa0, true); qerr == nil {
+				if again, rerr := t.ReadByteData(addr, 2); rerr == nil && spd.RAMTypeFromByte(again) != spd.Unknown {
+					ramType, d.pageFixed = again, true
+				}
+			}
 		}
 		d.ramType = ramType
 		d.size = sizeByRAMType(ramType)
@@ -572,6 +590,11 @@ func (d *Device) ReadAll() ([]byte, error) {
 	b, err := d.Read(0, d.size)
 	if err == nil {
 		d.readStats.Bytes = len(b)
+		// 收尾把页归零: 整片读取一定停在最后一页(DDR4 页1 / DDR5 页7),
+		// 残留会坑两拨人 —— 外部工具裸读 0x00-0xFF 拿到错误页; 我们自己的
+		// 类型探测裸读 byte2 会拿到"第 2 页偏移 2"被判成未知 → 按 256B 读。
+		// best-effort: 复位失败不影响本次读取结果(下次访问按需重切)。
+		_ = d.ResetPage()
 	}
 	return b, err
 }
@@ -921,6 +944,7 @@ func (d *Device) verifyByteWiseAt(dump []byte, offs []int) error {
 			return fmt.Errorf("逐字节复核不一致 @ 0x%03X: 设备 %#x 目标 %#x", off, got, dump[off])
 		}
 	}
+	_ = d.ResetPage() // 读到高偏移必然停在最后一页: 收尾归零(失败不影响比对结论)
 	return nil
 }
 
@@ -1055,6 +1079,10 @@ func (d *Device) restoreByte(off uint16, want byte) (bool, error) {
 	return false, lastErr
 }
 
+// PageFixedOnDetect 报告探测时是否发现器件停在非 0 页并已复位到页 0
+// (上个软件留下的页残留; 为 true 说明"器件类型读错"曾经真的发生过)。
+func (d *Device) PageFixedOnDetect() bool { return d.pageFixed }
+
 // SetPlatformWriteDisable 记录平台级 SPD 写禁止位(i801 的 BIOS "SPD write disable")。
 // 已知开启时, 写保护探测直接给出"全部块受平台限制"的结论, 不再做写测试 ——
 // 真机验证(2026-09-22 i801): 该状态下每次写(含还原写)都被控制器拒绝,
@@ -1147,7 +1175,24 @@ type WPStatusDetail struct {
 }
 
 // WPStatusDetail 读取完整写保护状态。只读操作(DDR4 的写测试会写入 1 字节再还原)。
+// WPStatusDetail 查询各块写保护状态。DDR4 及更早世代用"块首写测试"探测,
+// 会翻到第 2 页(块 2/3 = 0x100/0x180), 收尾必须把页归零 —— 否则残留的页 1
+// 会让下一次类型探测裸读 byte2 拿到第 258 字节, 整片被误判成 256B
+// (真机踩过: 查完保护状态后 DDR4 变成"读 256 字节/未知世代")。
 func (d *Device) WPStatusDetail() (WPStatusDetail, error) {
+	det, err := d.wpStatusDetail()
+	// DDR5 的状态查询是纯读 MR 位图, 不动 NVM 页, 无需复位;
+	// 单页器件/干跑在 ResetPage 里本就是 no-op。
+	if !d.ddr5 {
+		if rerr := d.ResetPage(); rerr != nil {
+			det.Warnings = append(det.Warnings,
+				"页选择复位到 0 失败(下次访问会自动重切, 不影响本次结果): "+rerr.Error())
+		}
+	}
+	return det, err
+}
+
+func (d *Device) wpStatusDetail() (WPStatusDetail, error) {
 	det := WPStatusDetail{DDR5: d.ddr5}
 	blocks, err := d.blockCount()
 	if err != nil {
@@ -1364,6 +1409,9 @@ func (d *Device) PSWPStatus() (bool, error) {
 func (d *Device) ResetPage() error {
 	if d.pageCount() <= 1 || d.dryRun {
 		return nil
+	}
+	if d.pageKnown && d.page == 0 {
+		return nil // 已在页 0: 不再发总线命令(收尾复位可能在一次操作里被调多次)
 	}
 	d.page, d.pageKnown = 0, false // 失败也标记"未知", 下次访问按需重切
 	return d.setPage(0)

@@ -375,7 +375,11 @@ func (a *App) Select(addr byte) error {
 	a.editSource = ""
 	a.editFromDevice = false
 	a.dimm = &DimmInfo{Addr: addr, IsDDR5: dev.IsDDR5(), Size: dev.Size()}
-	a.logf("已选择 %#x (%s, %d 字节)", addr, map[bool]string{true: "DDR5", false: "非DDR5"}[dev.IsDDR5()], dev.Size())
+	pageNote := ""
+	if dev.PageFixedOnDetect() {
+		pageNote = "; 器件原本停在第 2 页(上个软件留下的页残留), 已复位到页 0"
+	}
+	a.logf("已选择 %#x (%s, %d 字节%s)", addr, map[bool]string{true: "DDR5", false: "非DDR5"}[dev.IsDDR5()], dev.Size(), pageNote)
 	return nil
 }
 

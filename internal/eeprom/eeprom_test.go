@@ -3,12 +3,178 @@ package eeprom
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"spdrw/internal/smbus"
 	"spdrw/internal/spd"
 )
+
+// 真机反馈(2026-09-22): 台风软件读完整片后把器件留在第 2 页, 我们的探测裸读
+// 偏移 2 拿到的是第 258 字节(0x00) → 判成"未知类型" → DDR4 被按 256 字节读。
+// 修复: 类型不认识时显式选页 0 再读一次。
+func TestDetectRecoversFromPageResidual(t *testing.T) {
+	f := smbus.NewFake()
+	dump, err := os.ReadFile(filepath.Join("..", "..", "testdata", "spd", "ddr4-16g_3200-coreboot.bin"))
+	if err != nil {
+		t.Skipf("无 DDR4 语料: %v", err)
+	}
+	copy(f.EEProm, dump)
+	f.SetInitialPage(1) // 器件停在第 2 页(上个软件留下的)
+	dev, err := New(f, 0x50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dev.Size() != 512 || dev.Generation() != "DDR4" {
+		t.Fatalf("页残留时应复位到页 0 并识别为 DDR4/512B, 实际 %s/%d 字节", dev.Generation(), dev.Size())
+	}
+	if !dev.PageFixedOnDetect() {
+		t.Fatal("应记录\"探测时复位过页\"(供日志说明)")
+	}
+	if !dev.TypeKnown() {
+		t.Fatal("复位后器件类型应可识别")
+	}
+	got, err := dev.ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 512 || got[2] != 0x0C {
+		t.Fatalf("整片读取应回到页 0 的内容: len=%d byte2=%#x", len(got), got[2])
+	}
+	for i := range got {
+		if got[i] != dump[i] {
+			t.Fatalf("内容与语料不一致 @%#x: %#x != %#x", i, got[i], dump[i])
+		}
+	}
+}
+
+// 地址 0x56(SA=6)是例外: 0x36 落在 SWP/PSWP 地址空间, 那一根可能应答 ——
+// 宁可报未知也不能冒险写(审计结论), 所以不做页复位尝试。
+func TestDetectSkipsPageResetOnPSWPRiskAddress(t *testing.T) {
+	f := smbus.NewFake()
+	dump, err := os.ReadFile(filepath.Join("..", "..", "testdata", "spd", "ddr4-16g_3200-coreboot.bin"))
+	if err != nil {
+		t.Skipf("无 DDR4 语料: %v", err)
+	}
+	copy(f.EEProm, dump)
+	f.SetInitialPage(1)
+	if _, err := New(f, 0x56); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range f.QuickLog {
+		if q.Addr == 0x36 || q.Addr == 0x37 {
+			t.Fatalf("0x56 上不得发送 SPA 页命令(可能误置 PSWP): %+v", q)
+		}
+	}
+}
+
+// 辅助: 经过传输层**裸读**偏移 2 —— 不走 physOffset, 拿到的是"当前页"的字节。
+// 页 0 时应是 dump[2], 停在页 1 时是 dump[258]。用这个断言"操作收尾页已归零"。
+func rawByte2(t *testing.T, f *smbus.FakeTransport, addr byte) byte {
+	t.Helper()
+	b, err := f.ReadByteData(addr, 2)
+	if err != nil {
+		t.Fatalf("裸读偏移 2 失败: %v", err)
+	}
+	return b
+}
+
+// ReadAll 收尾必须把页归零(整片读取一定停在最后一页)。
+func TestReadAllLeavesPage0(t *testing.T) {
+	f := smbus.NewFake()
+	dump, err := os.ReadFile(filepath.Join("..", "..", "testdata", "spd", "ddr4-16g_3200-coreboot.bin"))
+	if err != nil {
+		t.Skipf("无 DDR4 语料: %v", err)
+	}
+	copy(f.EEProm, dump)
+	dev, err := New(f, 0x50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dev.ReadAll(); err != nil {
+		t.Fatal(err)
+	}
+	if got := rawByte2(t, f, 0x50); got != 0x0C {
+		t.Fatalf("ReadAll 后裸读 byte2 应回到页 0 的 0x0C, 实际 %#x(说明页停在第 2 页)", got)
+	}
+}
+
+// 逐字节复核(整片复核/校验)读高偏移后同样要归零。
+func TestVerifyByteWiseLeavesPage0(t *testing.T) {
+	f := smbus.NewFake()
+	dump, err := os.ReadFile(filepath.Join("..", "..", "testdata", "spd", "ddr4-16g_3200-coreboot.bin"))
+	if err != nil {
+		t.Skipf("无 DDR4 语料: %v", err)
+	}
+	copy(f.EEProm, dump)
+	dev, err := New(f, 0x50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := dev.VerifyByteWise(dump); err != nil {
+		t.Fatal(err)
+	}
+	if got := rawByte2(t, f, 0x50); got != 0x0C {
+		t.Fatalf("逐字节复核后裸读 byte2 应是页 0 的 0x0C, 实际 %#x", got)
+	}
+}
+
+// 写保护状态查询(DDR4 用块首写测试, 块 2/3 在页 1)收尾归零 ——
+// 真机踩过: 查完保护状态后重新选设备, 类型被误判成未知 → 按 256B 读。
+func TestWPStatusLeavesPage0(t *testing.T) {
+	f := smbus.NewFake()
+	dump, err := os.ReadFile(filepath.Join("..", "..", "testdata", "spd", "ddr4-16g_3200-coreboot.bin"))
+	if err != nil {
+		t.Skipf("无 DDR4 语料: %v", err)
+	}
+	copy(f.EEProm, dump)
+	dev, err := New(f, 0x50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	det, err := dev.WPStatusDetail()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Fake 允许写: 写测试应真实发生且块状态可识别
+	for b := 0; b < det.Blocks; b++ {
+		if !det.Known[b] {
+			t.Fatalf("块 %d 写测试后应可识别(Fake 不拦写)", b)
+		}
+	}
+	if got := rawByte2(t, f, 0x50); got != 0x0C {
+		t.Fatalf("保护状态查询后裸读 byte2 应是页 0 的 0x0C, 实际 %#x(真机上 DDR4 变 256B 的根因)", got)
+	}
+}
+
+// ResetPage 在已在页 0 时不再发总线命令(收尾复位可能被连续调多次, 不能刷总线)。
+func TestResetPageNoBusWhenAlreadyPage0(t *testing.T) {
+	f := smbus.NewFake()
+	dump, err := os.ReadFile(filepath.Join("..", "..", "testdata", "spd", "ddr4-16g_3200-coreboot.bin"))
+	if err != nil {
+		t.Skipf("无 DDR4 语料: %v", err)
+	}
+	copy(f.EEProm, dump)
+	dev, err := New(f, 0x50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dev.ReadAll(); err != nil {
+		t.Fatal(err)
+	}
+	before := len(f.QuickLog)
+	if err := dev.ResetPage(); err != nil {
+		t.Fatal(err)
+	}
+	if err := dev.ResetPage(); err != nil {
+		t.Fatal(err)
+	}
+	if after := len(f.QuickLog); after != before {
+		t.Fatalf("已在页 0 时 ResetPage 不应发 SPA 命令: quick 日志 %d → %d", before, after)
+	}
+}
 
 // newDDR4 返回已连接的 DDR4 设备(EEPROM 预填 0x11)。
 func newDDR4(t *testing.T) (*Device, *smbus.FakeTransport) {

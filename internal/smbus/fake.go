@@ -113,6 +113,18 @@ func (f *FakeTransport) Quick(addr byte, write bool) error {
 	return nil
 }
 
+// SetInitialPage 让夹具从"器件停在第 p 页"的状态开始 —— 模拟上个软件(如台风)
+// 读完整片后留下的页残留。只对 DDR4 类(EE1004, 256 字节页)有意义。
+func (f *FakeTransport) SetInitialPage(p int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	span := 256
+	if f.DDR5 {
+		span = 128
+	}
+	f.page, f.pageSpan = p, span
+}
+
 // idx 计算当前页下的物理偏移。DDR5: cmd bit7=1 访问 NVM 页(掩 0x7F 得页内偏移),
 // bit7=0 访问 MR 寄存器区(模拟 MR0=0x51 DeviceType, MR11=当前页, 其余 0)。
 func (f *FakeTransport) idx(cmd byte) (int, error) {
