@@ -79,7 +79,6 @@
     EditApplyToDevice: rec("EditApplyToDevice", { dryRun: false, written: 3, total: 3, backupPath: "/root/.spdrw/backups/e.bin", verified: true, message: "写入并校验通过" }),
     EditState: rec("EditState", editState),
     CRCStatus: rec("CRCStatus", crcStatus),
-    MfgSearch: rec("MfgSearch", [{ name: "Micron Technology", cont: 0x80, code: 0x2c }]),
     MfgPresets: rec("MfgPresets", []),
 
   } } };

@@ -1420,11 +1420,10 @@ function renderEditFields() {
     const risk = f.risk === "high" ? "risk-high" : f.risk === "medium" ? "risk-medium" : "";
     const title = [f.offset, f.unit, f.note].filter(Boolean).join(" · ");
     const isMfg = f.key === "manufacturer" || f.key === "dramManufacturer";
-    const list = isMfg ? "" : ` list="mfg-list"`;
     const control = isMfg
       ? `<select id="fld-${escapeHtml(f.key)}" data-key="${escapeHtml(f.key)}" data-mfg="1" class="mfg-select" title="选择厂商自动写入对应 JEP106 ID">` +
         `<option value="">（选择厂商…）</option></select>`
-      : `<input id="fld-${escapeHtml(f.key)}" type="text" data-key="${escapeHtml(f.key)}" value="${escapeHtml(f.value)}"${list}>`;
+      : `<input id="fld-${escapeHtml(f.key)}" type="text" data-key="${escapeHtml(f.key)}" value="${escapeHtml(f.value)}">`;
     html += `<div class="fitem" title="${escapeHtml(title)}">` +
       `<label class="${risk}" for="fld-${escapeHtml(f.key)}">${escapeHtml(f.name)}</label>` +
       `<div class="frow">` +
@@ -1492,11 +1491,6 @@ function renderEditFields() {
       applyEditFieldValue(key, sel.value);
     };
   });
-}
-
-function debounce(fn, ms) {
-  let t = null;
-  return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
 }
 
 let mfgPresetsCache = null;
