@@ -24,7 +24,7 @@ func (e *Editor) infoFields() []Field {
 	}
 
 	switch e.rt {
-	case DDR3, DDR, SDRAM:
+	case DDR3:
 		add("报文头: 字节数/SPD 版本", "0x000-0x001", "byte0 = 字节使用/总容量配置, byte1 = SPD 版本")
 		add("DRAM 器件类型(0x0B=DDR3)", "0x002", "原始数据视图的世代判定就来自这个字节")
 		add("模块类型", "0x003", "UDIMM/SODIMM/RDIMM 等(位 6:3)")

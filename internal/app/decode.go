@@ -102,7 +102,9 @@ func DecodeDump(dump []byte) (*DecodeResult, error) {
 		decodeDDR4(dump, r)
 	case rt == spd.DDR5 || rt == spd.LPDDR5 || rt == spd.LPDDR5X || rt == spd.DDR5NVDIMMP:
 		decodeDDR5(dump, r)
-	case rt == spd.DDR3 || rt == spd.DDR || rt == spd.SDRAM:
+	case rt == spd.DDR3:
+		// 只列 DDR3: ParseBasic 本就只认 DDR3; DDR(0x07)/SDRAM(0x04) 落到 default
+		// 的自证报错, 不给"能解析但什么都不对"的假象。
 		b, err := spd.ParseBasic(dump)
 		if err != nil {
 			return nil, err

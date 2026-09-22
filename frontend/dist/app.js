@@ -1064,11 +1064,10 @@ function renderInfo(r) {
 function flashField(key) {
   const f = (editFieldsCache || []).find((x) => x.key === key);
   if (!f) return;
-  const grid = $("hexgrid");
   let first = null;
   for (const sp of parseFieldSpans(f.offset)) {
     for (let i = sp.start; i < sp.end; i++) {
-      const el = grid.querySelector(`.hexbyte[data-off="${i}"]`);
+      const el = grid$(i); // 与行尾标注高亮共用同一取格入口
       if (!el) continue;
       el.classList.add("flash");
       if (!first) first = el;

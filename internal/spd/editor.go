@@ -67,6 +67,11 @@ func NewEditor(dump []byte) (*Editor, error) {
 	if rt == Unknown {
 		return nil, fmt.Errorf("未知的 SPD 类型(byte2 = %#x)", dump[2])
 	}
+	// DDR(0x07)/SDRAM(0x04) 没有编辑支持(身份/时序布局都没实现, idLayoutFor 会拒绝):
+	// 在这里就拒绝, 不给"编辑器打开但字段全错/缺失"的半成品体验。
+	if rt == DDR || rt == SDRAM {
+		return nil, fmt.Errorf("%v 暂不支持编辑", rt)
+	}
 	cp := make([]byte, len(dump))
 	copy(cp, dump)
 	return &Editor{original: cp, dump: append([]byte{}, cp...), rt: rt, changes: map[int]EditChange{}}, nil
