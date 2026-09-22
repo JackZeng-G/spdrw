@@ -66,36 +66,44 @@ test("编辑器: 标签页切换与从设备载入", async () => {
   assert.equal(el("btn-edit-write").disabled, false, "CRC 通过且有变更时应可写入");
 });
 
-test("编辑器: 只读布局说明字段(kind=info)渲染成说明行, 没有输入框与应用按钮", async () => {
-  const infoFields = [
+test("SPD 布局说明只用于 hex 区标注: 不进编辑列表, 行尾标参数名, 注记偏移也能定位", async () => {
+  const withInfo = [
     ...fields,
-    { key: "info.000", name: "报文头: 字节数/SPD 版本", group: "SPD 布局", kind: "info",
-      value: "", offset: "0x000-0x001", risk: "low", primary: true, note: "byte0 = 字节使用/总容量配置" },
-    { key: "info.001", name: "保留(JEDEC)", group: "SPD 布局", kind: "info",
-      value: "", offset: "0x02E-0x074", risk: "low", note: "未定义字节" },
+    // 带注记的时序偏移(修复目标: [nib] 与 (单位) 之前认不出 → 无法定位)
+    { key: "ddr4.tRAS", name: "tRAS", group: "JEDEC 时序", kind: "float", unit: "ns",
+      value: "8", offset: "0x1C/0x1B[3:0]", risk: "medium", primary: true },
+    { key: "ddr4.tRC", name: "tRC", group: "JEDEC 时序", kind: "float", unit: "ns",
+      value: "9", offset: "0x1D(12b)/0x78", risk: "medium", primary: true },
+    // 只读布局说明: 只在 hex 区出现
+    { key: "info.000", name: "保留(JEDEC)", group: "SPD 布局", kind: "info",
+      value: "", offset: "0x1F0-0x1FF", risk: "low", note: "未定义字节" },
   ];
-  const { el } = setup({ EditFields: () => infoFields });
+  const { el } = setup({ EditFields: () => withInfo });
   await flush();
   el("tab-edit").onclick();
   await readDevice(el);
   await flush();
+
+  // 1) 编辑器里没有 SPD 布局分组/info 字段
   const grp = [...el("edit-groups").children].find((b) => b.textContent.includes("SPD 布局"));
-  assert.ok(grp, "应有 SPD 布局分组");
-  assert.match(grp.textContent, /1\/2/, "分组计数应只有报文头一个常用字段");
-  grp.onclick();
-  const html = el("edit-fields").html();
-  assert.match(html, /报文头: 字节数\/SPD 版本/, "常用 info 字段默认可见");
-  assert.doesNotMatch(html, /保留\(JEDEC\)/, "非常用 info 字段默认收起");
-  assert.equal(el("edit-fields").querySelectorAll('input[data-key^="info."]').length, 0,
-    "info 字段不得渲染输入框");
-  assert.equal(el("edit-fields").querySelectorAll('button[data-apply^="info."]').length, 0,
-    "info 字段不得渲染应用按钮");
-  // 勾选"显示全部"后 info 字段以纯文字出现
-  el("chk-edit-all").checked = true;
-  el("chk-edit-all").onchange();
-  assert.match(el("edit-fields").html(), /保留\(JEDEC\)/, "显示全部后 info 字段可见");
-  assert.equal(el("edit-fields").querySelectorAll('input[data-key^="info."]').length, 0,
-    "显示全部后 info 字段仍无输入框");
+  assert.equal(grp, undefined, "编辑器不应出现 SPD 布局分组");
+  assert.doesNotMatch(el("edit-fields").html(), /保留\(JEDEC\)/, "info 字段不进编辑列表");
+
+  // 2) 原始 hex 数据行尾有参数标注
+  const hex = el("hexgrid").html();
+  assert.match(hex, /部件号/, "身份区行尾应标注部件号");
+  assert.match(hex, /tAA/, "时序行尾应标注 tAA");
+  assert.match(hex, /tRAS/, "nibble 注记偏移([3:0])应能解析出标注");
+  assert.match(hex, /tRC/, "(12b) 注记偏移应能解析出标注");
+  assert.match(hex, /保留\(JEDEC\)/, "info 说明标注在 hex 行尾(0x1F0 行)");
+
+  // 3) 注记偏移解析(时序"点击/聚焦定位原始数据"的根因): [nib] 按整字节, (单位) 剥掉
+  // (夹具的极简选择器不支持 class 选择器, flash 的 DOM 断言在真机页验证)
+  const p = (t) => globalThis.__ctx.parseFieldSpans(t).map((sp) => sp.start + "-" + (sp.end - 1));
+  // vm realm 的数组原型与宿主不同, 用字符串比较
+  assert.equal(p("0x1D(12b)/0x78").join(","), "29-29,120-120", "tRC 的 (12b) 注记偏移");
+  assert.equal(p("0x1C/0x1B[3:0]").join(","), "28-28,27-27", "tRAS 的 nibble 注记偏移");
+  assert.equal(p("0x46-0x47(ps)").join(","), "70-71", "DDR5 ps 单位注记偏移");
 });
 
 test("编辑器: 输入时序 ns 时右侧 clk 提示实时折算", async () => {

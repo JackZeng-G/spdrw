@@ -526,7 +526,9 @@ let hexFieldMap = new Map();   // 字节偏移 → 字段(悬停时显示字段�
 function parseFieldSpans(s) {
   const out = [];
   for (const part of String(s || "").split("/")) {
-    const m = /^0x([0-9A-Fa-f]+)(?:\s*-\s*(?:0x([0-9A-Fa-f]+)|(\d+)\s*B))?$/.exec(part.trim());
+    // 注记先剥掉: "(ps)"/"(12b)" 是单位说明, "[3:0]" 是 nibble 字段(按整字节定位)
+    const bare = part.trim().replace(/\([^)]*\)/g, "").replace(/\[[^\]]*\]/g, "");
+    const m = /^0x([0-9A-Fa-f]+)(?:\s*-\s*(?:0x([0-9A-Fa-f]+)|(\d+)\s*B))?$/.exec(bare);
     if (!m) continue;
     const start = parseInt(m[1], 16);
     let end = start + 1;
@@ -592,19 +594,58 @@ function showByteTip(ev, span) {
   tipEl.classList.add("show");
   moveTip(ev);
 }
+let hexLabelHi = [];
+function clearLabelHi() {
+  for (const el of hexLabelHi) el.classList.remove("fld-hi");
+  hexLabelHi = [];
+}
 $("hexgrid").addEventListener("mousemove", (ev) => {
   const t = ev.target;
+  if (t && t.classList && t.classList.contains("rowlabel")) {
+    clearLabelHi();
+    const row = parseInt(t.getAttribute("data-row"), 10);
+    for (const l of (hexRowLabels.get(row) || [])) {
+      for (let off = l.start; off <= l.end; off++) {
+        const b = grid$(off);
+        if (b) { b.classList.add("fld-hi"); hexLabelHi.push(b); }
+      }
+    }
+    hideTip();
+    return;
+  }
+  clearLabelHi();
   if (!t || !t.classList || !t.classList.contains("hexbyte")) { hideTip(); return; }
   showByteTip(ev, t);
 });
+// 取 hexgrid 里 data-off=off 的字节格(没有就是 null)
+function grid$(off) {
+  return document.querySelector(`#hexgrid .hexbyte[data-off="${off}"]`);
+}
 $("hexgrid").addEventListener("mouseleave", hideTip);
 $("hexgrid").addEventListener("scroll", hideTip);
+
+// hexRowLabels: 行起始偏移 → 该行需要标注的参数(字段名 + 覆盖字节)。
+// 数据源与悬停提示相同(editFieldsCache, 含只读的"SPD 布局"说明字段):
+// 标注画在字段起始那一行的行尾, 同一行多个参数用 " · " 连接。
+let hexRowLabels = new Map();
+
+function buildRowLabels() {
+  hexRowLabels = new Map();
+  for (const f of (editFieldsCache || [])) {
+    for (const sp of parseFieldSpans(f.offset)) {
+      const row = Math.floor(sp.start / 16) * 16;
+      if (!hexRowLabels.has(row)) hexRowLabels.set(row, []);
+      hexRowLabels.get(row).push({ name: f.name, start: sp.start, end: sp.end - 1 });
+    }
+  }
+}
 
 function renderHex(dump) {
   const grid = $("hexgrid");
   $("hex-meta").textContent = `${dump.length} 字节`;
   grid.classList.toggle("editable", editorLoaded);
   buildZoneModel(dump.length);
+  buildRowLabels();
   // 列头(00..0F): 没有它就看不出某一列对应哪个偏移
   let html = `<div class="row head"><span class="offset">off</span>`;
   for (let i = 0; i < 16; i++) html += `<span class="colhead">${i.toString(16).padStart(2, "0")}</span>`;
@@ -620,7 +661,12 @@ function renderHex(dump) {
       line += `<span class="hexbyte c${hi}${zone}" data-off="${off + i}">${b.toString(16).padStart(2, "0")}</span>`;
       ascii += b >= 0x20 && b < 0x7f ? escapeHtml(String.fromCharCode(b)) : "·";
     }
-    html += `<div class="row">${line}<span class="ascii">${ascii}</span></div>`;
+    // 行尾参数标注: 悬停标签会高亮它覆盖的字节
+    const labels = hexRowLabels.get(off);
+    const label = labels && labels.length
+      ? `<span class="rowlabel" data-row="${off}">${escapeHtml(labels.map((l) => l.name).join(" · "))}</span>`
+      : "";
+    html += `<div class="row">${line}<span class="ascii">${ascii}</span>${label}</div>`;
   }
   grid.innerHTML = html;
   applyHexMarks();
@@ -1346,6 +1392,7 @@ function renderEditFields() {
   }
   const groups = [];
   for (const f of editFieldsCache) {
+    if (f.kind === "info") continue; // 只读布局说明只用于 hex 区标注与悬停, 不进编辑列表
     let g = groups.find((x) => x.name === f.group);
     if (!g) { g = { name: f.group, items: [] }; groups.push(g); }
     g.items.push(f);
@@ -1370,14 +1417,6 @@ function renderEditFields() {
     : `常用 ${shown.length} / ${cur.items.length} 个字段`;
   let html = `<div class="field-grid">`;
   for (const f of shown) {
-    if (f.kind === "info") {
-      // 只读布局说明: 只有名字与说明文字, 没有输入框, 悬停原始数据时也会显示它
-      html += `<div class="fitem info" title="${escapeHtml([f.offset, f.note].filter(Boolean).join(" · "))}">` +
-        `<label class="muted">${escapeHtml(f.name)}</label>` +
-        `<div class="frow"><span class="muted">${escapeHtml(f.note || "只读布局说明")}</span></div>` +
-        `</div>`;
-      continue;
-    }
     const risk = f.risk === "high" ? "risk-high" : f.risk === "medium" ? "risk-medium" : "";
     const title = [f.offset, f.unit, f.note].filter(Boolean).join(" · ");
     const list = f.key === "manufacturer" || f.key === "dramManufacturer" ? ` list="mfg-list"` : "";

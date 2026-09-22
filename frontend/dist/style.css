@@ -359,6 +359,17 @@ button.q:hover { color: var(--accent); border-color: var(--accent); background: 
   letter-spacing: .5px;
   flex: none;
 }
+/* 行尾参数标注: 这一行起始的参数名(悬停高亮它覆盖的字节) */
+.hexgrid .rowlabel {
+  margin-left: var(--sp-4);
+  color: var(--fg-3);
+  font-size: var(--fs-xs);
+  white-space: nowrap;
+  cursor: default;
+  border-bottom: 1px dashed var(--line);
+}
+.hexgrid .rowlabel:hover { color: var(--fg-2); border-bottom-color: var(--fg-3); }
+.hexgrid .hexbyte.fld-hi { outline: 1px solid var(--fg-2); background: rgba(255, 255, 255, .10); }
 
 /* 字节格: 有宽度才能承载"区域底色"与 hover 反馈 */
 .hexbyte {
