@@ -1370,6 +1370,14 @@ function renderEditFields() {
     : `常用 ${shown.length} / ${cur.items.length} 个字段`;
   let html = `<div class="field-grid">`;
   for (const f of shown) {
+    if (f.kind === "info") {
+      // 只读布局说明: 只有名字与说明文字, 没有输入框, 悬停原始数据时也会显示它
+      html += `<div class="fitem info" title="${escapeHtml([f.offset, f.note].filter(Boolean).join(" · "))}">` +
+        `<label class="muted">${escapeHtml(f.name)}</label>` +
+        `<div class="frow"><span class="muted">${escapeHtml(f.note || "只读布局说明")}</span></div>` +
+        `</div>`;
+      continue;
+    }
     const risk = f.risk === "high" ? "risk-high" : f.risk === "medium" ? "risk-medium" : "";
     const title = [f.offset, f.unit, f.note].filter(Boolean).join(" · ");
     const list = f.key === "manufacturer" || f.key === "dramManufacturer" ? ` list="mfg-list"` : "";

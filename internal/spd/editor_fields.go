@@ -115,6 +115,9 @@ func (e *Editor) Fields() []Field {
 	if f, ok := e.clMaskField(); ok {
 		out = append(out, f)
 	}
+	// SPD 布局说明(只读): 让原始数据视图里每个字节悬停都有说明。
+	// 必须排在 XMP/EXPO 之前 —— 同一字节上可编辑字段会覆盖这里的粗粒度说明。
+	out = append(out, e.infoFields()...)
 	out = append(out, e.profileFields()...)
 	return markPrimary(out)
 }
@@ -230,6 +233,9 @@ func (e *Editor) SetField(key, value string) error {
 	l, err := idLayoutFor(e.rt)
 	if err != nil {
 		return err
+	}
+	if strings.HasPrefix(key, "info.") {
+		return fmt.Errorf("%s 是只读的 SPD 布局说明, 不能编辑", key)
 	}
 	value = strings.TrimSpace(value)
 	asInt := func(name string, min, max int) (int, error) {

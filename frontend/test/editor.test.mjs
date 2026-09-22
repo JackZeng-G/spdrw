@@ -66,6 +66,38 @@ test("编辑器: 标签页切换与从设备载入", async () => {
   assert.equal(el("btn-edit-write").disabled, false, "CRC 通过且有变更时应可写入");
 });
 
+test("编辑器: 只读布局说明字段(kind=info)渲染成说明行, 没有输入框与应用按钮", async () => {
+  const infoFields = [
+    ...fields,
+    { key: "info.000", name: "报文头: 字节数/SPD 版本", group: "SPD 布局", kind: "info",
+      value: "", offset: "0x000-0x001", risk: "low", primary: true, note: "byte0 = 字节使用/总容量配置" },
+    { key: "info.001", name: "保留(JEDEC)", group: "SPD 布局", kind: "info",
+      value: "", offset: "0x02E-0x074", risk: "low", note: "未定义字节" },
+  ];
+  const { el } = setup({ EditFields: () => infoFields });
+  await flush();
+  el("tab-edit").onclick();
+  await readDevice(el);
+  await flush();
+  const grp = [...el("edit-groups").children].find((b) => b.textContent.includes("SPD 布局"));
+  assert.ok(grp, "应有 SPD 布局分组");
+  assert.match(grp.textContent, /1\/2/, "分组计数应只有报文头一个常用字段");
+  grp.onclick();
+  const html = el("edit-fields").html();
+  assert.match(html, /报文头: 字节数\/SPD 版本/, "常用 info 字段默认可见");
+  assert.doesNotMatch(html, /保留\(JEDEC\)/, "非常用 info 字段默认收起");
+  assert.equal(el("edit-fields").querySelectorAll('input[data-key^="info."]').length, 0,
+    "info 字段不得渲染输入框");
+  assert.equal(el("edit-fields").querySelectorAll('button[data-apply^="info."]').length, 0,
+    "info 字段不得渲染应用按钮");
+  // 勾选"显示全部"后 info 字段以纯文字出现
+  el("chk-edit-all").checked = true;
+  el("chk-edit-all").onchange();
+  assert.match(el("edit-fields").html(), /保留\(JEDEC\)/, "显示全部后 info 字段可见");
+  assert.equal(el("edit-fields").querySelectorAll('input[data-key^="info."]').length, 0,
+    "显示全部后 info 字段仍无输入框");
+});
+
 test("编辑器: 输入时序 ns 时右侧 clk 提示实时折算", async () => {
   const { el } = setup();
   await flush();
