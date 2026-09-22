@@ -393,6 +393,65 @@ type MfgEntry struct {
 	Code byte   `json:"code"`
 }
 
+// mfgPresetNames 是常用厂商预设(编辑器厂商下拉的第一屏)。名字必须与
+// data/idcodes.json 完全一致; ID 不在这里硬编码, MfgPresets 运行时按名字回表
+// 查出 cont/code, 表里查不到的名字自动跳过(不会给错 ID)。
+var mfgPresetNames = []string{
+	"Samsung",
+	"SK Hynix",
+	"Micron Technology",
+	"SpecTek Incorporated",
+	"CXMT",
+	"Elpida",
+	"Nanya Technology",
+	"Winbond Electronic",
+	"Kingston",
+	"Crucial Technology",
+	"Corsair",
+	"G.Skill Intl",
+	"Team Group Inc",
+	"Patriot Memory (PDP Systems)",
+	"Transcend Information",
+	"Apacer Technology",
+	"Kingmax Semiconductor",
+	"PNY Technologies Inc",
+	"V-Color Technology Inc",
+	"Netac Technology Co Ltd",
+	"Kingbank Technology Co Ltd",
+	"Kimtigo Semiconductor (HK) Limited",
+	"Colorful Technology Ltd",
+	"JUHOR",
+	"Gloway International (HK)",
+	"Biwin Storage Technology Co Ltd",
+	"Shenzhen Longsys Electronics Co Ltd",
+	"Ramaxel Technology",
+	"Lenovo",
+}
+
+// MfgPresets 返回常用厂商预设(保持上面列表的顺序, ID 来自 JEP106 表)。
+func MfgPresets() []MfgEntry {
+	idcodesOnce()
+	if idcodesErr != nil {
+		return nil
+	}
+	var out []MfgEntry
+	for _, want := range mfgPresetNames {
+		for cont, names := range idcodesTable {
+			for i, n := range names {
+				if !strings.EqualFold(n, want) {
+					continue
+				}
+				code := byte(i + 1)
+				if parityOdd(code) {
+					code |= 0x80
+				}
+				out = append(out, MfgEntry{Name: n, Cont: byte(cont), Code: code})
+			}
+		}
+	}
+	return out
+}
+
 // SearchManufacturers 在 JEP106 表中按名称子串搜索(不区分大小写)。
 func SearchManufacturers(query string, limit int) []MfgEntry {
 	idcodesOnce()

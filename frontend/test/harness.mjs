@@ -115,6 +115,7 @@ export function makeAppStub(overrides = {}) {
     EditLoadFromDevice: null,
     EditLoadFileDialog: null,
     EditFields: [],
+    MfgPresets: [{ name: "Samsung", cont: 1, code: 206 }, { name: "SK Hynix", cont: 1, code: 173 }],
     EditSetField: null,
     EditSetByte: null,
     EditFixCRC: null,
@@ -204,7 +205,7 @@ function matches(el, sel) {
 // (只覆盖测试需要的形态: input / button / option)
 function parseTags(html) {
   const out = [];
-  const re = /<(input|button|option|span)\b([^>]*)>/g;
+  const re = /<(input|button|option|span|select)\b([^>]*)>/g;
   let m;
   while ((m = re.exec(html)) !== null) {
     const tag = m[1];

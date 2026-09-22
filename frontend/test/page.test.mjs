@@ -109,3 +109,4 @@ test("SPD 内容: 列头与行偏移必须固定(sticky), 否则滚动后看不�
   assert.match(css, /\.hexgrid \.row \.offset\s*\{[^}]*position:\s*sticky/, "行偏移应 sticky");
   assert.match(html, /id="hexgrid"/, "hex 网格容器仍在");
 });
+

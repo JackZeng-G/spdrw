@@ -54,3 +54,20 @@ test("问号提示: 点一下才展开说明", async () => {
   document.dispatch("click", { target: { getAttribute: (k) => (k === "data-hint" ? "hint-write" : null) } });
   assert.equal(hint.classList.contains("hidden"), true, "再点应收起");
 });
+
+test("重扫: 不报 ReferenceError, 正常填充设备下拉并回到待选状态", async () => {
+  const dimms = [{ addr: 0x50, ramType: "DDR4", size: 512 }];
+  const { el } = loadApp({ appStub: makeAppStub({
+    ListControllers: [{ index: 0, name: "PCH SATA", devices: 1 }],
+    Connect: null,
+    Scan: dimms,
+  }).stub });
+  await flush();
+  el("btn-scan").onclick();
+  await flush();
+  await flush();
+  const log = el("log").text();
+  assert.doesNotMatch(log, /扫描失败/, "重扫不应报错: " + log.slice(0, 120));
+  assert.match(el("dimm-select").text(), /请选择/, "重扫后应回到待选状态");
+  assert.match(el("dimm-select").text(), /0x50/, "扫描到的设备应在下拉里");
+});

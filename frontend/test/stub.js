@@ -80,5 +80,7 @@
     EditState: rec("EditState", editState),
     CRCStatus: rec("CRCStatus", crcStatus),
     MfgSearch: rec("MfgSearch", [{ name: "Micron Technology", cont: 0x80, code: 0x2c }]),
+    MfgPresets: rec("MfgPresets", []),
+
   } } };
   window.runtime = { EventsOn: () => {} };

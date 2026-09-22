@@ -66,6 +66,44 @@ test("编辑器: 标签页切换与从设备载入", async () => {
   assert.equal(el("btn-edit-write").disabled, false, "CRC 通过且有变更时应可写入");
 });
 
+test("编辑器: 模块/DRAM 厂商是常用厂商下拉, 选中自动写对应 ID", async () => {
+  const withMfg = [
+    ...fields,
+    { key: "manufacturer", name: "模块厂商", group: "常用信息", kind: "string",
+      value: "", offset: "0x140-0x141", risk: "low", primary: true },
+    { key: "dramManufacturer", name: "DRAM 厂商", group: "常用信息", kind: "string",
+      value: "SK Hynix", offset: "0x15E-0x15F", risk: "low", primary: true },
+  ];
+  const { el, calls } = setup({ EditFields: () => withMfg });
+  await flush();
+  el("tab-edit").onclick();
+  await readDevice(el);
+  await flush();
+  await flush(); // 预设是异步填充的
+  const html = el("edit-fields").html();
+  assert.match(html, /<select[^>]*data-key="manufacturer"/, "模块厂商应为下拉");
+  assert.match(html, /<select[^>]*data-key="dramManufacturer"/, "DRAM 厂商应为下拉");
+  assert.match(html, /Samsung · ID 01 CE/, "下拉应含 Samsung 及其 JEP106 ID");
+  assert.match(html, /ID 01 AD/, "下拉应含 SK Hynix 的 ID");
+
+  assert.doesNotMatch(html, /\(当前\)/, "当前值在预设里时不应置顶重复项");
+  const sel = el("edit-fields").querySelector('select[data-key="manufacturer"]');
+  assert.ok(sel, "模块厂商下拉应存在");
+  sel.value = "Samsung";
+  sel.onchange();
+  await flush();
+  const mfgCall = calls.find((c) => c.name === "EditSetField" && c.args[0] === "manufacturer");
+  assert.ok(mfgCall, "选中厂商应触发 EditSetField");
+  assert.equal(mfgCall.args[1], "Samsung", "应把厂商名交给后端回查 ID");
+
+  // （不改）不触发提交
+  sel.value = "";
+  sel.onchange();
+  await flush();
+  const n = calls.filter((c) => c.name === "EditSetField" && c.args[0] === "manufacturer").length;
+  assert.equal(n, 1, "选（不改）不应提交");
+});
+
 test("SPD 布局说明只用于 hex 区标注: 不进编辑列表, 行尾标参数名, 注记偏移也能定位", async () => {
   const withInfo = [
     ...fields,

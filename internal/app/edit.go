@@ -401,6 +401,11 @@ func (a *App) MfgSearch(query string, limit int) ([]spd.MfgEntry, error) {
 	return spd.SearchManufacturers(query, limit), nil
 }
 
+// MfgPresets 返回常用厂商预设(编辑器厂商下拉用, 名字与 ID 都来自 JEP106 表)。
+func (a *App) MfgPresets() ([]spd.MfgEntry, error) {
+	return spd.MfgPresets(), nil
+}
+
 // EditVerifyFile 把编辑器内容与设备当前内容比对(不写入)。
 func (a *App) EditVerifyFile() (*EditDiff, error) {
 	defer a.lockOp()()

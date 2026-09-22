@@ -434,7 +434,7 @@ $("btn-scan").onclick = async () => {
     }
     await call("Connect", idx);
     const dimms = (await call("Scan")) || [];
-    selectedAddr = null; // 重扫后回到空白, 等待用户手动选择
+    // 重扫后回到空白等待手动选择: fillDimmSelect 重建下拉, 首项"请选择"自然成为选中项
     fillDimmSelect(dimms);
     } catch (e) { addLog("", "扫描失败: " + e); }
 };
@@ -1419,11 +1419,16 @@ function renderEditFields() {
   for (const f of shown) {
     const risk = f.risk === "high" ? "risk-high" : f.risk === "medium" ? "risk-medium" : "";
     const title = [f.offset, f.unit, f.note].filter(Boolean).join(" · ");
-    const list = f.key === "manufacturer" || f.key === "dramManufacturer" ? ` list="mfg-list"` : "";
+    const isMfg = f.key === "manufacturer" || f.key === "dramManufacturer";
+    const list = isMfg ? "" : ` list="mfg-list"`;
+    const control = isMfg
+      ? `<select id="fld-${escapeHtml(f.key)}" data-key="${escapeHtml(f.key)}" data-mfg="1" class="mfg-select" title="选择厂商自动写入对应 JEP106 ID">` +
+        `<option value="">（选择厂商…）</option></select>`
+      : `<input id="fld-${escapeHtml(f.key)}" type="text" data-key="${escapeHtml(f.key)}" value="${escapeHtml(f.value)}"${list}>`;
     html += `<div class="fitem" title="${escapeHtml(title)}">` +
       `<label class="${risk}" for="fld-${escapeHtml(f.key)}">${escapeHtml(f.name)}</label>` +
       `<div class="frow">` +
-      `<input id="fld-${escapeHtml(f.key)}" type="text" data-key="${escapeHtml(f.key)}" value="${escapeHtml(f.value)}"${list}>` +
+      control +
       (f.hint ? `<span data-clk="${escapeHtml(f.hint.replace(/\s+/g, ""))}" data-key="${escapeHtml(f.key)}" class="fclk muted" title="当前值折合的周期数(向上取整)。点击把 ${escapeHtml(f.hint)} 换成按周期的写法填进输入框; 输入框里直接写 16clk 也按周期解析">${escapeHtml(f.hint)}</span>` : "") +
       `<button data-apply="${escapeHtml(f.key)}">应用</button>` +
       `</div></div>`;
@@ -1463,14 +1468,29 @@ function renderEditFields() {
     }
     // 焦点落到字段上 → 左侧 hex 里闪一下这个字段占的字节(省得用户自己对偏移)
     inp.onfocus = () => flashField(inp.getAttribute("data-key"));
-    if (inp.getAttribute("data-key") === "manufacturer" || inp.getAttribute("data-key") === "dramManufacturer") {
-      inp.oninput = debounce(async () => {
-        try {
-          const list = await call("MfgSearch", inp.value, 30);
-          $("mfg-list").innerHTML = list.map((m) => `<option value="${escapeHtml(m.name)}"></option>`).join("");
-        } catch (e) { /* 忽略搜索错误 */ }
-      }, 300);
-    }
+  });
+  // 厂商下拉: 常用厂商预设(后端 JEP106 表按名字回查 ID), 选中即写对应 ID。
+  // 当前值不在预设里时置顶显示"(当前)", 保证任何情况下下拉都能反映现状。
+  const h2 = (v) => v.toString(16).padStart(2, "0").toUpperCase();
+  box.querySelectorAll('select[data-mfg="1"]').forEach((sel) => {
+    const key = sel.getAttribute("data-key");
+    const f = (editFieldsCache || []).find((x) => x.key === key);
+    const cur = f ? f.value : "";
+    loadMfgPresets().then((presets) => {
+      const opts = [`<option value="">（不改）</option>`];
+      if (cur && !presets.some((m) => m.name === cur)) {
+        opts.push(`<option value="${escapeHtml(cur)}">${escapeHtml(cur)} · (当前)</option>`);
+      }
+      for (const m of presets) {
+        opts.push(`<option value="${escapeHtml(m.name)}">${escapeHtml(m.name)} · ID ${h2(m.cont)} ${h2(m.code)}</option>`);
+      }
+      sel.innerHTML = opts.join("");
+      sel.value = presets.some((m) => m.name === cur) || cur ? cur : "";
+    }).catch(() => {});
+    sel.onchange = () => {
+      if (!sel.value) return; // （不改）
+      applyEditFieldValue(key, sel.value);
+    };
   });
 }
 
@@ -1479,10 +1499,15 @@ function debounce(fn, ms) {
   return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); };
 }
 
-async function applyEditField(key, box) {
-  const inp = box.querySelector(`input[data-key="${key}"]`);
-  if (!inp) return;
-  const val = inp.type === "checkbox" ? String(inp.checked) : inp.value;
+let mfgPresetsCache = null;
+function loadMfgPresets() {
+  if (!mfgPresetsCache) {
+    mfgPresetsCache = call("MfgPresets").catch(() => []);
+  }
+  return mfgPresetsCache;
+}
+
+async function applyEditFieldValue(key, val) {
   try {
     const st = await call("EditSetField", key, val);
     renderEditState(st);
@@ -1491,6 +1516,13 @@ async function applyEditField(key, box) {
   } catch (e) {
     addLog("", `编辑失败(${key}): ${e}`);
   }
+}
+
+async function applyEditField(key, box) {
+  const inp = box.querySelector(`input[data-key="${key}"]`);
+  if (!inp) return;
+  const val = inp.type === "checkbox" ? String(inp.checked) : inp.value;
+  await applyEditFieldValue(key, val);
 }
 
 $("btn-edit-reset").onclick = async () => {
