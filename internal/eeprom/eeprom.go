@@ -1189,6 +1189,13 @@ func (d *Device) WPStatusDetail() (WPStatusDetail, error) {
 		if det.ProtectionHit {
 			det.Warnings = append(det.Warnings, "MR52[6]=1: 检测到对受保护块的写被忽略")
 		}
+		// 平台锁写(i801 的 BIOS SPD 写禁止)与器件侧 RSWP 是两回事: 前者拦所有写入。
+		// DDR5 的块状态读的是 MR12/MR13 位图(纯读, 不需要写测试), 所以这里不做短路,
+		// 但必须说清楚"显示开放 ≠ 可写" —— 否则面板显示全部开放而写入被拒, 用户会以为是工具的错。
+		if d.wpKnown && d.wpDisabled {
+			det.Warnings = append(det.Warnings,
+				"平台(i801)已锁定 SPD 写(SPD Write Disable=1): 上面的块状态来自器件侧 MR12/MR13 位图(纯读), 但本平台上任何 SPD 写入都会被控制器拒绝(NACK) —— 显示\"开放\"不等于可写")
+		}
 		return det, nil
 	}
 

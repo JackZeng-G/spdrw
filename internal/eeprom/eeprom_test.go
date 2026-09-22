@@ -1129,6 +1129,39 @@ func TestWriteTestRecognizesWin32NoSuchDeviceAsNACK(t *testing.T) {
 	}
 }
 
+// DDR5 遇到平台锁写(i801 的 BIOS SPD 写禁止)不走短路: 块状态是纯读 MR12/MR13 位图,
+// 本来零写入, 器件侧信息有价值; 但必须提示"显示开放 ≠ 可写", 否则面板与写入结果矛盾。
+func TestDDR5PlatformLockKeepsBitmapButWarns(t *testing.T) {
+	f := smbus.NewFake()
+	f.SetDDR5(true)
+	copy(f.EEProm, make([]byte, 1024))
+	f.MR[MR12] = 0x00 // 器件侧没有任何 RSWP 位
+	f.MR[MR13] = 0x00
+	counting := &countingWriteTransport{inner: f}
+	dev, err := New(counting, 0x50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev.SetPlatformWriteDisable(true, true)
+	det, err := dev.WPStatusDetail()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counting.writes != 0 {
+		t.Fatalf("DDR5 查询保护状态不应写设备, 实际 %d 次", counting.writes)
+	}
+	// 位图是真信息: MR12/MR13 全 0 → 全部开放且已知(不能被平台锁写改成"全部受保护")
+	for b := range det.Protected {
+		if det.Protected[b] || !det.Known[b] {
+			t.Fatalf("块 %d 应保持器件侧真实状态(开放且已知)", b)
+		}
+	}
+	joined := strings.Join(det.Warnings, "")
+	if !strings.Contains(joined, "平台") || !strings.Contains(joined, "不等于可写") {
+		t.Fatalf("平台锁写时应提示「显示开放不等于可写」: %v", det.Warnings)
+	}
+}
+
 // 平台(i801)报告 BIOS 已开启 SPD 写禁止时, 写保护探测必须跳过写测试:
 // 一个字节都不写, 直接给"全部块不可写(平台禁止)"的结论。
 func TestDetectProtectionSkipsWriteTestWhenPlatformDisabled(t *testing.T) {
