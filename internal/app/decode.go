@@ -124,11 +124,16 @@ func DecodeDump(dump []byte) (*DecodeResult, error) {
 			r.TCK = &TimingView{NS: b.TCKminNS}
 		}
 	default:
-		// DDR2(0x08-0x0A)支持已移除: 给一句明确的话, 而不是"未知(0x0)"这种黑话
+		// 报错要能自证: 带上 byte2 与长度, 用户一看就知道喂进来的是什么,
+		// 而不是"未知(0x0)"这种什么都不说明的黑话。
 		if len(dump) > 2 && dump[2] >= 0x08 && dump[2] <= 0x0A {
-			return nil, fmt.Errorf("DDR2 已不再支持(dump 的器件类型 %#02x)", dump[2])
+			return nil, fmt.Errorf("DDR2 已不再支持(dump 的器件类型 byte2=%#02x, 长度 %d)", dump[2], len(dump))
 		}
-		return nil, fmt.Errorf("不支持的世代 %v", rt)
+		if len(dump) > 2 && dump[2] == 0x00 {
+			return nil, fmt.Errorf("这不是一份有效 SPD: 器件类型字节 byte2=0x00(全 0 / 读取失败 / 内容被清零), 长度 %d", len(dump))
+		}
+		return nil, fmt.Errorf("不支持的世代: byte2=%#02x, 长度 %d(已知: DDR3=0x0B / DDR4=0x0C / DDR4E=0x0E / DDR5=0x12)",
+			dump[2], len(dump))
 	}
 	return r, nil
 }
