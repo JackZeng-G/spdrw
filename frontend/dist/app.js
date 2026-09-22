@@ -1092,9 +1092,15 @@ function renderWP(st) {
   for (const w of (st.warnings || [])) html.push(`<span class="warn">提示: ${escapeHtml(w)}</span>`);
   $("wp-summary").innerHTML = html.join("<br>");
 
-  const prot = (st.protected || []).map((p, i) => p ? `B${i}` : null).filter(Boolean);
+  // 后端对"写测试失败"的块同时置 protected=true + known=false(保守, 按不可写对待);
+  // 汇总行必须把两者分开 —— "未知"不能说成"受保护"(真机 i801: 全部块写不进去,
+  // 是平台禁止而不是逐块保护)。
+  const knownProt = (st.protected || []).map((p, i) => (p && (!st.known || st.known[i])) ? `B${i}` : null).filter(Boolean);
   const unknown = (st.known || []).map((k, i) => k ? null : `B${i}`).filter(Boolean);
-  const state = prot.length ? "受保护 " + prot.join(",") : (unknown.length ? `未知 ${unknown.join(",")}` : "全部开放");
+  const parts = [];
+  if (knownProt.length) parts.push("受保护 " + knownProt.join(","));
+  if (unknown.length) parts.push(`未知/不可写 ${unknown.join(",")}`);
+  const state = parts.join(" · ") || "全部开放";
   addLog("", `保护状态: ${state}` +
     (st.pswpApplicable ? (st.pswp ? " · PSWP 永久保护" : " · PSWP 未设置") : " · PSWP 不适用"));
 }

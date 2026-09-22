@@ -66,6 +66,11 @@ type Device struct {
 	dryRun bool
 	shadow []byte
 
+	// 平台级 SPD 写禁止位(i801 的 BIOS "SPD write disable"): 已知开启时写保护
+	// 探测跳过写测试(见 SetPlatformWriteDisable)。
+	wpKnown    bool
+	wpDisabled bool
+
 	// 块读加速: SMBus Block Read(协议 5) 一次 32 字节, 把整片读取从事务数=字节数
 	// 降到 1/32。设备不一定支持(EE1004 规范无块读、SPD5 HUB 视固件而定), 所以
 	// 首次使用要探测, 失败自动回退到逐字节读并记住结论。
@@ -984,8 +989,23 @@ func (d *Device) WriteTest(off uint16) (bool, error) {
 		// 尽力把原值写回并回读确认, 失败也要在错误信息里交代清楚(审计 M6:
 		// 旧实现在这里直接返回错误, 字节可能停在取反值上无人知晓)。
 		if ok, rerr := d.restoreByte(off, orig); !ok {
-			return false, fmt.Errorf("写测试写入 %#x 失败(%v), 且还原也失败(%v): 该字节可能停在取反值 %#x, 请立即用备份恢复",
-				off, err, rerr, flipped)
+			// 写不进 + 还原也写不进: 大概率平台一直在拒绝写入(真机 i801 即如此),
+			// 字节极可能从未被改动。回读核实, 按实际内容给结论 —— 别把"还原也失败"
+			// 直接当成"内容已坏"吓用户; 只有回读发现内容确实变了才升级告警。
+			if cur, rerr2 := d.readOne(off); rerr2 == nil {
+				if cur == orig {
+					return false, fmt.Errorf("写测试写入 %#x 失败(%v); 已回读确认该字节保持原值 %#x, 内容未变, 无需用备份恢复(还原写被同一故障拒绝属预期)",
+						off, err, orig)
+				}
+				if cur == flipped {
+					return false, fmt.Errorf("写测试写入 %#x 失败(%v), 但回读发现该字节已是取反值 %#x 且还原失败(%v), 请立即用备份恢复",
+						off, err, flipped, rerr)
+				}
+				return false, fmt.Errorf("写测试写入 %#x 失败(%v); 回读到异常值 %#x(原值 %#x), 还原也失败(%v), 请立即用备份恢复",
+					off, err, cur, orig, rerr)
+			}
+			return false, fmt.Errorf("写测试写入 %#x 失败(%v), 且还原(%v)与回读确认均失败: 该字节当前值无法确认, 请立即用备份恢复",
+				off, err, rerr)
 		}
 		return false, fmt.Errorf("写测试写入 %#x: %w(原值 %#x 已还原并确认)", off, err, orig)
 	}
@@ -1033,6 +1053,14 @@ func (d *Device) restoreByte(off uint16, want byte) (bool, error) {
 		lastErr = fmt.Errorf("还原后回读仍为 %#x(期望 %#x)", cur, want)
 	}
 	return false, lastErr
+}
+
+// SetPlatformWriteDisable 记录平台级 SPD 写禁止位(i801 的 BIOS "SPD write disable")。
+// 已知开启时, 写保护探测直接给出"全部块受平台限制"的结论, 不再做写测试 ——
+// 真机验证(2026-09-22 i801): 该状态下每次写(含还原写)都被控制器拒绝,
+// 逐块写测试只会白写一轮并产生"还原也失败"的误导告警。
+func (d *Device) SetPlatformWriteDisable(known, disabled bool) {
+	d.wpKnown, d.wpDisabled = known, disabled
 }
 
 // RSWPStatus 返回各块的可逆写保护状态(保守语义: 无法判定的块按"受保护"处理)。
@@ -1164,7 +1192,18 @@ func (d *Device) WPStatusDetail() (WPStatusDetail, error) {
 		return det, nil
 	}
 
-	// DDR4 及更早: 无状态寄存器, 逐块写测试(写入 1 字节后还原)
+	// DDR4 及更早: 无状态寄存器, 逐块写测试(写入 1 字节后还原)。
+	// 但若平台(i801)已报告 BIOS 开启 SPD 写禁止, 写测试必然全失败(写与还原都被拒),
+	// 直接下结论, 一个字节都不碰。
+	if d.wpKnown && d.wpDisabled {
+		for b := 0; b < blocks; b++ {
+			det.Known[b], det.Protected[b] = true, true
+		}
+		det.Warnings = append(det.Warnings,
+			fmt.Sprintf("BIOS 已开启 SPD 写禁止(i801 报告): 平台层面禁止写入 SPD, 未做写测试(一个字节都没写), 全部 %d 块按不可写对待; 若确需写入请在 BIOS 里关闭该选项", blocks))
+		det.PSWPApplicable = false
+		return det, nil
+	}
 	for b := 0; b < blocks; b++ {
 		writable, err := d.WriteTest(uint16(b * det.BlockSize))
 		if err != nil {
@@ -1180,6 +1219,19 @@ func (d *Device) WPStatusDetail() (WPStatusDetail, error) {
 		}
 		det.Known[b] = true
 		det.Protected[b] = !writable
+	}
+	if !d.dryRun {
+		allUnknown := true
+		for b := 0; b < blocks; b++ {
+			if det.Known[b] {
+				allUnknown = false
+				break
+			}
+		}
+		if allUnknown {
+			det.Warnings = append(det.Warnings,
+				"所有块的写测试都未能生效: 这通常不是逐块保护, 而是平台层面禁止写入(BIOS 的 SPD 写保护/写禁止、WP 引脚)或总线故障; 各块按不可写对待")
+		}
 	}
 	if d.dryRun {
 		det.Warnings = append(det.Warnings, "干跑模式: 跳过 DDR4/更早世代的块首写测试, 保护状态未知(不写任何字节)")

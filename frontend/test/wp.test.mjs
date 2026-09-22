@@ -71,6 +71,37 @@ test("点击查询保护状态: 走绑定并写日志, 不再抛 null 解构错"
   assert.match(log, /保护状态/);
 });
 
+test("汇总行区分「受保护」与「未知/不可写」: 写测试全败(i801 平台拒绝)不得谎报受保护", async () => {
+  // 真机 i3-7100(2026-09-22): 4 块写测试都失败(known=false, 后端保守置 protected=true)
+  const st = {
+    ...ddr5Status, ddr5: false, generation: "DDR4", blocks: 4, blockSize: 128,
+    protected: [true, true, true, true], known: [false, false, false, false],
+    mr11: 0, mr12: 0, mr13: 0, mr48: 0, mr52: 0, protectionHit: false, offline: false,
+    pswpApplicable: false, pswp: false,
+    warnings: ["所有块的写测试都未能生效: ..."],
+  };
+  const { el, ctx } = loadApp({ appStub: withStatus(st) });
+  await flush();
+  await ctx.renderWP(st);
+  const log = el("log").text();
+  assert.match(log, /未知\/不可写 B0,B1,B2,B3/);
+  assert.doesNotMatch(log, /受保护 B0/, "未知块不得汇总成受保护: " + log);
+});
+
+test("汇总行: 已知保护与未知混合时各自归类", async () => {
+  const st = {
+    ...ddr5Status, ddr5: false, generation: "DDR4", blocks: 4, blockSize: 128,
+    protected: [true, true, false, false], known: [true, false, true, false],
+    mr11: 0, mr12: 0, mr13: 0, mr48: 0, mr52: 0, protectionHit: false, offline: false,
+    pswpApplicable: false, pswp: false, warnings: [],
+  };
+  const { el, ctx } = loadApp({ appStub: withStatus(st) });
+  await flush();
+  await ctx.renderWP(st);
+  const log = el("log").text();
+  assert.match(log, /受保护 B0 · 未知\/不可写 B1,B3/);
+});
+
 test("WPSet 传数字数组 + 确认串([]int 契约, 且不可逆操作必须带 ack)", async () => {
   const { stub, calls } = makeAppStub({ WPStatus: () => ddr5Status });
   const { el, ctx } = loadApp({ appStub: stub });

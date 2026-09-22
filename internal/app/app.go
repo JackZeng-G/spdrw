@@ -359,6 +359,10 @@ func (a *App) Select(addr byte) error {
 		a.dev.Close()
 	}
 	a.dev = dev
+	// 平台级 SPD 写禁止位(i801 报告): 已知开启时, 写保护探测会跳过写测试。
+	if a.ctrl.NoSpdWp || a.ctrl.WpKnown {
+		dev.SetPlatformWriteDisable(a.ctrl.WpKnown, a.ctrl.WpKnown && !a.ctrl.NoSpdWp)
+	}
 	if c, ok := a.active.(*smbus.CountingTransport); ok {
 		c.SetDDR5(dev.IsDDR5()) // NVM 写的判据随世代不同(cmd bit7)
 	}
@@ -570,14 +574,13 @@ func (a *App) WPStatus() (*WPStatusResult, error) {
 	// 只有"靠写测试探测"的世代(DDR4 及更早)才需要先备份; DDR5 读 MR12/MR13 位图,
 	// 一个字节都不写 —— 那就别做无谓的整片备份, 日志也不该说"会做写测试"。
 	var img []byte
-	var backup string
 	if dev.NeedsWriteTest() && !dev.DryRun() {
 		var berr error
-		img, backup, berr = a.backupCurrent(dev)
+		img, _, berr = a.backupCurrent(dev)
 		if berr != nil {
 			return nil, fmt.Errorf("查询保护状态需要先备份当前内容(该世代用写测试探测): %w", berr)
 		}
-		a.logf("保护状态查询: 该世代用写测试探测, 已先备份当前内容(%s)", backup)
+		a.logf("保护状态查询: 该世代用写测试探测, 已先整片备份")
 	}
 	det, err := dev.WPStatusDetail()
 	if err != nil {

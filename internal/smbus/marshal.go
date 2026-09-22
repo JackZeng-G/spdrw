@@ -147,6 +147,11 @@ func win32Err(code uint16) error {
 	switch code {
 	case 2: // ERROR_FILE_NOT_FOUND
 		return fmt.Errorf("找不到 PawnIO 驱动(0x80070002): 未安装 PawnIO 或驱动未运行")
+	case 433: // ERROR_NO_SUCH_DEVICE: 器件未应答, 与 NTSTATUS 0xC000000E 是同一条件,
+		// 只是走了 Win32 命名空间(HRESULT_FROM_WIN32)。真机 i801 的 SPD 写被平台
+		// 拒绝时返回的就是它 —— 文案必须带 "NACK", 否则 eeprom.isNACK 认不出来,
+		// 会把"NACK(一个字节都没写进去)"误判成"写可能已生效"。
+		return fmt.Errorf("设备无响应 NACK(0x800701B1 / Win32 433)")
 	case 5: // ERROR_ACCESS_DENIED
 		return fmt.Errorf("访问被拒绝: 本程序需要管理员权限(SMBus 内核访问); 正常双击启动时会自动请求提权, 请确认已同意 UAC")
 	case 32: // ERROR_SHARING_VIOLATION

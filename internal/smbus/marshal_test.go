@@ -105,6 +105,12 @@ func TestStatusToError(t *testing.T) {
 	if err := StatusToError(0x80070002); !strings.Contains(err.Error(), "PawnIO") {
 		t.Fatalf("FILE_NOT_FOUND 映射错误: %v", err)
 	}
+	// 真机 i801(2026-09-22)SPD 写被拒时模块返回 0x800701B1(Win32 433 =
+	// ERROR_NO_SUCH_DEVICE, 即 NTSTATUS 0xC000000E 的 Win32 形态)。
+	// 文案必须含 "NACK", 否则被当成"非 NACK 错误"→ 误判写可能已生效。
+	if err := StatusToError(0x800701B1); !strings.Contains(err.Error(), "NACK") {
+		t.Fatalf("Win32 433 应映射为 NACK: %v", err)
+	}
 	if err := StatusToError(0xDEADBEEF); err == nil || errors.Is(err, nil) {
 		t.Fatal("未知码应返回非 nil 错误")
 	}

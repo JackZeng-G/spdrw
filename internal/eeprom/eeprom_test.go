@@ -1050,6 +1050,142 @@ func (t *flakyWriteTransport) ReadWordData(a byte, c byte) (uint16, error) {
 }
 func (t *flakyWriteTransport) Close() error { return t.inner.Close() }
 
+// 真机 i801(2026-09-22): 平台拒绝所有 SPD 写(Win32 错误 433), 写测试与还原写全部失败。
+// 此时必须回读核实: 字节保持原值 → 明确说"无需恢复", 不能再喊"可能停在取反值"。
+func TestWriteTestPlatformRejectsAllWrites(t *testing.T) {
+	ft0 := smbus.NewFake()
+	for i := range ft0.EEProm {
+		ft0.EEProm[i] = 0x11
+	}
+	ft := &flakyWriteTransport{inner: ft0, failWrites: 99} // 所有写持续失败(非 NACK)
+	dev, err := New(ft, 0x50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = dev.WriteTest(0x0F)
+	if err == nil {
+		t.Fatal("写入被平台拒绝时应上报")
+	}
+	if !strings.Contains(err.Error(), "保持原值") || !strings.Contains(err.Error(), "无需用备份恢复") {
+		t.Fatalf("回读确认未变时应明确说明无需恢复: %v", err)
+	}
+	if !strings.Contains(err.Error(), "还原写被同一故障拒绝属预期") {
+		t.Fatalf("应解释还原失败的原因: %v", err)
+	}
+	got, rerr := dev.ReadOneByte(0x0F)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if got != 0x11 {
+		t.Fatalf("字节应保持原值 0x11, 实际 %#x", got)
+	}
+}
+
+// nackWriteTransport 让所有 byte-data 写返回 i801 真机那种 Win32 433 文案
+// (ERROR_NO_SUCH_DEVICE 的 Win32 形态), 读正常 —— 用于验证写测试把它认出 NACK。
+type nackWriteTransport struct{ inner smbus.Transport }
+
+func (t *nackWriteTransport) Identity() (smbus.Controller, error) { return t.inner.Identity() }
+func (t *nackWriteTransport) Quick(a byte, w bool) error          { return t.inner.Quick(a, w) }
+func (t *nackWriteTransport) ReadByteData(a byte, c byte) (byte, error) {
+	return t.inner.ReadByteData(a, c)
+}
+func (t *nackWriteTransport) WriteByteData(a byte, c byte, v byte) error {
+	return fmt.Errorf("设备无响应 NACK(0x800701B1 / Win32 433)")
+}
+func (t *nackWriteTransport) WriteByteNoData(a byte) error { return t.inner.WriteByteNoData(a) }
+func (t *nackWriteTransport) ReadBlockData(a byte, c byte) ([]byte, error) {
+	return t.inner.ReadBlockData(a, c)
+}
+func (t *nackWriteTransport) WriteBlockData(a byte, c byte, d []byte) error {
+	return fmt.Errorf("设备无响应 NACK(0x800701B1 / Win32 433)")
+}
+func (t *nackWriteTransport) ReadWordData(a byte, c byte) (uint16, error) {
+	return t.inner.ReadWordData(a, c)
+}
+func (t *nackWriteTransport) Close() error { return t.inner.Close() }
+
+// 真机 i801(2026-09-22)写被平台拒绝(Win32 433)时, 写测试必须识别为 NACK:
+// 返回"受保护、已知"(writable=false, err=nil), 而不是"状态未知 + 可能已改坏"。
+func TestWriteTestRecognizesWin32NoSuchDeviceAsNACK(t *testing.T) {
+	f := smbus.NewFake()
+	for i := range f.EEProm {
+		f.EEProm[i] = 0x22
+	}
+	dev, err := New(&nackWriteTransport{inner: f}, 0x50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writable, err := dev.WriteTest(0x0F)
+	if err != nil {
+		t.Fatalf("NACK 应判为受保护而非未知(不该报错): %v", err)
+	}
+	if writable {
+		t.Fatal("写被 NACK 时应报告不可写")
+	}
+	// 写被拒绝 = 一个字节都没进去, 设备内容必须未变, 也不需要"还原重试"
+	if f.EEProm[0x0F] != 0x22 {
+		t.Fatalf("NACK 后字节不应改变, 实际 %#x", f.EEProm[0x0F])
+	}
+}
+
+// 平台(i801)报告 BIOS 已开启 SPD 写禁止时, 写保护探测必须跳过写测试:
+// 一个字节都不写, 直接给"全部块不可写(平台禁止)"的结论。
+func TestDetectProtectionSkipsWriteTestWhenPlatformDisabled(t *testing.T) {
+	f := smbus.NewFake()
+	copy(f.EEProm, make([]byte, 512))
+	counting := &countingWriteTransport{inner: f}
+	dev, err := New(counting, 0x50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dev.SetPlatformWriteDisable(true, true)
+	det, err := dev.WPStatusDetail()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if counting.writes != 0 {
+		t.Fatalf("平台写禁止时不应发起任何写事务, 实际 %d 次", counting.writes)
+	}
+	for b, k := range det.Known {
+		if !k || !det.Protected[b] {
+			t.Fatalf("块 %d 应为已知且按不可写对待", b)
+		}
+	}
+	joined := strings.Join(det.Warnings, "")
+	if !strings.Contains(joined, "SPD 写禁止") || !strings.Contains(joined, "未做写测试") {
+		t.Fatalf("警告应说明平台写禁止并跳过写测试: %v", det.Warnings)
+	}
+}
+
+// countingWriteTransport 只数写事务, 其余转发 —— 用于断言"一个字节都没写"。
+type countingWriteTransport struct {
+	inner  smbus.Transport
+	writes int
+}
+
+func (t *countingWriteTransport) Identity() (smbus.Controller, error) { return t.inner.Identity() }
+func (t *countingWriteTransport) Quick(a byte, w bool) error          { return t.inner.Quick(a, w) }
+func (t *countingWriteTransport) ReadByteData(a byte, c byte) (byte, error) {
+	return t.inner.ReadByteData(a, c)
+}
+func (t *countingWriteTransport) WriteByteData(a byte, c byte, v byte) error {
+	t.writes++
+	return t.inner.WriteByteData(a, c, v)
+}
+func (t *countingWriteTransport) WriteByteNoData(a byte) error { return t.inner.WriteByteNoData(a) }
+func (t *countingWriteTransport) ReadBlockData(a byte, c byte) ([]byte, error) {
+	return t.inner.ReadBlockData(a, c)
+}
+func (t *countingWriteTransport) WriteBlockData(a byte, c byte, d []byte) error {
+	t.writes++
+	return t.inner.WriteBlockData(a, c, d)
+}
+func (t *countingWriteTransport) ReadWordData(a byte, c byte) (uint16, error) {
+	return t.inner.ReadWordData(a, c)
+}
+func (t *countingWriteTransport) Close() error { return t.inner.Close() }
+
 // 写测试遇到非 NACK 错误时不能直接放弃: 写是否生效未知, 必须尽力还原原值
 // (审计 M6: 旧实现此时字节可能停在取反值上且无人知晓)。
 func TestWriteTestRestoresOnNonNACKError(t *testing.T) {
