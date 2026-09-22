@@ -346,9 +346,9 @@ $("dimm-select").onchange = async () => {
   syncSelectTitle($("dimm-select"));
   if (isNaN(addr) || addr < 0) return;
   try {
-    // 换设备会清空后端的编辑器(避免把 A 条的改动写进 B 条): 前端必须同步复位,
-    // 否则界面还留着上一根条的内容与改动, 用户会误以为在操作当前这根。
-    if (editorLoaded) addLog("", "已切换设备: 编辑器内容已失效, 需要重新“从设备载入”");
+    // 换设备会清空后端的编辑器(避免把 A 条的改动写进 B 条): 前端必须同步复位。
+    // 不打日志提醒"需要重新载入" —— doDump 末尾会自动把新条接进编辑器,
+    // 这条提醒从未成立过, 只会给日志加噪音(用户反馈)。
     resetEditorState();
     await call("Select", addr);
     await doDump();
