@@ -48,6 +48,17 @@ func (a *App) WriteProbe() (*WriteProbeResult, error) {
 	if dev.DryRun() {
 		return nil, fmt.Errorf("设备处于干跑模式, 探测无意义(干跑的写只落内存); 请先关闭干跑模式")
 	}
+	// 平台(i801)已报告 BIOS 锁定 SPD 写: 结论已知, 不必备份也不必真写一个字节。
+	// 真机 i3-7100(2026-09-22): 该状态下每次写都被控制器 NACK(Win32 433)。
+	if ctl, cerr := a.controllerInfo(); cerr == nil && ctl.WpKnown && !ctl.NoSpdWp {
+		return &WriteProbeResult{
+			Addr: dev.Addr(), Verdict: "rejected", Mode: "未写(平台禁止)",
+			Note: fmt.Sprintf("BIOS 的 SPD Write Disable 已打开(控制器 %s), 平台层面禁止写入 SPD: "+
+				"该平台上只能读取/校验/导出, 写入与写保护探测都会在控制器一级被拒;"+
+				"实测(2026-09-22 i801)此时写事务返回 Win32 433(ERROR_NO_SUCH_DEVICE, 即 NACK)。"+
+				"如需写入: 换一台 BIOS 允许 SPD 写的机器, 或用编程器(CH341A 等)离线写", ctl.Name),
+		}, nil
+	}
 
 	img, backup, err := a.backupCurrent(dev)
 	if err != nil {

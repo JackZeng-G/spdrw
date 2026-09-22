@@ -65,7 +65,8 @@ v1.0.0 → v1.0.1 主要变化: ① 时序支持按周期(clk)查看与输入, t
   - RSWP 状态检测: DDR5 读 MR12/MR13 位图(16×64B)、DDR4 及更早块首写测试(4×128B, **还原后回读确认**, 失败重试并报"状态未知", 绝不谎报)
   - RSWP 设置(按块)/清除; DDR5 附 MR11/MR29/MR48/MR52 原始值与"写受保护块被忽略"标志
   - PSWP: 仅 DDR3 可经 PWPB(0110b)探测; DDR4/DDR5 无该设备类型, 明确显示"不适用"(旧版会误报"永久保护已生效")
-  - 显示 BIOS "SPD write disable" 状态 (I801)
+  - 显示 BIOS "SPD write disable" 状态 (I801); 锁定时常驻 **只读模式** 横幅(写事务会被平台 NACK), 并提示去 BIOS 找开关
+  - 平台锁定(BIOS 写禁止)时自动跳过写测试/写入能力探测, 一个字节都不写; 实测只读平台见 `docs/真机实测记录.md`
 
 ## 构建
 
@@ -103,7 +104,7 @@ exe 的**图标**和**属性里的版本/版权**(`by jackzeng 2026`)来自仓�
 ```bash
 # 缓存位置: 容器环境变量已指向 /opt/toolchain(GOPATH/GOMODCACHE/GOCACHE), 无需自设;
 # 若在某处手动 export 过项目本地缓存(.gopath/.gocache), 删掉即可避免与全局重复占用
-go test ./internal/...                          # 161 个顶层用例
+go test ./internal/...                          # 162 个顶层用例
 CGO_ENABLED=1 go test -race ./internal/...      # 并发/死锁问题只有 race 抓得到
 node --test "frontend/test/*.test.mjs"          # 前端契约与漂移守卫(45 条)
 go test ./internal/app/ -run TestBuiltExe -v    # 产物自检(需先构建: 前端/PawnIO/图标/版本信息)

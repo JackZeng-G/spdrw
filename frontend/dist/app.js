@@ -83,6 +83,7 @@ async function autoConnectAll(ctls) {
     if (idx >= 0) {
       $("ctl-select").value = String(idx);
     }
+    updateReadOnlyBar();   // 自动连接到的控制器可能就是被 BIOS 锁写的那块
     fillDimmSelect(list);
     if (list.length) {
       addLog("", `发现 ${list.length} 个 SPD 设备, 请在列表中选择要读取的 DIMM`);
@@ -99,25 +100,61 @@ function setWarn(html) {
   else { bar.classList.remove("hidden"); bar.innerHTML = html; }
 }
 
+// 当前控制器的平台写状态: i801 能直接读出 BIOS 的 SPD Write Disable 位。
+// 锁定(已知开启)时在顶栏下方常驻红色横幅 —— 用户一眼就知道"现在只能读", 以及去哪儿解锁。
+let ctlList = [];
+
+function currentCtl() {
+  const idx = parseInt($("ctl-select").value, 10);
+  if (Number.isInteger(idx)) {
+    const hit = ctlList.find((c) => Number(c.index) === idx);
+    if (hit) return hit;
+  }
+  return ctlList[0] || null;   // value 还没落地(或已被换掉)时按列表首项算
+}
+
+function updateReadOnlyBar() {
+  const bar = $("ro-bar");
+  if (!bar) return;
+  const c = currentCtl();
+  const locked = !!(c && c.wpKnown && !c.noSpdWp);
+  if (!locked) { bar.classList.add("hidden"); bar.innerHTML = ""; return; }
+  bar.classList.remove("hidden");
+  bar.innerHTML = '<span class="ro-tag">只读模式</span>' +
+    `BIOS 已锁定 SPD 写(<code>SPD Write Disable</code> = 1, 控制器 ${escapeHtml(c.name)}): ` +
+    '可以读取 / 编辑 / 校验 / 导出, 但<b>写入与写保护操作会被控制器拒绝</b>。' +
+    '请先到 BIOS 里找 <code>SPD Write Disable</code> / <code>SPD 写保护</code> 之类的选项并关闭' +
+    '(有的品牌机藏在高级菜单里, 或干脆不提供); ' +
+    '找不到就换一台允许 SPD 写的机器写入, 或用编程器(CH341A 等)离线写。';
+}
+
 function fillCtlSelect(list) {
+  ctlList = list || [];
   const sel = $("ctl-select");
   sel.innerHTML = "";
+  let firstVal = null;
   list.forEach((c, i) => {
     const opt = document.createElement("option");
     // 值必须是真实控制器下标(c.index): 列表已按"有设备"过滤, 位置 != 下标
     opt.value = Number.isInteger(c.index) ? c.index : i;
+    if (firstVal === null) firstVal = opt.value;
     // 名称后附"探测到的设备数": 列表里只剩有设备的控制器, 一眼能看出哪条真的接了条
     const dev = c.devices ? ` · ${c.devices} 个设备` : "";
     opt.textContent = `${c.name}${dev}${c.wpKnown ? (c.noSpdWp ? " · SPD写可" : " · BIOS禁写SPD") : ""}`;
     sel.appendChild(opt);
   });
+  // 显式选中列表首项: 只读横幅与后续连接都依赖 select.value(浏览器会自动选,
+  // 但显式设置更明确, 也让不实现 select 语义的测试夹具拿到正确的值)。
+  if (firstVal !== null) sel.value = String(firstVal);
   if (!list.length) {
     const opt = document.createElement("option");
     opt.value = "-1";
     opt.textContent = "未发现控制器";
     sel.appendChild(opt);
+    sel.value = "-1";
   }
   if (typeof syncSelectTitle === "function") syncSelectTitle(sel);
+  updateReadOnlyBar();
 }
 
 // ---------- 日志 ----------
@@ -270,6 +307,7 @@ function syncSelectTitle(sel) {
 $("ctl-select").onchange = async () => {
   const idx = parseInt($("ctl-select").value, 10);
   syncSelectTitle($("ctl-select"));
+  updateReadOnlyBar();   // 换控制器可能换掉平台的写状态
   if (isNaN(idx) || idx < 0) return;
   try {
     await call("Connect", idx);
@@ -1139,12 +1177,17 @@ $("btn-write-probe").onclick = async () => {
     addLog("", "正在探测写入能力(备份 → 单字节写 → 回读 → 还原 → 整片复核)…");
     const r = await call("WriteProbe");
     const cls = r.verdict === "ok" ? "ok" : r.verdict === "unknown" ? "warn" : "bad";
-    $("probe-result").innerHTML = `<b class="${cls}">写入能力: ` +
-      `${r.verdict === "ok" ? "可写" : r.verdict === "ignored" ? "被忽略(写不进去)" : r.verdict === "unknown" ? "无法确认(回读失败, 以还原后的整片复核为准)" : "被拒绝"}</b>` +
-      ` · ${escapeHtml(r.offsetText)} ${hex(r.old, 2)}→${hex(r.new, 2)} 回读 ${hex(r.readBack, 2)}` +
-      (r.mode ? ` · 档位 ${escapeHtml(r.mode)}` : "") +
-      ` · 已还原 ${r.restored ? "是" : "否"} · 整片复核 ${r.verified ? "通过" : "不通过"}<br>` +
-      `<span class="muted">${escapeHtml(r.note)}</span>`;
+    const head = `<b class="${cls}">写入能力: ` +
+      `${r.verdict === "ok" ? "可写" : r.verdict === "ignored" ? "被忽略(写不进去)" : r.verdict === "unknown" ? "无法确认(回读失败, 以还原后的整片复核为准)" : "被拒绝"}</b>`;
+    // 平台已锁定 SPD 写时后端直接给结论(没做实际探测): 此时没有偏移/还原字段,
+    // 不能再渲染"整片复核 不通过"造成"写坏了"的错觉。
+    $("probe-result").innerHTML = r.offsetText
+      ? head +
+        ` · ${escapeHtml(r.offsetText)} ${hex(r.old, 2)}→${hex(r.new, 2)} 回读 ${hex(r.readBack, 2)}` +
+        (r.mode ? ` · 档位 ${escapeHtml(r.mode)}` : "") +
+        ` · 已还原 ${r.restored ? "是" : "否"} · 整片复核 ${r.verified ? "通过" : "不通过"}<br>` +
+        `<span class="muted">${escapeHtml(r.note)}</span>`
+      : head + `<br><span class="muted">${escapeHtml(r.note)}</span>`;
     // 结果与备份路径由后端 logf("写入能力探测结果: …"/"…先备份当前内容(…)")覆盖
     await refreshWP().catch(() => {});
   } catch (e) { addLog("", "写入能力探测失败: " + e); }

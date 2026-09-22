@@ -8,6 +8,28 @@ import { loadApp, makeAppStub, flush, readDevice, EMPTY_DIFF } from "./harness.m
 // 真实发布页(确认串占位符等静态文案的唯一来源; app.js 不再重复赋值)
 const html = fs.readFileSync(new URL("../dist/index.html", import.meta.url), "utf8");
 
+test("写入能力探测: 平台锁定 SPD 写(后端短路)时不得渲染\"整片复核 不通过\"", async () => {
+  // 后端在 i801 报 BIOS SPD 写禁止时直接返回 rejected, 没有 offsetText/restored/verified
+  const stub = makeAppStub({
+    WriteProbe: () => ({
+      addr: 80, offset: 0, offsetText: "", old: 0, new: 0, readBack: 0,
+      verdict: "rejected", mode: "未写(平台禁止)",
+      note: "BIOS 的 SPD Write Disable 已打开(控制器 Intel PCH i801): 平台层面禁止写入 SPD…",
+      restored: false, verified: false, backupPath: "",
+    }),
+  }).stub;
+  const { el, ctx } = loadApp({ appStub: stub });
+  await flush();
+  ctx.confirm = () => true;
+  await el("btn-write-probe").onclick();
+  await flush();
+  const out = el("probe-result").innerHTML;
+  assert.match(out, /被拒绝/);
+  assert.match(out, /SPD Write Disable/);
+  assert.doesNotMatch(out, /整片复核/, "未实际探测就不该出现复核结论: " + out);
+  assert.doesNotMatch(out, /0x00→0x00/, "未实际探测就不该出现偏移/字节字段: " + out);
+});
+
 const state = {
   source: "设备 0x50", generation: "DDR4", size: 512,
   dirty: true, changeCount: 3, crcOk: true, canWrite: true, crcStale: false,

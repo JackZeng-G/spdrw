@@ -308,7 +308,9 @@ func (a *App) buildPreflight(label string, dump []byte, force, probeProtection b
 	if ctl, cerr := a.controllerInfo(); cerr == nil && ctl.WpKnown && !ctl.NoSpdWp {
 		pf.Blocked, pf.BlockKind = true, "bios"
 		pf.BlockReason = fmt.Sprintf(
-			"BIOS 的 SPD Write Disable 处于打开状态(控制器 %s): 请在 BIOS 中关闭后再写入", ctl.Name)
+			"BIOS 的 SPD Write Disable 处于打开状态(控制器 %s): 平台层面禁止写入 SPD, 写入会被控制器拒绝(NACK)。"+
+				"若 BIOS 里找不到该选项(部分品牌机/整机默认锁定且不提供开关, 实测 i3-7100 即如此): "+
+				"换一台 BIOS 允许 SPD 写的机器写入, 或用编程器(CH341A 等)离线写; 本平台仍可读取/编辑/校验/导出", ctl.Name)
 	}
 
 	// 当前内容 CRC(仅提示, 不阻断)

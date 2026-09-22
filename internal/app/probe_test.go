@@ -72,6 +72,45 @@ func TestWriteProbeVerdicts(t *testing.T) {
 }
 
 // 探测在干跑模式下必须拒绝(否则会给出误导性结论)。
+// 平台(i801)报告 BIOS 锁定 SPD 写时, 写入能力探测必须短路: 不备份、不写一个字节,
+// 直接给"被拒绝"的结论(真机 i3-7100: 该状态下写会被 NACK, 探测徒增噪音)。
+func TestWriteProbeShortCircuitsWhenPlatformWriteDisabled(t *testing.T) {
+	f := smbus.NewFake()
+	f.SetDDR5(true)
+	img := ddr5WriteFixture()
+	copy(f.EEProm, img)
+	a := New()
+	a.transports = []smbus.Transport{f}
+	if err := a.Connect(0); err != nil {
+		t.Fatal(err)
+	}
+	a.mu.Lock()
+	a.ctrl.WpKnown, a.ctrl.NoSpdWp = true, false // 模拟 i801 读出 SPD Write Disable=1
+	a.mu.Unlock()
+	if err := a.Select(0x50); err != nil {
+		t.Fatal(err)
+	}
+	before := append([]byte{}, f.EEProm...)
+	res, err := a.WriteProbe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Verdict != "rejected" {
+		t.Fatalf("平台禁止写入时 verdict 应为 rejected, 实际 %q", res.Verdict)
+	}
+	if !strings.Contains(res.Note, "SPD Write Disable") || !strings.Contains(res.Note, "编程器") {
+		t.Fatalf("说明应指出 BIOS 锁定并给出可行出路: %v", res.Note)
+	}
+	if res.Backup != "" {
+		t.Fatalf("结论已知时不该做备份: %s", res.Backup)
+	}
+	for i := range before {
+		if before[i] != f.EEProm[i] {
+			t.Fatalf("平台禁止写入时不得改动设备(偏移 %#x)", i)
+		}
+	}
+}
+
 func TestWriteProbeRefusesDryRun(t *testing.T) {
 	a, _ := newWriteTestApp(t)
 	setDryRunForTest(t, a, true)

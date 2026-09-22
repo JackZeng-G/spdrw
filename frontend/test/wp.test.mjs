@@ -71,6 +71,30 @@ test("点击查询保护状态: 走绑定并写日志, 不再抛 null 解构错"
   assert.match(log, /保护状态/);
 });
 
+test("BIOS 锁定 SPD 写时: 顶栏下方常驻\"只读模式\"横幅, 并提示去 BIOS 找开关", async () => {
+  const locked = {
+    wpKnown: true, noSpdWp: false,      // i801 读出 SPD Write Disable = 1
+    index: 0, name: "Intel PCH i801 (IO:F040)", devices: 1,
+  };
+  const { el } = loadApp({ appStub: makeAppStub({ ListControllers: () => [locked] }).stub });
+  await flush();
+  await flush();      // checkEnv → ListControllers → fillCtlSelect → updateReadOnlyBar
+  const bar = el("ro-bar");
+  assert.equal(bar.classList.contains("hidden"), false, "锁写时必须显示只读横幅");
+  assert.match(bar.innerHTML, /只读模式/);
+  assert.match(bar.innerHTML, /SPD Write Disable/, "要点明是哪个开关");
+  assert.match(bar.innerHTML, /BIOS/, "要提示去 BIOS 里找开关");
+  assert.match(bar.innerHTML, /编程器/, "没有开关时给出可行出路");
+});
+
+test("SPD 写可(未锁定)时不显示只读横幅", async () => {
+  const ok = { wpKnown: true, noSpdWp: true, index: 0, name: "Intel PCH i801 (IO:F040)", devices: 1 };
+  const { el } = loadApp({ appStub: makeAppStub({ ListControllers: () => [ok] }).stub });
+  await flush();
+  await flush();
+  assert.equal(el("ro-bar").classList.contains("hidden"), true, "未锁定不该出现只读横幅");
+});
+
 test("汇总行区分「受保护」与「未知/不可写」: 写测试全败(i801 平台拒绝)不得谎报受保护", async () => {
   // 真机 i3-7100(2026-09-22): 4 块写测试都失败(known=false, 后端保守置 protected=true)
   const st = {

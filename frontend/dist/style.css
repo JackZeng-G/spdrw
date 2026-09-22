@@ -229,6 +229,27 @@ button.q:hover { color: var(--accent); border-color: var(--accent); background: 
   flex: none;
 }
 
+/* 只读模式横幅: 平台(BIOS)锁定 SPD 写时常驻显示 —— 让"现在只能读"一眼可见 */
+#ro-bar {
+  padding: var(--sp-2) var(--sp-4);
+  background: rgba(214, 69, 69, .16);
+  color: #ffb3b3;
+  border-bottom: 1px solid rgba(214, 69, 69, .45);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  flex: none;
+}
+#ro-bar .ro-tag {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 6px;
+  border-radius: 3px;
+  background: rgba(214, 69, 69, .85);
+  color: #fff;
+  font-weight: 600;
+}
+#ro-bar code { background: rgba(255, 255, 255, .08); padding: 0 3px; border-radius: 2px; }
+
 /* ---------- 主布局 ---------- */
 #layout {
   display: grid;
