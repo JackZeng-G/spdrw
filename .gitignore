@@ -1,5 +1,6 @@
 # ---------- 构建缓存 ----------
-# 容器内必须自定这两个目录(默认位置不可写), 见 docs/实现文档.md §7
+# 工具链统一在 /opt/toolchain(GOPATH/GOMODCACHE/GOCACHE 环境变量已全局指好);
+# 这里只兜底防"在项目里手 export 过本地缓存"(会与全局重复占用 2GB+, 见 docs/实现文档.md §7)
 .gocache/
 .gopath/
 
@@ -22,5 +23,19 @@ _mock.html
 *.tmp
 *.orig
 *.rej
-# 冒烟页由 make-real-page.mjs 从 dist/index.html 现生成(见 frontend/test/README.md)
+# 冒烟页由 make-real-page.mjs 从 dist/index.html 现生成(docs/实现文档.md §7)
 frontend/test/_real-page.html
+
+# ---------- 系统与编辑器杂物 ----------
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+node_modules/
+
+# ---------- 测试与分析产物 ----------
+*.log
+*.prof
+coverage.out
+
